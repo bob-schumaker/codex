@@ -10,6 +10,7 @@
 - [Lifecycle Overview](#lifecycle-overview)
 - [Initialization](#initialization)
 - [API Overview](#api-overview)
+- [External controller APIs (experimental)](#external-controller-apis-experimental)
 - [Events](#events)
 - [Approvals](#approvals)
 - [Skills](#skills)
@@ -261,6 +262,11 @@ Example with notification opt-out:
 - `remoteControl/client/list` — experimental; list controller devices granted access to an environment. Pass `environmentId` and optional `cursor`, `limit`, and `order`; returns picker-oriented client metadata plus `nextCursor`. This signed-in account-management operation works while the local relay is disabled or unenrolled.
 - `remoteControl/client/revoke` — experimental; revoke one controller device's grant for an environment. Pass `environmentId` and `clientId`; returns an empty object. This signed-in account-management operation works while the local relay is disabled or unenrolled.
 - `remoteControl/status/changed` — notification emitted when the remote-control status or client-visible environment id changes. `status` is one of `disabled`, `connecting`, `connected`, or `errored`; `serverName` is the local machine name used by this app-server process; `environmentId` is a string when the app-server has a current enrollment and `null` when that enrollment is cleared, invalidated, or remote control is disabled. Newly initialized app-server clients always receive the current status snapshot.
+- `controller/requestParticipation` — experimental and under development; schema-only until the runtime controller session manager lands. Local external controllers will use this connection-bound pre-participation request to activate a `ControllerSession` for the embedded TUI launch's main thread. Takes `{ controllerName, description }` display claims and returns `ControllerRequestParticipationResponse { status, session, denial }`. These display claims are not authorization credentials.
+- `controller/acquireControl` — experimental and under development; schema-only until the runtime controller session manager lands. Will ask the server to issue an active `interactive-control` lease for the approved controller session when the main thread is available and no other controller owns it. Returns `ControllerAcquireControlResponse { session }`.
+- `controller/releaseControl` — experimental and under development; schema-only until the runtime controller session manager lands. Will cede input ownership back to the TUI while preserving the controller's standing read/subscription session. Returns `ControllerReleaseControlResponse { session }` and is idempotent for a live session that already has `activeLease: null`.
+- `controller/signOff` — experimental and under development; schema-only until the runtime controller session manager lands. Will terminate the controller session, revoke its connection-bound lease if any, and return `{}` before the controller connection closes.
+- `controller/authorizationChanged` and `controller/controlOwnershipChanged` — experimental controller control-plane notifications; schema-only until the runtime controller session manager lands. They will report session authorization and active input-owner changes to controller clients; the TUI receives corresponding typed in-process ownership-status events.
 - `skills/config/write` — write user-level skill config by name or absolute path.
 - `plugin/install` — install a plugin from a discovered marketplace entry, rejecting marketplace entries marked unavailable for install, install MCPs if any, and return the effective plugin auth policy plus any apps that still need auth. For remote installs, clients may include an optional `installAttemptId`; app-server forwards it unchanged as `install_attempt_id` in the backend POST body, while omission preserves the legacy empty-body request (**under development; do not call from production clients yet**).
 - `plugin/uninstall` — uninstall a local plugin by `pluginId` in `<plugin>@<marketplace>` form by removing its cached files and clearing its user-level config entry, or uninstall a remote ChatGPT plugin by backend `pluginId` by forwarding the uninstall to the ChatGPT plugin backend and removing any downloaded remote-plugin cache (**under development; do not call from production clients yet**).
@@ -1494,6 +1500,124 @@ All filesystem paths in this section must be absolute.
 } }
 { "id": 45, "result": {} }
 ```
+
+## External controller APIs (experimental)
+
+The `controller/*` methods are an experimental, under-development local control
+surface for same-user external controllers attached to an embedded TUI launch.
+They are not part of the existing remote-control service and are not a network
+API. Do not call them from production clients yet. They require
+`initialize.params.capabilities.experimentalApi: true`.
+
+The current implementation exposes the v2 schema and TypeScript bindings only;
+the runtime controller session manager is not wired yet, so these methods still
+return JSON-RPC `method_not_found`. Once the runtime lands, an external
+controller first opens the local controller endpoint, initializes the JSON-RPC
+connection, and calls `controller/requestParticipation`:
+
+```json
+{
+  "method": "controller/requestParticipation",
+  "id": 10,
+  "params": {
+    "controllerName": "codex-waveshare",
+    "description": "Codex Waveshare controller"
+  }
+}
+```
+
+`controllerName` and `description` are untrusted display claims only. They do not
+prove identity or grant authorization. Authorization is connection-bound and is
+validated by the runtime's controller enrollment policy.
+
+An approved response returns a `ControllerSession`:
+
+```json
+{
+  "id": 10,
+  "result": {
+    "status": "approved",
+    "session": {
+      "sessionId": "controller-session-1",
+      "mainThreadId": "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1",
+      "activeLease": {
+        "leaseId": "lease-1",
+        "ownerEpoch": 7,
+        "expiresInMs": 60000
+      },
+      "authorizationEpoch": 3,
+      "sessionSequence": 11,
+      "effectiveCapabilities": {
+        "readMainThread": true,
+        "subscribeMainThread": true,
+        "acquireControl": true,
+        "releaseControl": true,
+        "mutateMainThread": true,
+        "answerPrompts": true
+      },
+      "leaseExpiresInMs": 60000,
+      "authorizationExpiresInMs": 300000
+    },
+    "denial": null
+  }
+}
+```
+
+A rejection returns `status: "rejected"`, `session: null`, and typed denial data.
+Main-thread startup races use typed retryable errors such as
+`main-thread-unavailable` rather than rejection status.
+
+After authorization, the controller uses the normal app-server v2 interface for
+the TUI launch's immutable main thread:
+
+- with `activeLease: null`, the controller can read and subscribe to the main
+  thread but owner-required mutations fail at the authorization gate;
+- with an active lease, the controller is the current input client for the main
+  thread and uses the same `thread/*`, `turn/*`, approval, and user-input request
+  and response shapes as the TUI connection;
+- the existing RPC bodies do not gain bearer token fields. `leaseId` is an
+  opaque audit/revocation identifier, and authority remains bound to the live
+  connection, session, main thread, and owner epoch.
+
+Control can move between the controller and TUI:
+
+```json
+{ "method": "controller/acquireControl", "id": 11 }
+
+{ "method": "controller/releaseControl", "id": 12 }
+
+{ "method": "controller/signOff", "id": 13 }
+```
+
+`controller/acquireControl` and `controller/releaseControl` each return an
+updated `ControllerSession` in `{ "session": ... }`.
+`controller/releaseControl` cedes input ownership back to the TUI while
+preserving the controller's read/subscription session and standing authorization;
+it is idempotent when the live session already has no active lease.
+`controller/acquireControl` may later issue a fresh lease without TUI input when
+no other controller holds one. `controller/signOff` revokes the session and
+closes the controller path after returning `{}`.
+
+The TUI remains primary. Any thread-affecting TUI input against a
+controller-owned main thread cancels that controller's active input lease,
+rebinds outstanding prompts to the TUI, and then executes the TUI input. Display
+actions such as scrolling or focus changes do not reclaim control.
+
+Controller clients receive control-plane notifications:
+
+- `controller/authorizationChanged` — `{ sessionId, mainThreadId, reason,
+  authorizationEpoch, ownerEpoch, sessionSequence, session }`
+- `controller/controlOwnershipChanged` — `{ sessionId, mainThreadId, reason,
+  authorizationEpoch, ownerEpoch, sessionSequence, activeLease }`
+
+Canonical controller error codes include `experimental-not-enabled`,
+`participation-required`, `enrollment-denied`, `main-thread-unavailable`,
+`main-thread-closed`, `tui-unavailable`, `ownership-conflict`,
+`stale-ownership`, `controller-not-allowed`, `transport-closing`,
+`different-thread-target`, `authorization-expired`, `lease-expired`, and
+`controller-overloaded`. Controller errors include typed retryability data so
+clients can distinguish retry-on-same-connection, reconnect, and terminal
+outcomes.
 
 ## Events
 
