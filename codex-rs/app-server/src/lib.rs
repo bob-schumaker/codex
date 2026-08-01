@@ -97,6 +97,7 @@ mod config_manager_service;
 mod connection_cleanup;
 mod connection_rpc_gate;
 mod controller_admission;
+mod controller_enrollment;
 mod controller_session;
 mod current_time;
 mod dynamic_tools;
