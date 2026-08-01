@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::controller_reclaim::ControllerReclaimEffect;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::FileChangeApprovalDecision;
@@ -241,6 +242,15 @@ impl AppCommand {
 
     pub(crate) fn is_review(&self) -> bool {
         matches!(self, Self::Review { .. })
+    }
+
+    pub(crate) fn controller_reclaim_effect(&self) -> ControllerReclaimEffect {
+        match self {
+            // Skills refreshes update TUI metadata and do not mutate or drive the main thread.
+            Self::ListSkills { .. } => ControllerReclaimEffect::DisplayOnly,
+            // New coordinator-facing commands must be conservative by default until reviewed.
+            _ => ControllerReclaimEffect::ThreadAffecting,
+        }
     }
 }
 

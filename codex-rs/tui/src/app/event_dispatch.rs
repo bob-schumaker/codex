@@ -548,6 +548,7 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                self.controller_reclaim.observe_app_command(&op);
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
                 if is_user_turn {
                     let screen_size = tui.terminal.last_known_screen_size;
@@ -583,6 +584,7 @@ impl App {
                 turn,
                 prompt,
             } => {
+                self.controller_reclaim.observe_app_command(&turn);
                 self.retry_safety_buffered_turn(
                     tui,
                     app_server,
@@ -628,6 +630,7 @@ impl App {
                     .approve_recent_auto_review_denial(thread_id, id);
             }
             AppEvent::SubmitThreadOp { thread_id, op } => {
+                self.controller_reclaim.observe_app_command(&op);
                 self.submit_thread_op(app_server, thread_id, op).await?;
             }
             AppEvent::ThreadHistoryEntryResponse { thread_id, event } => {

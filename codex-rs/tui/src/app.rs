@@ -37,6 +37,7 @@ use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
 use crate::chatwidget::ThreadInputState;
+use crate::controller_reclaim::ControllerReclaimHook;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::split_command_string;
@@ -514,6 +515,7 @@ pub(crate) struct App {
     model_catalog: Arc<ModelCatalog>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) app_event_tx: AppEventSender,
+    controller_reclaim: ControllerReclaimHook,
     pub(crate) chat_widget: ChatWidget,
     workspace_command_runner: Option<WorkspaceCommandRunner>,
     /// Config is stored here so we can recreate ChatWidgets as needed.
@@ -1043,6 +1045,7 @@ See the Codex keymap documentation for supported actions and examples."
             model_catalog,
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
+            controller_reclaim: ControllerReclaimHook,
             chat_widget,
             workspace_command_runner: Some(workspace_command_runner),
             config,

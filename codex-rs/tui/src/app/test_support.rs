@@ -20,6 +20,7 @@ pub(super) async fn make_test_app() -> App {
         model_catalog: chat_widget.model_catalog(),
         session_telemetry,
         app_event_tx,
+        controller_reclaim: ControllerReclaimHook,
         chat_widget,
         workspace_command_runner: None,
         launch_cwd: config.cwd.to_path_buf(),
