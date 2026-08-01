@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::Path;
 
+use super::ConnectionOrigin;
 use super::TransportEvent;
 use crate::transport::websocket::run_websocket_connection;
 use codex_uds::UnixListener;
@@ -84,7 +85,13 @@ async fn run_control_socket_acceptor(
                 }
             };
             let (websocket_writer, websocket_reader) = websocket_stream.split();
-            run_websocket_connection(websocket_writer, websocket_reader, transport_event_tx).await;
+            run_websocket_connection(
+                websocket_writer,
+                websocket_reader,
+                transport_event_tx,
+                ConnectionOrigin::WebSocket,
+            )
+            .await;
         });
     }
     info!("control socket acceptor shutting down");

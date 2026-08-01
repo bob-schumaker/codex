@@ -10,6 +10,24 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
+/// Native peer credentials for a connected local socket.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PeerCredentials {
+    /// Effective user ID of the peer process.
+    pub user_id: u32,
+    /// Effective group ID of the peer process.
+    pub group_id: u32,
+    /// Peer process ID when the platform exposes it.
+    pub process_id: Option<i32>,
+}
+
+impl PeerCredentials {
+    /// Returns whether these credentials belong to the current effective user.
+    pub fn belongs_to_current_user(&self) -> bool {
+        Some(self.user_id) == platform::current_effective_user_id()
+    }
+}
+
 /// Creates `socket_dir` if needed and restricts it to the current user where
 /// the platform exposes Unix permissions.
 pub async fn prepare_private_socket_directory(socket_dir: impl AsRef<Path>) -> IoResult<()> {
@@ -56,6 +74,11 @@ impl UnixStream {
             .await
             .map(|inner| Self { inner })
     }
+
+    /// Returns native credentials for the peer on the other side of this stream.
+    pub fn peer_credentials(&self) -> IoResult<PeerCredentials> {
+        platform::peer_credentials(&self.inner)
+    }
 }
 
 impl AsyncRead for UnixStream {
@@ -89,8 +112,10 @@ mod platform {
     use std::io::Result as IoResult;
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
     use std::path::Path;
 
+    use super::PeerCredentials;
     use tokio::fs;
     use tokio::net::UnixListener;
     use tokio::net::UnixStream;
@@ -157,6 +182,97 @@ mod platform {
             .file_type()
             .is_socket())
     }
+
+    pub(super) fn current_effective_user_id() -> Option<u32> {
+        Some(unsafe { libc::geteuid() })
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
+    pub(super) fn peer_credentials(stream: &Stream) -> IoResult<PeerCredentials> {
+        use libc::SO_PEERCRED;
+        use libc::SOL_SOCKET;
+        use libc::c_void;
+        use libc::getsockopt;
+        use libc::socklen_t;
+        use libc::ucred;
+
+        let mut ucred_size = size_of::<ucred>() as socklen_t;
+        let mut ucred = ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let result = unsafe {
+            getsockopt(
+                stream.as_raw_fd(),
+                SOL_SOCKET,
+                SO_PEERCRED,
+                (&raw mut ucred).cast::<c_void>(),
+                &mut ucred_size,
+            )
+        };
+        if result == 0 && ucred_size as usize == size_of::<ucred>() {
+            Ok(PeerCredentials {
+                user_id: ucred.uid,
+                group_id: ucred.gid,
+                process_id: Some(ucred.pid),
+            })
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(super) fn peer_credentials(stream: &Stream) -> IoResult<PeerCredentials> {
+        use libc::LOCAL_PEERPID;
+        use libc::SOL_LOCAL;
+        use libc::c_void;
+        use libc::getpeereid;
+        use libc::getsockopt;
+        use libc::gid_t;
+        use libc::pid_t;
+        use libc::socklen_t;
+        use libc::uid_t;
+
+        let mut user_id: uid_t = 0;
+        let mut group_id: gid_t = 0;
+        let result = unsafe { getpeereid(stream.as_raw_fd(), &mut user_id, &mut group_id) };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut process_id: pid_t = 0;
+        let mut process_id_size = size_of::<pid_t>() as socklen_t;
+        let result = unsafe {
+            getsockopt(
+                stream.as_raw_fd(),
+                SOL_LOCAL,
+                LOCAL_PEERPID,
+                (&raw mut process_id).cast::<c_void>(),
+                &mut process_id_size,
+            )
+        };
+        if result == 0 && process_id_size as usize == size_of::<pid_t>() {
+            Ok(PeerCredentials {
+                user_id,
+                group_id,
+                process_id: Some(process_id),
+            })
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "linux", target_os = "cygwin")),
+        not(target_vendor = "apple")
+    ))]
+    pub(super) fn peer_credentials(_stream: &Stream) -> IoResult<PeerCredentials> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "peer credential lookup is unavailable on this Unix platform",
+        ))
+    }
 }
 
 #[cfg(windows)]
@@ -181,6 +297,8 @@ mod platform {
     use tokio::task;
     use tokio_util::compat::Compat;
     use tokio_util::compat::FuturesAsyncReadCompatExt;
+
+    use super::PeerCredentials;
 
     pub(super) struct Stream(Compat<Async<WindowsUnixStream>>);
 
@@ -217,6 +335,17 @@ mod platform {
 
     pub(super) async fn is_stale_socket_path(socket_path: &Path) -> IoResult<bool> {
         tokio::fs::try_exists(socket_path).await
+    }
+
+    pub(super) fn current_effective_user_id() -> Option<u32> {
+        None
+    }
+
+    pub(super) fn peer_credentials(_stream: &Stream) -> IoResult<PeerCredentials> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "peer credential lookup is unavailable for Windows UDS",
+        ))
     }
 
     async fn spawn_blocking_io<T>(

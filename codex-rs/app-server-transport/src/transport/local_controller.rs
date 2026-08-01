@@ -8,10 +8,29 @@ use std::time::UNIX_EPOCH;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use constant_time_eq::constant_time_eq;
+use futures::StreamExt;
 use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
+use tokio::task::JoinError;
+use tokio::task::JoinHandle;
+use tokio::time::Duration;
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::ErrorResponse;
+use tokio_tungstenite::tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::handshake::server::Response;
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+use super::ConnectionOrigin;
+use super::TransportEvent;
+use crate::transport::websocket::run_websocket_connection;
+use codex_uds::PeerCredentials;
+use codex_uds::UnixListener;
+use codex_uds::UnixStream;
 
 const LOCAL_CONTROLLER_DIR_NAME: &str = "local-controllers";
 const LOCAL_CONTROLLER_METADATA_PREFIX: &str = "launch-";
@@ -19,9 +38,12 @@ const LOCAL_CONTROLLER_METADATA_SUFFIX: &str = ".json";
 const LOCAL_CONTROLLER_SOCKET_PREFIX: &str = "codex-";
 const LOCAL_CONTROLLER_SOCKET_SUFFIX: &str = ".sock";
 const LOCAL_CONTROLLER_METADATA_MODE: u32 = 0o600;
+const LOCAL_CONTROLLER_SOCKET_MODE: u32 = 0o600;
+const LOCAL_CONTROLLER_ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 pub const LOCAL_CONTROLLER_METADATA_VERSION: u32 = 1;
 pub const LOCAL_CONTROLLER_PROTOCOL_VERSION: u32 = 1;
+pub const LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER: &str = "X-Codex-Launch-Nonce";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalControllerEndpointPaths {
@@ -44,17 +66,19 @@ pub struct LocalControllerEndpointMetadata {
 }
 
 impl LocalControllerEndpointMetadata {
-    pub fn new(endpoint_uri: String, main_thread_id: Option<String>) -> Self {
-        Self {
+    pub fn new(codex_home: &Path, main_thread_id: Option<String>) -> io::Result<Self> {
+        let launch_id = new_local_controller_launch_id();
+        let paths = local_controller_endpoint_paths(codex_home, &launch_id)?;
+        Ok(Self {
             version: LOCAL_CONTROLLER_METADATA_VERSION,
-            launch_id: new_local_controller_launch_id(),
+            launch_id,
             launch_nonce: new_local_controller_launch_nonce(),
-            endpoint_uri,
+            endpoint_uri: format!("unix://{}", paths.socket_path.display()),
             process_id: std::process::id(),
             created_at: now_unix_seconds(),
             protocol_version: LOCAL_CONTROLLER_PROTOCOL_VERSION,
             main_thread_id,
-        }
+        })
     }
 }
 
@@ -91,6 +115,42 @@ impl Drop for LocalControllerEndpointGuard {
     }
 }
 
+#[derive(Debug)]
+pub struct LocalControllerEndpointHandle {
+    metadata: LocalControllerEndpointMetadata,
+    socket_path: AbsolutePathBuf,
+    _metadata_guard: LocalControllerEndpointGuard,
+    shutdown_token: CancellationToken,
+    accept_handle: Option<JoinHandle<()>>,
+}
+
+impl LocalControllerEndpointHandle {
+    pub fn metadata(&self) -> &LocalControllerEndpointMetadata {
+        &self.metadata
+    }
+
+    pub fn socket_path(&self) -> &AbsolutePathBuf {
+        &self.socket_path
+    }
+
+    pub async fn shutdown(mut self) -> Result<(), JoinError> {
+        self.shutdown_token.cancel();
+        match self.accept_handle.take() {
+            Some(accept_handle) => accept_handle.await,
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for LocalControllerEndpointHandle {
+    fn drop(&mut self) {
+        self.shutdown_token.cancel();
+        if let Some(accept_handle) = self.accept_handle.take() {
+            accept_handle.abort();
+        }
+    }
+}
+
 pub fn new_local_controller_launch_id() -> String {
     Uuid::now_v7().to_string()
 }
@@ -117,6 +177,59 @@ pub fn local_controller_endpoint_paths(
         directory,
         metadata_path,
         socket_path,
+    })
+}
+
+pub async fn start_local_controller_acceptor(
+    codex_home: &Path,
+    main_thread_id: Option<String>,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+) -> io::Result<LocalControllerEndpointHandle> {
+    if !cfg!(unix) {
+        return Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "local-controller endpoint is unavailable on this platform",
+        ));
+    }
+
+    let metadata = LocalControllerEndpointMetadata::new(codex_home, main_thread_id)?;
+    let paths = local_controller_endpoint_paths(codex_home, &metadata.launch_id)?;
+    prepare_local_controller_socket_path(paths.socket_path.as_path()).await?;
+    let listener = UnixListener::bind(paths.socket_path.as_path()).await?;
+    let socket_guard = LocalControllerSocketFileGuard {
+        socket_path: paths.socket_path.clone(),
+    };
+    set_socket_permissions(socket_guard.socket_path.as_path()).await?;
+
+    let endpoint_shutdown_token = shutdown_token.child_token();
+    let accept_handle = tokio::spawn(run_local_controller_acceptor(
+        listener,
+        transport_event_tx,
+        endpoint_shutdown_token.clone(),
+        socket_guard,
+        metadata.launch_nonce.clone(),
+    ));
+    let metadata_guard = match publish_local_controller_metadata(codex_home, &metadata).await {
+        Ok(metadata_guard) => metadata_guard,
+        Err(err) => {
+            endpoint_shutdown_token.cancel();
+            let _ = accept_handle.await;
+            return Err(err);
+        }
+    };
+    tracing::info!(
+        socket_path = %paths.socket_path.display(),
+        metadata_path = %metadata_guard.metadata_path().display(),
+        "local-controller endpoint listening"
+    );
+
+    Ok(LocalControllerEndpointHandle {
+        metadata,
+        socket_path: paths.socket_path,
+        _metadata_guard: metadata_guard,
+        shutdown_token: endpoint_shutdown_token,
+        accept_handle: Some(accept_handle),
     })
 }
 
@@ -153,6 +266,167 @@ pub async fn publish_local_controller_metadata(
         launch_id: metadata.launch_id.clone(),
         launch_nonce: metadata.launch_nonce.clone(),
     })
+}
+
+async fn prepare_local_controller_socket_path(socket_path: &Path) -> io::Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        codex_uds::prepare_private_socket_directory(parent).await?;
+    }
+
+    match UnixStream::connect(socket_path).await {
+        Ok(_stream) => {
+            return Err(io::Error::new(
+                ErrorKind::AddrInUse,
+                format!(
+                    "local-controller socket is already in use at {}",
+                    socket_path.display()
+                ),
+            ));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::ConnectionRefused => {}
+        Err(err) => {
+            if !socket_path.exists() {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
+
+    if !socket_path.try_exists()? {
+        return Ok(());
+    }
+
+    if !codex_uds::is_stale_socket_path(socket_path).await? {
+        return Err(io::Error::new(
+            ErrorKind::AlreadyExists,
+            format!(
+                "local-controller socket path exists and is not a socket: {}",
+                socket_path.display()
+            ),
+        ));
+    }
+    tokio::fs::remove_file(socket_path).await
+}
+
+async fn run_local_controller_acceptor(
+    mut listener: UnixListener,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+    socket_guard: LocalControllerSocketFileGuard,
+    launch_nonce: String,
+) {
+    let _socket_guard = socket_guard;
+    loop {
+        let stream = tokio::select! {
+            _ = shutdown_token.cancelled() => {
+                break;
+            }
+            result = listener.accept() => {
+                match result {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        if matches!(
+                            err.kind(),
+                            ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+                        ) {
+                            tracing::warn!("recoverable local-controller socket accept error: {err}");
+                            continue;
+                        }
+                        tracing::error!("local-controller socket accept error: {err}");
+                        tokio::time::sleep(LOCAL_CONTROLLER_ACCEPT_ERROR_BACKOFF).await;
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let transport_event_tx = transport_event_tx.clone();
+        let launch_nonce = launch_nonce.clone();
+        tokio::spawn(async move {
+            if let Err(err) = verify_same_user_peer(&stream) {
+                tracing::warn!(%err, "rejecting local-controller peer");
+                return;
+            }
+            let websocket_stream = match accept_hdr_async(
+                stream,
+                move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+                    authorize_local_controller_upgrade(request, response, &launch_nonce)
+                },
+            )
+            .await
+            {
+                Ok(websocket_stream) => websocket_stream,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to upgrade local-controller websocket connection: {err}"
+                    );
+                    return;
+                }
+            };
+            let (websocket_writer, websocket_reader) = websocket_stream.split();
+            run_websocket_connection(
+                websocket_writer,
+                websocket_reader,
+                transport_event_tx,
+                ConnectionOrigin::ExternalController,
+            )
+            .await;
+        });
+    }
+    tracing::info!("local-controller acceptor shutting down");
+}
+
+fn verify_same_user_peer(stream: &UnixStream) -> io::Result<()> {
+    verify_peer_credentials(stream.peer_credentials())
+}
+
+fn verify_peer_credentials(credentials: io::Result<PeerCredentials>) -> io::Result<()> {
+    let credentials = credentials.map_err(|err| {
+        io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!("missing local-controller peer credentials: {err}"),
+        )
+    })?;
+    if !credentials.belongs_to_current_user() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            "local-controller peer belongs to a different user",
+        ));
+    }
+    Ok(())
+}
+
+fn authorize_local_controller_upgrade(
+    request: &Request,
+    response: Response,
+    launch_nonce: &str,
+) -> Result<Response, ErrorResponse> {
+    let Some(header_value) = request.headers().get(LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER) else {
+        return Err(local_controller_upgrade_error(
+            StatusCode::UNAUTHORIZED,
+            "missing launch nonce",
+        ));
+    };
+    let Ok(header_value) = header_value.to_str() else {
+        return Err(local_controller_upgrade_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid launch nonce",
+        ));
+    };
+    if !constant_time_eq(header_value.as_bytes(), launch_nonce.as_bytes()) {
+        return Err(local_controller_upgrade_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid launch nonce",
+        ));
+    }
+    Ok(response)
+}
+
+fn local_controller_upgrade_error(status: StatusCode, message: &str) -> ErrorResponse {
+    let mut response = ErrorResponse::new(Some(message.to_string()));
+    *response.status_mut() = status;
+    response
 }
 
 async fn remove_stale_metadata_if_owned(
@@ -247,6 +521,22 @@ fn now_unix_seconds() -> i64 {
 }
 
 #[cfg(unix)]
+async fn set_socket_permissions(socket_path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    tokio::fs::set_permissions(
+        socket_path,
+        std::fs::Permissions::from_mode(LOCAL_CONTROLLER_SOCKET_MODE),
+    )
+    .await
+}
+
+#[cfg(not(unix))]
+async fn set_socket_permissions(_socket_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
 async fn set_metadata_permissions(metadata_path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -260,6 +550,47 @@ async fn set_metadata_permissions(metadata_path: &Path) -> io::Result<()> {
 #[cfg(not(unix))]
 async fn set_metadata_permissions(_metadata_path: &Path) -> io::Result<()> {
     Ok(())
+}
+
+#[derive(Debug)]
+struct LocalControllerSocketFileGuard {
+    socket_path: AbsolutePathBuf,
+}
+
+impl Drop for LocalControllerSocketFileGuard {
+    fn drop(&mut self) {
+        match remove_socket_file_if_owned(self.socket_path.as_path()) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::warn!(
+                    socket_path = %self.socket_path.display(),
+                    %err,
+                    "failed to remove local-controller socket file"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remove_socket_file_if_owned(socket_path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let metadata = std::fs::symlink_metadata(socket_path)?;
+    if metadata.file_type().is_socket() {
+        std::fs::remove_file(socket_path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn remove_socket_file_if_owned(socket_path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(socket_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]

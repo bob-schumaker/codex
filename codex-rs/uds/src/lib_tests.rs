@@ -119,3 +119,38 @@ async fn stream_round_trips_data_between_listener_and_client() {
 
     server_task.await.expect("server task should join");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn peer_credentials_report_current_user_for_connected_stream() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = temp_dir.path().join("socket");
+    let mut listener = match UnixListener::bind(&socket_path).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: failed to bind unix socket: {err}");
+            return;
+        }
+        Err(err) => panic!("failed to bind test socket: {err}"),
+    };
+
+    let client_task = tokio::spawn({
+        let socket_path = socket_path.clone();
+        async move {
+            let client = UnixStream::connect(&socket_path)
+                .await
+                .expect("client should connect");
+            client
+                .peer_credentials()
+                .expect("client peer credentials should resolve")
+        }
+    });
+    let server = listener.accept().await.expect("server should accept");
+    let server_credentials = server
+        .peer_credentials()
+        .expect("server peer credentials should resolve");
+    let client_credentials = client_task.await.expect("client task should join");
+
+    assert!(server_credentials.belongs_to_current_user());
+    assert!(client_credentials.belongs_to_current_user());
+}
