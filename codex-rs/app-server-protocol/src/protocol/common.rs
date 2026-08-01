@@ -232,6 +232,10 @@ macro_rules! client_request_definitions {
         }
 
         impl ClientRequest {
+            pub const METHOD_NAMES: &'static [&'static str] = &[
+                $($wire,)*
+            ];
+
             pub fn id(&self) -> &RequestId {
                 match self {
                     $(Self::$variant { request_id, .. } => request_id,)*
@@ -1335,6 +1339,10 @@ macro_rules! server_request_definitions {
         }
 
         impl ServerRequest {
+            pub const METHOD_NAMES: &'static [&'static str] = &[
+                $($($wire)?,)*
+            ];
+
             pub fn id(&self) -> &RequestId {
                 match self {
                     $(Self::$variant { request_id, .. } => request_id,)*
@@ -1632,13 +1640,13 @@ server_request_definitions! {
     /// DEPRECATED APIs below
     /// Request to approve a patch.
     /// This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).
-    ApplyPatchApproval {
+    ApplyPatchApproval => "applyPatchApproval" {
         params: v1::ApplyPatchApprovalParams,
         response: v1::ApplyPatchApprovalResponse,
     },
     /// Request to exec a command.
     /// This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).
-    ExecCommandApproval {
+    ExecCommandApproval => "execCommandApproval" {
         params: v1::ExecCommandApprovalParams,
         response: v1::ExecCommandApprovalResponse,
     },
