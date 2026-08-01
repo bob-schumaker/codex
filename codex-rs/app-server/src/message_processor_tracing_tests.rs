@@ -34,6 +34,7 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
@@ -706,6 +707,36 @@ async fn read_thread_started_notification(
     }
 }
 
+async fn read_server_request_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+    expected_request_id: &RequestId,
+) -> ServerRequest {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for server request")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        if connection_id != expected_connection_id {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::Request(request) = message else {
+            continue;
+        };
+        if request.id() == expected_request_id {
+            return request;
+        }
+    }
+}
+
 async fn wait_for_exported_spans<F>(tracing: &TestTracing, predicate: F) -> Vec<SpanData>
 where
     F: Fn(&[SpanData]) -> bool,
@@ -1086,6 +1117,12 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     Some(main_thread_id),
                 )
                 .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &approval_request_id,
+            )
+            .await;
             harness
                 .processor
                 .process_response(
@@ -1113,6 +1150,12 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     Some(main_thread_id),
                 )
                 .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &session_scoped_request_id,
+            )
+            .await;
             harness
                 .processor
                 .process_response(
@@ -1151,8 +1194,23 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 serde_json::json!({ "decision": "cancel" })
             );
 
-            let _: ControllerReleaseControlResponse = harness
-                .request_for_connection(
+            let (release_prompt_request_id, mut wait_for_release_prompt) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &release_prompt_request_id,
+            )
+            .await;
+            let release_control_request_id = harness
+                .submit_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
@@ -1162,34 +1220,75 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ),
                 )
                 .await;
-            let (stale_approval_request_id, mut wait_for_stale_approval) = harness
-                .processor
-                .outgoing
-                .send_request_to_connections(
-                    Some(&[EXTERNAL_CONNECTION_ID]),
-                    command_execution_approval_payload(started.thread.id.clone()),
-                    Some(main_thread_id),
-                )
-                .await;
+            let rebound_release_prompt = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                &release_prompt_request_id,
+            )
+            .await;
+            assert_eq!(rebound_release_prompt.id(), &release_prompt_request_id);
+            let released: ControllerReleaseControlResponse = read_response_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                release_control_request_id,
+            )
+            .await;
+            assert_eq!(released.session.active_lease, None);
             harness
                 .processor
                 .process_response(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     JSONRPCResponse {
-                        id: stale_approval_request_id,
+                        id: release_prompt_request_id.clone(),
                         result: serde_json::json!({ "decision": "accept" }),
                     },
                 )
                 .await;
             assert!(
-                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_stale_approval)
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_release_prompt)
                     .await
                     .is_err()
             );
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: release_prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let release_prompt_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_release_prompt)
+                    .await
+                    .expect("release-rebound prompt response should not time out")
+                    .expect("approval waiter should receive release-rebound response")
+                    .expect("TUI accept should resolve release-rebound prompt");
+            assert_eq!(
+                release_prompt_result,
+                serde_json::json!({ "decision": "accept" })
+            );
 
-            let reacquired_after_prompt_stale: ControllerAcquireControlResponse = harness
-                .request_for_connection(
+            let (acquire_prompt_request_id, mut wait_for_acquire_prompt) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[TEST_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                &acquire_prompt_request_id,
+            )
+            .await;
+            let acquire_control_request_id = harness
+                .submit_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
@@ -1199,11 +1298,62 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ),
                 )
                 .await;
+            let rebound_acquire_prompt = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &acquire_prompt_request_id,
+            )
+            .await;
+            assert_eq!(rebound_acquire_prompt.id(), &acquire_prompt_request_id);
+            let reacquired_after_prompt_rebind: ControllerAcquireControlResponse =
+                read_response_for_connection(
+                    &mut harness.outgoing_rx,
+                    EXTERNAL_CONNECTION_ID,
+                    acquire_control_request_id,
+                )
+                .await;
             assert!(
-                reacquired_after_prompt_stale
+                reacquired_after_prompt_rebind
                     .session
                     .effective_capabilities
                     .mutate_main_thread
+            );
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: acquire_prompt_request_id.clone(),
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_acquire_prompt)
+                    .await
+                    .is_err()
+            );
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: acquire_prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let acquire_prompt_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_acquire_prompt)
+                    .await
+                    .expect("acquire-rebound prompt response should not time out")
+                    .expect("approval waiter should receive acquire-rebound response")
+                    .expect("controller accept should resolve acquire-rebound prompt");
+            assert_eq!(
+                acquire_prompt_result,
+                serde_json::json!({ "decision": "accept" })
             );
 
             let primary_session = Arc::clone(&harness.session);
@@ -1286,21 +1436,171 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     .mutate_main_thread
             );
 
-            let _: ControllerSignOffResponse = harness
+            let (disconnect_prompt_request_id, mut wait_for_disconnect_prompt) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[SECOND_EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                SECOND_EXTERNAL_CONNECTION_ID,
+                &disconnect_prompt_request_id,
+            )
+            .await;
+            harness
+                .processor
+                .connection_closed(SECOND_EXTERNAL_CONNECTION_ID, &second_session)
+                .await;
+            let rebound_disconnect_prompt = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                &disconnect_prompt_request_id,
+            )
+            .await;
+            assert_eq!(
+                rebound_disconnect_prompt.id(),
+                &disconnect_prompt_request_id
+            );
+            harness
+                .processor
+                .process_response(
+                    SECOND_EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: disconnect_prompt_request_id.clone(),
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_disconnect_prompt)
+                    .await
+                    .is_err()
+            );
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: disconnect_prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let disconnect_prompt_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_disconnect_prompt)
+                    .await
+                    .expect("disconnect-rebound prompt response should not time out")
+                    .expect("approval waiter should receive disconnect-rebound response")
+                    .expect("TUI accept should resolve disconnect-rebound prompt");
+            assert_eq!(
+                disconnect_prompt_result,
+                serde_json::json!({ "decision": "accept" })
+            );
+
+            let signoff_reacquired: ControllerAcquireControlResponse = harness
                 .request_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
-                    controller_no_params_request(/*request_id*/ 40_016, "controller/signOff"),
+                    controller_no_params_request(
+                        /*request_id*/ 40_016,
+                        "controller/acquireControl",
+                    ),
                 )
                 .await;
+            assert!(
+                signoff_reacquired
+                    .session
+                    .effective_capabilities
+                    .mutate_main_thread
+            );
+            let (signoff_prompt_request_id, mut wait_for_signoff_prompt) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &signoff_prompt_request_id,
+            )
+            .await;
+            let signoff_request_id = harness
+                .submit_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(/*request_id*/ 40_017, "controller/signOff"),
+                )
+                .await;
+            let rebound_signoff_prompt = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                &signoff_prompt_request_id,
+            )
+            .await;
+            assert_eq!(rebound_signoff_prompt.id(), &signoff_prompt_request_id);
+            let _: ControllerSignOffResponse = read_response_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                signoff_request_id,
+            )
+            .await;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: signoff_prompt_request_id.clone(),
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_signoff_prompt)
+                    .await
+                    .is_err()
+            );
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: signoff_prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let signoff_prompt_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_signoff_prompt)
+                    .await
+                    .expect("signoff-rebound prompt response should not time out")
+                    .expect("approval waiter should receive signoff-rebound response")
+                    .expect("TUI accept should resolve signoff-rebound prompt");
+            assert_eq!(
+                signoff_prompt_result,
+                serde_json::json!({ "decision": "accept" })
+            );
+
             let after_signoff = harness
                 .request_error_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_no_params_request(
-                        /*request_id*/ 40_017,
+                        /*request_id*/ 40_018,
                         "controller/releaseControl",
                     ),
                 )
