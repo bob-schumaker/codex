@@ -89,12 +89,23 @@ Commit 3: Add the generated two-axis admission registry.
     `activeOwner`, `tuiOnly`
   - classify existing methods, server-request responses, implicit targets,
     cursors, resume tokens, and subscriptions
+  - classify model-context-changing and history-rewriting methods or params, such
+    as resume-history injection, rollback, compaction, and instruction/config
+    overrides; deny controller-origin fields that replace or inject history, or
+    mark the method TUI-only until a manual model-context review approves a
+    bounded contract
   - default unknown or unclassified methods to denied
 - Suggested owner:
   - new `codex-rs/app-server/src/controller_admission.rs`
 - Validation:
-  - unit tests for representative method classifications
-  - generated registry completeness test, if practical
+  - exhaustive generated registry completeness test for every method,
+    server-request response, implicit target, cursor, resume token, and
+    subscription
+  - targeted tests for context-safety classification of history-rewriting and
+    context-injecting surfaces
+  - continuation tests proving cursors, subscriptions, and resume tokens remain
+    bound to the same `ConnectionId` and main thread and cannot be replayed
+    across connections or threads
 
 Commit 4: Wire admission before initialized dispatch with controller origins
 still disabled.
@@ -125,16 +136,40 @@ Commit 5: Add controller session and ownership domain state.
     `ControllerOwned`, `TuiUnavailable`, and `Closed` transitions
   - no socket or TUI wiring yet
 
-Commit 6: Implement `controller/requestParticipation`,
+Commit 6: Add durable controller enrollment verification and revocation.
+
+- Scope:
+  - `ControllerEnrollmentGrant` source-of-truth boundary backed by Codex user
+    configuration or platform credential storage
+  - credential proof binding to the live `ConnectionId`
+  - authorization epoch, revocation epoch, expiry, credential rotation, policy
+    disabled, and policy required handling
+  - backward-compatible defaults: existing configs without controller state load
+    successfully and preserve best-effort controller startup behavior
+  - no socket publication or controller mutation routing yet
+- Suggested owner:
+  - focused controller enrollment module near `controller_session.rs`
+- Validation:
+  - existing-config load tests with no controller fields
+  - policy disabled, policy required, grant expiry, credential rotation, and
+    revocation epoch tests
+  - tests proving display claims such as controller name or description never
+    satisfy authorization
+
+Commit 7: Implement `controller/requestParticipation`,
 `controller/acquireControl`, `controller/releaseControl`, and
-`controller/signOff` against test connections.
+`controller/signOff` through the durable enrollment verifier and test
+connections.
 
 - Primary files:
   - new controller request processor under `codex-rs/app-server/src/request_processors/`
   - `codex-rs/app-server/src/message_processor.rs`
 - Validation:
-  - JSON-RPC integration tests for approved session, `activeLease: null`,
-    idempotent release, sign-off, and canonical errors
+  - JSON-RPC integration tests for pre-participation denial, experimental opt-in
+    gating, enrollment rejection, approved session, `activeLease: null`,
+    retryable `main-thread-unavailable`, terminal main-thread and TUI errors,
+    no-events-before-approval, idempotent release, sign-off, and canonical
+    errors
   - use `TestAppServer::builder().build()` and
     `TestAppServer::send_thread_start_request_with_auto_env()` by default for
     app-server tests that need a thread, so foreign app/exec OS coverage remains
@@ -142,7 +177,7 @@ Commit 6: Implement `controller/requestParticipation`,
 
 ### 4. Normal interface gating
 
-Commit 7: Enforce main-thread filtering and owner-required mutation checks.
+Commit 8: Enforce main-thread filtering and owner-required mutation checks.
 
 - Scope:
   - standing sessions can read/subscribe to the immutable main thread
@@ -152,8 +187,11 @@ Commit 7: Enforce main-thread filtering and owner-required mutation checks.
 - Validation:
   - integration tests for `thread/list`, main-thread reads, wrong-thread target,
     mutation without lease, mutation with lease
+  - regression tests that existing non-controller thread resume/session behavior
+    still works and that controller-bound continuations cannot alter stored
+    rollouts outside the main-thread authorization boundary
 
-Commit 8: Add priority and stale-epoch behavior around serialized requests.
+Commit 9: Add priority and stale-epoch behavior around serialized requests.
 
 - Scope:
   - TUI thread-affecting input wins acquire-versus-input races
@@ -171,66 +209,109 @@ Commit 8: Add priority and stale-epoch behavior around serialized requests.
 
 ### 5. Prompt and egress transactionality
 
-Commit 9: Add prompt owner binding, rebinding, and controller prompt rules.
+Commit 10: Add prompt owner binding and controller prompt decision rules.
 
 - Scope:
   - prompt binding by request ID, recipient `ConnectionId`, prompt binding, and
     owner epoch
   - reject controller `acceptForSession`
-  - rebind pending prompts on release, reclaim, expiry, disconnect, and
-    pre-`externalDelivery` egress failure
-  - post-`externalDelivery` revocation relies on stale response rejection, not
-    prompt redelivery
 - Primary files:
   - `codex-rs/app-server/src/outgoing_message.rs`
   - `codex-rs/app-server/src/transport.rs`
   - controller session/coordinator module
 - Validation:
-  - prompt redelivery tests
-  - write-failure and stale resolver tests
+  - prompt binding and single-authorized-resolver tests
+  - controller `accept`/`cancel` acceptance and `acceptForSession` rejection
+    tests
+  - stale resolver tests
+
+Commit 11: Add prompt rebinding on ownership transitions.
+
+- Scope:
+  - rebind pending prompts on release, TUI reclaim, lease expiry, authorization
+    revocation, controller disconnect, and sign-off
+  - preserve coordinator-owned `pending`, `resolved`, and `cancelled` prompt
+    state
+  - publish ownership-status changes in canonical order
+- Validation:
+  - prompt redelivery tests for each rebinding trigger
   - disconnect/revocation egress-fencing tests
+  - deterministic race tests for response-versus-revoke and expiry-versus-reply
+
+Commit 12: Add controller egress delivery and backpressure semantics.
+
+- Scope:
+  - pre-`externalDelivery` egress validation and write-failure handling
+  - post-`externalDelivery` stale response rejection without redelivery
+  - isolated controller egress queues and reserved TUI capacity
+  - saturated controller ingress overload responses
+- Primary files:
+  - `codex-rs/app-server/src/outgoing_message.rs`
+  - `codex-rs/app-server/src/transport.rs`
+  - controller session/coordinator module
+- Validation:
+  - write-failure and pre-/post-`externalDelivery` tests
+  - saturated controller ingress returns `-32001` or typed
+    `controller-overloaded` according to the design path being exercised
+  - slow or disconnected controller cannot block TUI ingress, TUI egress, or the
+    runtime dispatcher
+  - isolated egress queue overflow disconnects or drops only explicitly lossy
+    notifications
 
 ### 6. Local controller endpoint
 
-Commit 10: Add `LocalControllerEndpoint` transport scaffold, disabled by
-default.
+Commit 13: Add portable local-controller endpoint metadata and cleanup,
+disabled by default.
 
 - Scope:
   - metadata path and launch ID
   - launch nonce
   - private controller directory
   - cleanup guard
-  - Unix-domain socket binding
-  - Windows `codex-uds` adapter with equivalent same-user endpoint semantics
-  - same-user peer/nonce checks
-  - if a platform adapter cannot satisfy peer verification, nonce validation, and
-    cleanup guarantees, expose controllers as unavailable on that platform
-    rather than shipping a partial stub
+  - atomic metadata publication and stale resource validation
+  - no socket listener yet
 - Primary files:
   - new `codex-rs/app-server-transport/src/transport/local_controller.rs`
   - `codex-rs/app-server-transport/src/transport/mod.rs`
 - Validation:
-  - tempdir metadata/socket tests
-  - nonce rejection tests
+  - tempdir metadata tests
   - stale/foreign resource cleanup tests
+  - tests proving cleanup never follows symlinks or deletes resources not owned
+    by the launch ID and nonce
 
-Commit 11: Start the endpoint from embedded TUI launches only.
+Commit 14: Add the Unix local-controller WebSocket transport, still disabled by
+default.
 
 - Scope:
-  - expose controller availability states
-  - embedded launches may publish endpoint metadata
-  - daemon-backed and explicit remote launches report unsupported
-  - `TuiUnavailable` remains terminal for the launch
+  - Unix-domain socket binding
+  - same-user peer/nonce checks
+  - HTTP Upgrade nonce validation
+  - keep the persistent daemon/control socket and standalone
+    `codex app-server --listen unix://...` behavior unchanged
 - Primary files:
-  - `codex-rs/tui/src/lib.rs`
-  - `codex-rs/app-server-client/src/lib.rs`, if startup args need a typed hook
+  - new `codex-rs/app-server-transport/src/transport/local_controller.rs`
+  - `codex-rs/app-server-transport/src/transport/mod.rs`
 - Validation:
-  - app-server/TUI startup tests
-  - TUI snapshot tests only if user-visible text changes
+  - socket binding tests
+  - same-user peer credential tests and credential-missing rejection tests
+  - nonce rejection tests
+  - standalone app-server listener regression for `--listen unix://...`
 
-### 7. TUI reclaim and reflection
+Commit 15: Add Windows `codex-uds` support or explicit unavailable fallback.
 
-Commit 12: Add a TUI command classifier and reclaim hook.
+- Scope:
+  - Windows `codex-uds` adapter with equivalent same-user endpoint semantics, or
+    an explicit unavailable state when the platform adapter cannot satisfy peer
+    verification, nonce validation, and cleanup guarantees
+  - no partial security stub that accepts controller connections without those
+    guarantees
+- Validation:
+  - Windows adapter tests where the platform endpoint is supported
+  - unsupported-platform fallback tests where peer verification is unavailable
+
+### 7. TUI reclaim, reflection, and endpoint publication
+
+Commit 16: Add a TUI command classifier and reclaim hook.
 
 - Scope:
   - classify every TUI-originated command that can reach the coordinator as
@@ -249,7 +330,7 @@ Commit 12: Add a TUI command classifier and reclaim hook.
   - reclaim tests for submit/resume/cancel/interrupt, approvals, user-input
     replies, mutating slash commands, and display-only actions
 
-Commit 13: Ensure controller-originated work is reflected through the canonical
+Commit 17: Ensure controller-originated work is reflected through the canonical
 TUI event stream only.
 
 - Scope:
@@ -259,17 +340,43 @@ TUI event stream only.
     prompt state
   - keep reflection/recovery rules in reducer or focused helper modules rather
     than growing `app.rs`
+  - ownership, provenance, and controller-status metadata must remain out of
+    model-visible history unless a later implementation explicitly introduces a
+    bounded `core/context` fragment implementing `ContextualUserFragment`
 - Primary files:
   - `codex-rs/app-server-client/src/lib.rs`
   - new or existing focused TUI event/reducer modules
   - `codex-rs/tui/src/app.rs`, only for narrow integration wiring
 - Validation:
   - end-to-end controller turn reflected in TUI state
-  - gapped-stream recovery test where feasible
+  - deterministic reducer/recovery tests for gapped-stream resynchronization
+  - tests or code review evidence that ownership/provenance/status events do not
+    mutate model-visible history
+
+Commit 18: Start the endpoint from embedded TUI launches only, after admission,
+ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
+
+- Scope:
+  - expose controller availability states
+  - embedded launches may publish endpoint metadata
+  - daemon-backed and explicit remote launches report unsupported
+  - `TuiUnavailable` remains terminal for the launch
+- Primary files:
+  - `codex-rs/tui/src/lib.rs`
+  - `codex-rs/app-server-client/src/lib.rs`, if startup args need a typed hook
+- Validation:
+  - startup tests for `embedded-supported`, `daemon-unsupported`,
+    `remote-unsupported`, `policy-disabled`, `embedded-unavailable`, and
+    `launch-failed`
+  - acceptor-failure transition tests that revoke established controller
+    sessions and update the availability state
+  - standalone `codex app-server --listen unix://...` and daemon/control-socket
+    regression tests
+  - TUI snapshot tests only if user-visible text changes
 
 ### 8. Hardening and cleanup
 
-Commit 14: Add the full end-to-end scenario.
+Commit 19: Add the full end-to-end scenario.
 
 - Scenario:
   - launch embedded TUI runtime
@@ -283,7 +390,7 @@ Commit 14: Add the full end-to-end scenario.
   - `just test -p codex-app-server`
   - `just test -p codex-tui`
 
-Commit 15: Remove temporary compatibility shims and duplicated routing only
+Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.
 
 - Scope:
@@ -318,6 +425,19 @@ After code changes in `codex-rs`, run:
 ```text
 just fmt
 ```
+
+For each implementation slice, run the project test for every changed crate. For
+example:
+
+```text
+just test -p codex-app-server-protocol
+just test -p codex-app-server
+just test -p codex-app-server-transport
+just test -p codex-app-server-client
+just test -p codex-tui
+```
+
+Choose the subset that matches the files changed by the slice.
 
 For protocol commits:
 
