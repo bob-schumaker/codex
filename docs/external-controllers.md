@@ -251,6 +251,32 @@ External ingress is quota-limited per connection and uses reserved control capac
 - An end-to-end scenario launches the TUI, discovers the endpoint, approves a Codex Micro as the current input method, verifies normal app-server parity for the granted main thread, resolves an approval through the controller, sends thread-affecting TUI input that automatically reclaims control, and verifies TUI prompt ownership and final thread state.
 - Existing TUI startup and standalone `codex app-server` transport tests continue to pass.
 
+## Build and test validation
+
+Validation for the staged implementation was recorded on branch
+`cobblers/control-is-mine` through commit `a36bf85`
+(`refactor(app-server): centralize controller thread list filtering`). The
+recorded implementation goal cost was 7,828,188 tokens and 44,738 seconds
+(approximately 12h 25m 38s). This cost includes implementation, review,
+validation, and commit preparation across the staged slices; it is not limited
+to build/test subprocess runtime.
+
+The repository `docs/` tree is plain authored Markdown for this spec. No
+`docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
+no repository docs build target to run for this page.
+
+Final build and validation evidence:
+
+| Check | Result | Reported cost |
+| --- | --- | --- |
+| `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim` | Passed: 1 test run, 1 passed, 1093 skipped. This covers the local-controller socket parity path, including filtered main-thread `thread/list`, controller mutation, TUI reclaim, stale ownership, read-after-reclaim, reacquire, and final state. | Compile reported 28.92s; nextest reported 3.779s. |
+| `just test -p codex-app-server` | Passed: 1093/1093 tests passed, 1 skipped. Two unrelated tests were flaky and passed on retry: `login_account_chatgpt_redirects_to_hosted_success_page` and `plugin_list_honors_global_remote_catalog_cache_ttl`. | Compile reported 15.89s; nextest reported 111.479s. |
+| `just fmt` | Blocked before Rust formatting because `dotslash` was not installed: `[Errno 2] No such file or directory: 'dotslash'`. | Failed after the formatter wrapper reached the missing tool. |
+| `cargo fmt -p codex-app-server` | Passed as the scoped Rust formatting fallback for the changed crate. | Shell wall time was approximately 0.6s. |
+| `just fix -p codex-app-server` | Passed. It auto-fixed two unrelated lint sites; those hunks were reviewed and reverted so the cleanup commit remained scoped to controller routing. | Cargo reported 30.18s. |
+| `git diff --check` and `git diff --cached --check` | Passed. | Subsecond. |
+| `pre-commit run --all-files` | Could not run repository hooks because `.pre-commit-config.yaml` is absent. | Failed fast with `InvalidConfigError`. |
+
 ## Relevant implementation seams
 
 - `codex-rs/app-server/src/in_process.rs` — typed in-process client and runtime bootstrap.
