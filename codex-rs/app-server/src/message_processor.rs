@@ -1795,6 +1795,9 @@ fn controller_request_target(
             ClientRequest::ThreadItemsList { params, .. } => Ok(
                 ControllerRequestTarget::ExactThread(params.thread_id.clone()),
             ),
+            ClientRequest::ThreadSetName { params, .. } => Ok(
+                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+            ),
             ClientRequest::TurnStart { params, .. } => Ok(ControllerRequestTarget::ExactThread(
                 params.thread_id.clone(),
             )),

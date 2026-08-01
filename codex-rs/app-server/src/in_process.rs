@@ -52,6 +52,8 @@ use std::time::Duration;
 
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
+#[cfg(test)]
+use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::EmptyControllerEnrollmentSource;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
@@ -206,6 +208,12 @@ pub struct InProcessStartArgs {
     pub channel_capacity: usize,
     /// Optional embedded local-controller endpoint startup policy.
     pub local_controller_endpoint: InProcessLocalControllerEndpointConfig,
+    #[cfg(test)]
+    pub(crate) controller_enrollment_source:
+        Arc<dyn crate::controller_enrollment::ControllerEnrollmentSource>,
+    #[cfg(test)]
+    pub(crate) controller_credential_proof_factory:
+        Option<Arc<dyn Fn(ConnectionId) -> ControllerCredentialProof + Send + Sync>>,
 }
 
 /// Event emitted from the app-server to the in-process client.
@@ -552,10 +560,19 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
+<<<<<<< HEAD
     let auth_manager =
         AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
             .await
             .map_err(IoError::other)?;
+    #[cfg(test)]
+    let controller_enrollment_source = Arc::clone(&args.controller_enrollment_source);
+    #[cfg(not(test))]
+    let controller_enrollment_source: Arc<
+        dyn crate::controller_enrollment::ControllerEnrollmentSource,
+    > = Arc::new(EmptyControllerEnrollmentSource);
+    #[cfg(test)]
+    let controller_credential_proof_factory = args.controller_credential_proof_factory.clone();
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
     let (external_transport_event_tx, external_transport_event_rx) =
@@ -678,7 +695,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 code_mode_session_provider: None,
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
-                controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
+                controller_enrollment_source,
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
@@ -764,15 +781,24 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 {
                                     break;
                                 }
-                                connections.insert(
-                                    connection_id,
-                                    ConnectionState::new(
-                                        origin,
-                                        outbound_initialized,
-                                        outbound_experimental_api_enabled,
-                                        outbound_opted_out_notification_methods,
-                                    ),
+                                let connection_state = ConnectionState::new(
+                                    origin,
+                                    outbound_initialized,
+                                    outbound_experimental_api_enabled,
+                                    outbound_opted_out_notification_methods,
                                 );
+                                #[cfg(test)]
+                                if matches!(origin, ConnectionOrigin::ExternalController)
+                                    && let Some(proof_factory) =
+                                        controller_credential_proof_factory.as_ref()
+                                {
+                                    connection_state
+                                        .session
+                                        .bind_controller_credential_proof(
+                                            proof_factory(connection_id),
+                                        );
+                                }
+                                connections.insert(connection_id, connection_state);
                             }
                             TransportEvent::ConnectionClosed { connection_id } => {
                                 let Some(connection_state) = connections.remove(&connection_id) else {
@@ -1146,10 +1172,25 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controller_enrollment::ControllerEnrollmentRecord;
+    use crate::controller_enrollment::ControllerEnrollmentSource;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
+    use codex_app_server_protocol::ControllerAcquireControlResponse;
+    use codex_app_server_protocol::ControllerErrorCode;
+    use codex_app_server_protocol::ControllerErrorData;
+    use codex_app_server_protocol::ControllerParticipationStatus;
+    use codex_app_server_protocol::ControllerRequestParticipationParams;
+    use codex_app_server_protocol::ControllerRequestParticipationResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::JSONRPCError;
+    use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::ThreadListResponse;
+    use codex_app_server_protocol::ThreadReadParams;
+    use codex_app_server_protocol::ThreadReadResponse;
+    use codex_app_server_protocol::ThreadSetNameParams;
+    use codex_app_server_protocol::ThreadSetNameResponse;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_app_server_protocol::Turn;
@@ -1157,10 +1198,27 @@ mod tests {
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_protocol::ThreadId;
+    #[cfg(unix)]
+    use futures::SinkExt;
+    #[cfg(unix)]
+    use futures::StreamExt;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+    use std::sync::RwLock;
     use tempfile::TempDir;
+    #[cfg(unix)]
+    use tokio::net::UnixStream;
+    #[cfg(unix)]
+    use tokio_tungstenite::client_async;
+    #[cfg(unix)]
+    use tokio_tungstenite::tungstenite::Message;
+    #[cfg(unix)]
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    #[cfg(unix)]
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
 
     async fn build_test_config(codex_home: &Path) -> Config {
         match ConfigBuilder::default()
@@ -1230,11 +1288,206 @@ mod tests {
             },
             channel_capacity,
             local_controller_endpoint,
+            controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
+            controller_credential_proof_factory: None,
         }
     }
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    #[derive(Default)]
+    struct TestControllerEnrollmentSource {
+        records: RwLock<HashMap<String, ControllerEnrollmentRecord>>,
+    }
+
+    impl TestControllerEnrollmentSource {
+        fn insert(&self, record: ControllerEnrollmentRecord) {
+            self.records
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(record.subject_id.clone(), record);
+        }
+    }
+
+    impl ControllerEnrollmentSource for TestControllerEnrollmentSource {
+        fn enrollment_for(&self, subject_id: &str) -> Option<ControllerEnrollmentRecord> {
+            self.records
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(subject_id)
+                .cloned()
+        }
+    }
+
+    fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
+        ControllerCredentialProof {
+            subject_id: "controller-subject".to_string(),
+            credential_fingerprint: "credential-fingerprint".to_string(),
+            connection_id,
+        }
+    }
+
+    fn controller_record(main_thread_id: ThreadId) -> ControllerEnrollmentRecord {
+        ControllerEnrollmentRecord {
+            subject_id: "controller-subject".to_string(),
+            credential_fingerprint: "credential-fingerprint".to_string(),
+            main_thread_id,
+            authorization_epoch: 7,
+            revocation_epoch: 6,
+            expires_at: std::time::Instant::now() + Duration::from_secs(60),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn connect_local_controller_websocket(
+        metadata: &LocalControllerEndpointMetadata,
+    ) -> tokio_tungstenite::WebSocketStream<UnixStream> {
+        let socket_path = metadata
+            .endpoint_uri
+            .strip_prefix("unix://")
+            .expect("local-controller endpoint should use unix URI");
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .expect("local-controller socket should accept connections");
+        let mut request = "ws://codex-local-controller/"
+            .into_client_request()
+            .expect("websocket request should build");
+        request.headers_mut().insert(
+            LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER,
+            HeaderValue::from_str(metadata.launch_nonce.as_str())
+                .expect("launch nonce should be a valid header"),
+        );
+        client_async(request, stream)
+            .await
+            .expect("local-controller websocket should upgrade")
+            .0
+    }
+
+    #[cfg(unix)]
+    async fn send_websocket_request<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        request_id: i64,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        write_websocket_message(
+            websocket,
+            JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(request_id),
+                method: method.to_string(),
+                params,
+                trace: None,
+            }),
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    async fn send_websocket_typed_request<S, P>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        request_id: i64,
+        method: &str,
+        params: &P,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        P: serde::Serialize,
+    {
+        send_websocket_request(
+            websocket,
+            request_id,
+            method,
+            Some(serde_json::to_value(params).expect("params should serialize")),
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    async fn read_websocket_response<S, T>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        expected_id: i64,
+    ) -> T
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        T: serde::de::DeserializeOwned,
+    {
+        loop {
+            match read_websocket_message(websocket).await {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(expected_id) =>
+                {
+                    return serde_json::from_value(response.result)
+                        .expect("response should match expected type");
+                }
+                JSONRPCMessage::Notification(_) => continue,
+                message => panic!("unexpected websocket response message: {message:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn read_websocket_error<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        expected_id: i64,
+    ) -> JSONRPCError
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            match read_websocket_message(websocket).await {
+                JSONRPCMessage::Error(error) if error.id == RequestId::Integer(expected_id) => {
+                    return error;
+                }
+                JSONRPCMessage::Notification(_) => continue,
+                message => panic!("unexpected websocket error message: {message:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn read_websocket_message<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+    ) -> JSONRPCMessage
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let frame = websocket
+                .next()
+                .await
+                .expect("frame should be available")
+                .expect("frame should decode");
+            match frame {
+                Message::Text(text) => {
+                    return serde_json::from_str::<JSONRPCMessage>(&text)
+                        .expect("text frame should be valid JSON-RPC");
+                }
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                    continue;
+                }
+                Message::Close(_) => panic!("unexpected close frame"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn write_websocket_message<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        message: JSONRPCMessage,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        websocket
+            .send(Message::Text(
+                serde_json::to_string(&message)
+                    .expect("message should serialize")
+                    .into(),
+            ))
+            .await
+            .expect("message should send");
     }
 
     fn block_local_controller_endpoint_dir(codex_home: &Path) {
@@ -1373,6 +1626,221 @@ mod tests {
             !err.to_string().is_empty(),
             "startup error should explain endpoint setup failure"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_uses_main_thread_interface_and_tui_reclaim() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+        let mut args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        args.controller_enrollment_source = enrollment_source.clone();
+        args.controller_credential_proof_factory = Some(Arc::new(controller_proof));
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(10_001),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+        let main_thread_id =
+            ThreadId::from_string(&started.thread.id).expect("thread id should parse");
+        enrollment_source.insert(controller_record(main_thread_id));
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_001,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let initialize_response: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_001).await;
+        assert!(initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        let participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_002).await;
+        assert_eq!(
+            participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let session = participation.session.expect("approved session");
+        assert_eq!(session.main_thread_id, started.thread.id);
+        assert!(session.active_lease.is_some());
+        assert!(session.effective_capabilities.read_main_thread);
+        assert!(session.effective_capabilities.mutate_main_thread);
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_003,
+            "thread/list",
+            &serde_json::json!({ "limit": 100 }),
+        )
+        .await;
+        let listed: ThreadListResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_003).await;
+        assert_eq!(
+            listed
+                .data
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>(),
+            vec![started.thread.id.clone()]
+        );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_004,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "controller-owned".to_string(),
+            },
+        )
+        .await;
+        let _: ThreadSetNameResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_004).await;
+
+        let _: ThreadSetNameResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadSetName {
+                    request_id: RequestId::Integer(10_002),
+                    params: ThreadSetNameParams {
+                        thread_id: started.thread.id.clone(),
+                        name: "tui-reclaimed".to_string(),
+                    },
+                })
+                .await
+                .expect("TUI thread/name/set transport should work")
+                .expect("TUI thread/name/set should succeed"),
+        )
+        .expect("thread/name/set response should parse");
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_005,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "stale-controller".to_string(),
+            },
+        )
+        .await;
+        let stale_error = read_websocket_error(&mut websocket, /*expected_id*/ 20_005).await;
+        let stale_error_data: ControllerErrorData = serde_json::from_value(
+            stale_error
+                .error
+                .data
+                .expect("stale ownership error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(stale_error_data.code, ControllerErrorCode::StaleOwnership);
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_006,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let read_after_reclaim: ThreadReadResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_006).await;
+        assert_eq!(
+            read_after_reclaim.thread.name,
+            Some("tui-reclaimed".to_string())
+        );
+
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_007,
+            "controller/acquireControl",
+            None,
+        )
+        .await;
+        let reacquired: ControllerAcquireControlResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_007).await;
+        assert!(reacquired.session.active_lease.is_some());
+        assert!(reacquired.session.effective_capabilities.mutate_main_thread);
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_008,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "controller-reacquired".to_string(),
+            },
+        )
+        .await;
+        let _: ThreadSetNameResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_008).await;
+
+        let final_read: ThreadReadResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadRead {
+                    request_id: RequestId::Integer(10_003),
+                    params: ThreadReadParams {
+                        thread_id: started.thread.id,
+                        include_turns: false,
+                    },
+                })
+                .await
+                .expect("TUI thread/read transport should work")
+                .expect("TUI thread/read should succeed"),
+        )
+        .expect("thread/read response should parse");
+        assert_eq!(
+            final_read.thread.name,
+            Some("controller-reacquired".to_string())
+        );
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
     }
 
     #[tokio::test(start_paused = true)]
