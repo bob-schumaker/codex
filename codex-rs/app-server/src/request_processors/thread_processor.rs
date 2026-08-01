@@ -33,6 +33,11 @@ struct ThreadListFilters {
     relation_filter: Option<StoreThreadRelationFilter>,
 }
 
+pub(crate) enum ThreadListScope {
+    All,
+    SingleThread(String),
+}
+
 fn collect_resume_override_mismatches(
     request: &ThreadResumeParams,
     config_snapshot: &ThreadConfigSnapshot,
@@ -776,8 +781,9 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_list(
         &self,
         params: ThreadListParams,
+        scope: ThreadListScope,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_list_response_inner(params)
+        self.thread_list_response_inner(params, scope)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2052,7 +2058,22 @@ impl ThreadRequestProcessor {
     async fn thread_list_response_inner(
         &self,
         params: ThreadListParams,
+        scope: ThreadListScope,
     ) -> Result<ThreadListResponse, JSONRPCErrorError> {
+        if let ThreadListScope::SingleThread(thread_id) = scope {
+            let response = self
+                .thread_read_response_inner(ThreadReadParams {
+                    thread_id,
+                    include_turns: false,
+                })
+                .await?;
+            return Ok(ThreadListResponse {
+                data: vec![response.thread],
+                next_cursor: None,
+                backwards_cursor: None,
+            });
+        }
+
         let ThreadListParams {
             cursor,
             limit,

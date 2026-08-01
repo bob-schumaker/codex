@@ -35,7 +35,6 @@ use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
-use crate::request_processors::ControllerNormalAuthorization;
 use crate::request_processors::ControllerRequestProcessor;
 use crate::request_processors::ControllerRequestTarget;
 use crate::request_processors::EnvironmentRequestProcessor;
@@ -50,6 +49,7 @@ use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
+use crate::request_processors::ThreadListScope;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
@@ -77,8 +77,6 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ThreadListResponse;
-use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_chatgpt::workspace_settings;
@@ -1413,14 +1411,14 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadList { params, .. } => {
-                if let Some(authorization) = controller_authorization
+                let scope = controller_authorization
                     .as_ref()
                     .filter(|authorization| authorization.filter_collection_to_main_thread)
-                {
-                    self.controller_thread_list(authorization).await
-                } else {
-                    self.thread_processor.thread_list(params).await
-                }
+                    .map(|authorization| {
+                        ThreadListScope::SingleThread(authorization.main_thread_id.clone())
+                    })
+                    .unwrap_or(ThreadListScope::All);
+                self.thread_processor.thread_list(params, scope).await
             }
             ClientRequest::ThreadSearch { params, .. } => {
                 self.thread_processor.thread_search(params).await
@@ -1738,32 +1736,6 @@ impl MessageProcessor {
             }
         }
         Ok(())
-    }
-
-    async fn controller_thread_list(
-        &self,
-        authorization: &ControllerNormalAuthorization,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let response = self
-            .thread_processor
-            .thread_read(ThreadReadParams {
-                thread_id: authorization.main_thread_id.clone(),
-                include_turns: false,
-            })
-            .await?;
-        let Some(ClientResponsePayload::ThreadRead(response)) = response else {
-            return Err(controller_not_allowed(
-                "external controller thread/list could not read the authorized main thread",
-            ));
-        };
-        Ok(Some(
-            ThreadListResponse {
-                data: vec![response.thread],
-                next_cursor: None,
-                backwards_cursor: None,
-            }
-            .into(),
-        ))
     }
 }
 
