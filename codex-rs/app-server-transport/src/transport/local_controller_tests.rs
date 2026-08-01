@@ -141,6 +141,41 @@ async fn cleanup_guard_preserves_replaced_foreign_metadata() {
 }
 
 #[cfg(unix)]
+#[test]
+fn endpoint_support_reports_available_when_peer_credentials_are_supported() {
+    assert_eq!(
+        local_controller_endpoint_support(),
+        LocalControllerEndpointSupport::Available
+    );
+}
+
+#[cfg(not(unix))]
+#[test]
+fn endpoint_support_reports_unavailable_without_peer_credentials() {
+    assert_eq!(
+        local_controller_endpoint_support(),
+        LocalControllerEndpointSupport::Unavailable {
+            reason: LocalControllerUnavailableReason::PeerCredentialsUnavailable,
+        }
+    );
+}
+
+#[test]
+fn endpoint_unavailable_fallback_is_terminal_before_binding() {
+    let err =
+        ensure_local_controller_endpoint_available(LocalControllerEndpointSupport::Unavailable {
+            reason: LocalControllerUnavailableReason::PeerCredentialsUnavailable,
+        })
+        .expect_err("unavailable platform should reject");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(
+        err.to_string(),
+        "local-controller endpoint is unavailable because peer credential verification is unsupported on this platform"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn local_controller_acceptor_publishes_metadata_and_forwards_websocket_messages_with_nonce() {
     use std::os::unix::fs::PermissionsExt;

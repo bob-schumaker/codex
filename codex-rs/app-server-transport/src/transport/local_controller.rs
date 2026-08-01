@@ -38,12 +38,38 @@ const LOCAL_CONTROLLER_METADATA_SUFFIX: &str = ".json";
 const LOCAL_CONTROLLER_SOCKET_PREFIX: &str = "codex-";
 const LOCAL_CONTROLLER_SOCKET_SUFFIX: &str = ".sock";
 const LOCAL_CONTROLLER_METADATA_MODE: u32 = 0o600;
+#[cfg(unix)]
 const LOCAL_CONTROLLER_SOCKET_MODE: u32 = 0o600;
 const LOCAL_CONTROLLER_ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 pub const LOCAL_CONTROLLER_METADATA_VERSION: u32 = 1;
 pub const LOCAL_CONTROLLER_PROTOCOL_VERSION: u32 = 1;
 pub const LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER: &str = "X-Codex-Launch-Nonce";
+
+/// Whether the current platform can expose a secure local-controller endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalControllerEndpointSupport {
+    Available,
+    Unavailable {
+        reason: LocalControllerUnavailableReason,
+    },
+}
+
+/// Why a local-controller endpoint cannot be exposed on this platform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalControllerUnavailableReason {
+    PeerCredentialsUnavailable,
+}
+
+impl LocalControllerUnavailableReason {
+    fn message(self) -> &'static str {
+        match self {
+            Self::PeerCredentialsUnavailable => {
+                "local-controller endpoint is unavailable because peer credential verification is unsupported on this platform"
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalControllerEndpointPaths {
@@ -180,18 +206,23 @@ pub fn local_controller_endpoint_paths(
     })
 }
 
+pub fn local_controller_endpoint_support() -> LocalControllerEndpointSupport {
+    if cfg!(unix) {
+        LocalControllerEndpointSupport::Available
+    } else {
+        LocalControllerEndpointSupport::Unavailable {
+            reason: LocalControllerUnavailableReason::PeerCredentialsUnavailable,
+        }
+    }
+}
+
 pub async fn start_local_controller_acceptor(
     codex_home: &Path,
     main_thread_id: Option<String>,
     transport_event_tx: mpsc::Sender<TransportEvent>,
     shutdown_token: CancellationToken,
 ) -> io::Result<LocalControllerEndpointHandle> {
-    if !cfg!(unix) {
-        return Err(io::Error::new(
-            ErrorKind::Unsupported,
-            "local-controller endpoint is unavailable on this platform",
-        ));
-    }
+    ensure_local_controller_endpoint_available(local_controller_endpoint_support())?;
 
     let metadata = LocalControllerEndpointMetadata::new(codex_home, main_thread_id)?;
     let paths = local_controller_endpoint_paths(codex_home, &metadata.launch_id)?;
@@ -231,6 +262,21 @@ pub async fn start_local_controller_acceptor(
         shutdown_token: endpoint_shutdown_token,
         accept_handle: Some(accept_handle),
     })
+}
+
+fn ensure_local_controller_endpoint_available(
+    support: LocalControllerEndpointSupport,
+) -> io::Result<()> {
+    match support {
+        LocalControllerEndpointSupport::Available => Ok(()),
+        LocalControllerEndpointSupport::Unavailable { reason } => {
+            Err(local_controller_unavailable_error(reason))
+        }
+    }
+}
+
+fn local_controller_unavailable_error(reason: LocalControllerUnavailableReason) -> io::Error {
+    io::Error::new(ErrorKind::Unsupported, reason.message())
 }
 
 pub async fn publish_local_controller_metadata(
