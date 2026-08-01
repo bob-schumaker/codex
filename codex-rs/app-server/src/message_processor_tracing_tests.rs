@@ -3,6 +3,9 @@ use super::MessageProcessor;
 use super::MessageProcessorArgs;
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
+use crate::controller_enrollment::ControllerCredentialProof;
+use crate::controller_enrollment::ControllerEnrollmentRecord;
+use crate::controller_enrollment::ControllerEnrollmentSource;
 use crate::controller_enrollment::EmptyControllerEnrollmentSource;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -14,9 +17,15 @@ use app_test_support::write_mock_responses_config_toml;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ControllerAcquireControlResponse;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
+use codex_app_server_protocol::ControllerParticipationStatus;
+use codex_app_server_protocol::ControllerReleaseControlResponse;
+use codex_app_server_protocol::ControllerRequestParticipationParams;
+use codex_app_server_protocol::ControllerRequestParticipationResponse;
 use codex_app_server_protocol::ControllerRetryDisposition;
+use codex_app_server_protocol::ControllerSignOffResponse;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
@@ -36,6 +45,7 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use opentelemetry::global;
@@ -50,16 +60,21 @@ use opentelemetry_sdk::trace::SpanData;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tracing_subscriber::layer::SubscriberExt;
 use wiremock::MockServer;
 
 const TEST_CONNECTION_ID: ConnectionId = ConnectionId(7);
+const EXTERNAL_CONNECTION_ID: ConnectionId = ConnectionId(8);
+const SECOND_EXTERNAL_CONNECTION_ID: ConnectionId = ConnectionId(9);
 
 struct TestTracing {
     exporter: InMemorySpanExporter,
@@ -111,6 +126,37 @@ fn request_from_client_request(request: ClientRequest) -> JSONRPCRequest {
         .expect("client request should convert to JSON-RPC")
 }
 
+fn integer_request_id(request: &ClientRequest) -> i64 {
+    match request.id() {
+        RequestId::Integer(request_id) => *request_id,
+        request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
+    }
+}
+
+#[derive(Default)]
+struct TestControllerEnrollmentSource {
+    records: StdMutex<HashMap<String, ControllerEnrollmentRecord>>,
+}
+
+impl TestControllerEnrollmentSource {
+    fn insert(&self, record: ControllerEnrollmentRecord) {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(record.subject_id.clone(), record);
+    }
+}
+
+impl ControllerEnrollmentSource for TestControllerEnrollmentSource {
+    fn enrollment_for(&self, subject_id: &str) -> Option<ControllerEnrollmentRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(subject_id)
+            .cloned()
+    }
+}
+
 struct TracingHarness {
     _server: MockServer,
     _codex_home: TempDir,
@@ -122,10 +168,17 @@ struct TracingHarness {
 
 impl TracingHarness {
     async fn new() -> Result<Self> {
+        Self::new_with_controller_enrollment_source(Arc::new(EmptyControllerEnrollmentSource)).await
+    }
+
+    async fn new_with_controller_enrollment_source(
+        controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
+    ) -> Result<Self> {
         let server = create_mock_responses_server_repeating_assistant("Done").await;
         let codex_home = TempDir::new()?;
         let config = Arc::new(build_test_config(codex_home.path(), &server.uri()).await?);
-        let (processor, outgoing_rx) = build_test_processor(config).await;
+        let (processor, outgoing_rx) =
+            build_test_processor(config, controller_enrollment_source).await;
         let tracing = init_test_tracing();
         tracing.exporter.reset();
         tracing::callsite::rebuild_interest_cache();
@@ -207,6 +260,51 @@ impl TracingHarness {
         read_response(&mut self.outgoing_rx, request_id).await
     }
 
+    async fn request_for_connection<T>(
+        &mut self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        session: Arc<ConnectionSessionState>,
+        request: ClientRequest,
+    ) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let request_id = integer_request_id(&request);
+        let request = request_from_client_request(request);
+        self.processor
+            .process_request(
+                connection_id,
+                connection_origin,
+                request,
+                &AppServerTransport::Stdio,
+                session,
+            )
+            .await;
+        read_response_for_connection(&mut self.outgoing_rx, connection_id, request_id).await
+    }
+
+    async fn request_error_for_connection(
+        &mut self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        session: Arc<ConnectionSessionState>,
+        request: ClientRequest,
+    ) -> JSONRPCError {
+        let request_id = integer_request_id(&request);
+        let request = request_from_client_request(request);
+        self.processor
+            .process_request(
+                connection_id,
+                connection_origin,
+                request,
+                &AppServerTransport::Stdio,
+                session,
+            )
+            .await;
+        read_error_for_connection(&mut self.outgoing_rx, connection_id, request_id).await
+    }
+
     async fn raw_request_error_with_origin(
         &mut self,
         request: JSONRPCRequest,
@@ -269,6 +367,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 
 async fn build_test_processor(
     config: Arc<Config>,
+    controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
 ) -> (
     Arc<MessageProcessor>,
     mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
@@ -310,7 +409,7 @@ async fn build_test_processor(
         code_mode_session_provider: None,
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
-        controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
+        controller_enrollment_source,
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
     }));
     (processor, outgoing_rx)
@@ -472,6 +571,14 @@ async fn read_response<T: serde::de::DeserializeOwned>(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> T {
+    read_response_for_connection(outgoing_rx, TEST_CONNECTION_ID, request_id).await
+}
+
+async fn read_response_for_connection<T: serde::de::DeserializeOwned>(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+    request_id: i64,
+) -> T {
     loop {
         let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
             .await
@@ -485,7 +592,7 @@ async fn read_response<T: serde::de::DeserializeOwned>(
         else {
             continue;
         };
-        if connection_id != TEST_CONNECTION_ID {
+        if connection_id != expected_connection_id {
             continue;
         }
         let crate::outgoing_message::OutgoingMessage::Response(response) = message else {
@@ -505,6 +612,14 @@ async fn read_error(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> JSONRPCError {
+    read_error_for_connection(outgoing_rx, TEST_CONNECTION_ID, request_id).await
+}
+
+async fn read_error_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+    request_id: i64,
+) -> JSONRPCError {
     loop {
         let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
             .await
@@ -518,7 +633,7 @@ async fn read_error(
         else {
             continue;
         };
-        if connection_id != TEST_CONNECTION_ID {
+        if connection_id != expected_connection_id {
             continue;
         }
         let crate::outgoing_message::OutgoingMessage::Error(error) = message else {
@@ -620,6 +735,62 @@ where
     spans.into_iter().skip(baseline_len).collect()
 }
 
+fn controller_initialize_request(request_id: i64) -> ClientRequest {
+    ClientRequest::Initialize {
+        request_id: RequestId::Integer(request_id),
+        params: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-waveshare".to_string(),
+                title: Some("Codex Waveshare".to_string()),
+                version: "0.1.0".to_string(),
+            },
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        },
+    }
+}
+
+fn controller_participation_request(request_id: i64) -> ClientRequest {
+    ClientRequest::ControllerRequestParticipation {
+        request_id: RequestId::Integer(request_id),
+        params: ControllerRequestParticipationParams {
+            controller_name: "codex-waveshare".to_string(),
+            description: "external input device".to_string(),
+        },
+    }
+}
+
+fn controller_no_params_request(request_id: i64, method: &str) -> ClientRequest {
+    ClientRequest::try_from(JSONRPCRequest {
+        id: RequestId::Integer(request_id),
+        method: method.to_string(),
+        params: None,
+        trace: None,
+    })
+    .expect("controller request should parse")
+}
+
+fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
+    ControllerCredentialProof {
+        subject_id: "controller-subject".to_string(),
+        credential_fingerprint: "credential-fingerprint".to_string(),
+        connection_id,
+    }
+}
+
+fn controller_record(main_thread_id: ThreadId) -> ControllerEnrollmentRecord {
+    ControllerEnrollmentRecord {
+        subject_id: "controller-subject".to_string(),
+        credential_fingerprint: "credential-fingerprint".to_string(),
+        main_thread_id,
+        authorization_epoch: 7,
+        revocation_epoch: 6,
+        expires_at: std::time::Instant::now() + Duration::from_secs(60),
+    }
+}
+
 #[test]
 #[serial(app_server_tracing)]
 fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<()> {
@@ -645,7 +816,7 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
             );
             assert_eq!(
                 error.error.message,
-                "external controller connections are not enabled yet"
+                "external controller normal interface is not enabled yet"
             );
             let data: ControllerErrorData = serde_json::from_value(
                 error
@@ -655,6 +826,200 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
             )?;
             assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
             assert_eq!(data.retry, ControllerRetryDisposition::DoNotRetry);
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_control_plane_round_trips_after_enrollment",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let unavailable = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_002),
+                )
+                .await;
+            let unavailable_data: ControllerErrorData =
+                serde_json::from_value(unavailable.error.data.expect("typed controller error"))?;
+            assert_eq!(
+                unavailable_data.code,
+                ControllerErrorCode::MainThreadUnavailable
+            );
+            assert_eq!(
+                unavailable_data.retry,
+                ControllerRetryDisposition::SameConnection
+            );
+
+            let started = harness
+                .start_thread(/*request_id*/ 40_003, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_004),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            let approved_session = participation.session.expect("approved session");
+            assert_eq!(approved_session.main_thread_id, started.thread.id);
+            assert!(approved_session.active_lease.is_some());
+
+            let released: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_005,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            assert_eq!(released.session.active_lease, None);
+            assert!(released.session.effective_capabilities.read_main_thread);
+            assert!(!released.session.effective_capabilities.mutate_main_thread);
+
+            let reacquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_006,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(reacquired.session.active_lease.is_some());
+            assert!(reacquired.session.effective_capabilities.mutate_main_thread);
+
+            let second_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    SECOND_EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&second_session),
+                    controller_initialize_request(/*request_id*/ 40_007),
+                )
+                .await;
+            second_session
+                .bind_controller_credential_proof(controller_proof(SECOND_EXTERNAL_CONNECTION_ID));
+            let second_participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    SECOND_EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&second_session),
+                    controller_participation_request(/*request_id*/ 40_008),
+                )
+                .await;
+            assert_eq!(
+                second_participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert_eq!(
+                second_participation
+                    .session
+                    .expect("second approved session")
+                    .active_lease,
+                None
+            );
+
+            let _: ControllerSignOffResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(/*request_id*/ 40_009, "controller/signOff"),
+                )
+                .await;
+            let after_signoff = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_010,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            let after_signoff_data: ControllerErrorData =
+                serde_json::from_value(after_signoff.error.data.expect("typed controller error"))?;
+            assert_eq!(
+                after_signoff_data.code,
+                ControllerErrorCode::ParticipationRequired
+            );
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_participation_rejects_unproven_display_claims() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_participation_rejects_unproven_display_claims",
+        async {
+            let mut harness = TracingHarness::new().await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 41_001),
+                )
+                .await;
+            let started = harness
+                .start_thread(/*request_id*/ 41_002, /*trace*/ None)
+                .await;
+            let rejected: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    external_session,
+                    controller_participation_request(/*request_id*/ 41_003),
+                )
+                .await;
+
+            assert_eq!(rejected.status, ControllerParticipationStatus::Rejected);
+            assert_eq!(rejected.session, None);
+            let denial = rejected.denial.expect("rejection should include denial");
+            assert_eq!(denial.data.code, ControllerErrorCode::EnrollmentDenied);
+            assert_eq!(denial.data.main_thread_id, Some(started.thread.id));
             harness.shutdown().await;
             Ok(())
         },
