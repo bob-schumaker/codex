@@ -1158,6 +1158,7 @@ mod tests {
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
     use pretty_assertions::assert_eq;
+    use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -1182,11 +1183,29 @@ mod tests {
         channel_capacity: usize,
     ) -> InProcessClientHandle {
         let codex_home = TempDir::new().expect("temp dir");
-        let config = Arc::new(build_test_config(codex_home.path()).await);
+        let args = build_test_start_args(
+            codex_home.path(),
+            session_source,
+            channel_capacity,
+            InProcessLocalControllerEndpointConfig::Disabled,
+        )
+        .await;
+        let mut client = start(args).await.expect("in-process runtime should start");
+        client._test_codex_home = Some(codex_home);
+        client
+    }
+
+    async fn build_test_start_args(
+        codex_home: &Path,
+        session_source: SessionSource,
+        channel_capacity: usize,
+        local_controller_endpoint: InProcessLocalControllerEndpointConfig,
+    ) -> InProcessStartArgs {
+        let config = Arc::new(build_test_config(codex_home).await);
         let state_db = codex_rollout::state_db::try_init(config.as_ref())
             .await
             .expect("state db should initialize for in-process test");
-        let args = InProcessStartArgs {
+        InProcessStartArgs {
             arg0_paths: Arg0DispatchPaths::default(),
             config,
             cli_overrides: Vec::new(),
@@ -1210,15 +1229,17 @@ mod tests {
                 capabilities: None,
             },
             channel_capacity,
-            local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
-        };
-        let mut client = start(args).await.expect("in-process runtime should start");
-        client._test_codex_home = Some(codex_home);
-        client
+            local_controller_endpoint,
+        }
     }
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    fn block_local_controller_endpoint_dir(codex_home: &Path) {
+        fs::write(codex_home.join("local-controllers"), b"not a directory")
+            .expect("local-controller directory blocker should be created");
     }
 
     #[tokio::test]
@@ -1295,6 +1316,63 @@ mod tests {
             .shutdown()
             .await
             .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn best_effort_local_controller_endpoint_failure_allows_startup() {
+        let codex_home = TempDir::new().expect("temp dir");
+        block_local_controller_endpoint_dir(codex_home.path());
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::BestEffort {
+                main_thread_id: None,
+            },
+        )
+        .await;
+
+        let mut client = start(args)
+            .await
+            .expect("best-effort startup should continue");
+        client._test_codex_home = Some(codex_home);
+
+        assert!(matches!(
+            client.local_controller_endpoint_status(),
+            InProcessLocalControllerEndpointStatus::Unavailable { reason } if !reason.is_empty()
+        ));
+        assert_eq!(client.local_controller_endpoint(), None);
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn enabled_local_controller_endpoint_failure_fails_startup() {
+        let codex_home = TempDir::new().expect("temp dir");
+        block_local_controller_endpoint_dir(codex_home.path());
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+
+        let err = match start(args).await {
+            Ok(client) => {
+                let _ = client.shutdown().await;
+                panic!("enabled local-controller endpoint failure should fail startup");
+            }
+            Err(err) => err,
+        };
+        assert!(
+            !err.to_string().is_empty(),
+            "startup error should explain endpoint setup failure"
+        );
     }
 
     #[tokio::test(start_paused = true)]
