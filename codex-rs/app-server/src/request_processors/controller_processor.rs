@@ -39,6 +39,7 @@ use crate::controller_session::ControllerSessionError;
 use crate::controller_session::InteractiveOwner;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::outgoing_message::ServerRequestRecipients;
 use crate::transport::ConnectionId;
 use crate::transport::ConnectionOrigin;
 
@@ -63,6 +64,12 @@ struct ControllerProcessorState {
 struct PromptRebind {
     thread_id: ThreadId,
     connection_id: ConnectionId,
+    delivery: PromptRebindDelivery,
+}
+
+enum PromptRebindDelivery {
+    Normal,
+    ExternalController,
 }
 
 pub(crate) enum ControllerRequestTarget {
@@ -261,6 +268,42 @@ impl ControllerRequestProcessor {
         result
     }
 
+    pub(crate) fn prompt_request_recipients(
+        &self,
+        thread_id: ThreadId,
+        subscribed_connection_ids: Vec<ConnectionId>,
+    ) -> ServerRequestRecipients {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_ref() else {
+            return ServerRequestRecipients::normal(subscribed_connection_ids);
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return ServerRequestRecipients::normal(Vec::new());
+        };
+        if main_thread_id != thread_id {
+            return ServerRequestRecipients::normal(subscribed_connection_ids);
+        }
+
+        match coordinator.interactive_owner() {
+            InteractiveOwner::ControllerOwned { connection_id, .. } => {
+                ServerRequestRecipients::external_controller(*connection_id)
+            }
+            InteractiveOwner::TuiOwned { .. } => {
+                if let Some(tui_connection_id) = state.tui_connection_id {
+                    ServerRequestRecipients::normal(vec![tui_connection_id])
+                } else {
+                    ServerRequestRecipients::normal(subscribed_connection_ids)
+                }
+            }
+            InteractiveOwner::TransferPending { .. }
+            | InteractiveOwner::TuiUnavailable { .. }
+            | InteractiveOwner::Closed => ServerRequestRecipients::normal(Vec::new()),
+        }
+    }
+
     pub(crate) async fn reclaim_for_primary_thread_input(
         &self,
         thread_id: &str,
@@ -434,11 +477,24 @@ impl ControllerRequestProcessor {
         if let Some(PromptRebind {
             thread_id,
             connection_id,
+            delivery,
         }) = rebind
         {
-            self.outgoing
-                .rebind_requests_for_thread_to_connection(thread_id, connection_id)
-                .await;
+            match delivery {
+                PromptRebindDelivery::Normal => {
+                    self.outgoing
+                        .rebind_requests_for_thread_to_connection(thread_id, connection_id)
+                        .await;
+                }
+                PromptRebindDelivery::ExternalController => {
+                    self.outgoing
+                        .rebind_requests_for_thread_to_external_controller_connection(
+                            thread_id,
+                            connection_id,
+                        )
+                        .await;
+                }
+            }
         }
     }
 }
@@ -454,7 +510,13 @@ fn prompt_rebind_after_transition(
     }
 
     let connection_id = match owner_after {
-        InteractiveOwner::ControllerOwned { connection_id, .. } => *connection_id,
+        InteractiveOwner::ControllerOwned { connection_id, .. } => {
+            return Some(PromptRebind {
+                thread_id,
+                connection_id: *connection_id,
+                delivery: PromptRebindDelivery::ExternalController,
+            });
+        }
         InteractiveOwner::TuiOwned { .. } => tui_connection_id?,
         InteractiveOwner::TransferPending { .. }
         | InteractiveOwner::TuiUnavailable { .. }
@@ -463,6 +525,7 @@ fn prompt_rebind_after_transition(
     Some(PromptRebind {
         thread_id,
         connection_id,
+        delivery: PromptRebindDelivery::Normal,
     })
 }
 

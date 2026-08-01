@@ -273,6 +273,7 @@ pub(super) async fn ensure_listener_task_running(
         thread_watch_manager,
         thread_list_state_permit,
         fallback_model_provider,
+        controller_processor,
         codex_home,
         ..
     } = listener_task_context;
@@ -329,11 +330,17 @@ pub(super) async fn ensure_listener_task_running(
                     let subscribed_connection_ids = thread_state_manager
                         .subscribed_connection_ids(conversation_id)
                         .await;
-                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
-                        outgoing_for_task.clone(),
-                        subscribed_connection_ids,
+                    let request_recipients = controller_processor.prompt_request_recipients(
                         conversation_id,
+                        subscribed_connection_ids.clone(),
                     );
+                    let thread_outgoing =
+                        ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                            outgoing_for_task.clone(),
+                            request_recipients,
+                            subscribed_connection_ids,
+                            conversation_id,
+                        );
 
                     apply_bespoke_event_handling(
                         event.clone(),

@@ -104,7 +104,7 @@ pub(crate) enum OutgoingEnvelope {
 pub(crate) struct OutgoingMessageSender {
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
-    request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
+    request_id_to_callback: Arc<Mutex<HashMap<RequestId, PendingCallbackEntry>>>,
     /// Incoming requests that are still waiting on a final response or error.
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
@@ -115,16 +115,24 @@ pub(crate) struct OutgoingMessageSender {
 #[derive(Clone)]
 pub(crate) struct ThreadScopedOutgoingMessageSender {
     outgoing: Arc<OutgoingMessageSender>,
-    connection_ids: Arc<Vec<ConnectionId>>,
+    request_recipients: Arc<ServerRequestRecipients>,
+    notification_connection_ids: Arc<Vec<ConnectionId>>,
     thread_id: ThreadId,
 }
 
 struct PendingCallbackEntry {
     callback: oneshot::Sender<ClientRequestResult>,
     recipient_connection_ids: Option<Vec<ConnectionId>>,
+    external_delivery_connection_ids: Vec<ConnectionId>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ServerRequestRecipients {
+    connection_ids: Vec<ConnectionId>,
+    external_controller_connection_ids: Vec<ConnectionId>,
 }
 
 #[derive(Clone)]
@@ -145,6 +153,20 @@ impl PendingCallbackEntry {
             .as_ref()
             .is_none_or(|connection_ids| connection_ids.contains(&connection_id))
     }
+
+    fn mark_external_delivered_to(&mut self, connection_id: ConnectionId) {
+        if self.can_resolve_from(connection_id)
+            && !self
+                .external_delivery_connection_ids
+                .contains(&connection_id)
+        {
+            self.external_delivery_connection_ids.push(connection_id);
+        }
+    }
+
+    fn has_external_delivery(&self) -> bool {
+        !self.external_delivery_connection_ids.is_empty()
+    }
 }
 
 impl ThreadScopedOutgoingMessageSender {
@@ -153,9 +175,25 @@ impl ThreadScopedOutgoingMessageSender {
         connection_ids: Vec<ConnectionId>,
         thread_id: ThreadId,
     ) -> Self {
+        let request_recipients = ServerRequestRecipients::normal(connection_ids.clone());
         Self {
             outgoing,
-            connection_ids: Arc::new(connection_ids),
+            request_recipients: Arc::new(request_recipients),
+            notification_connection_ids: Arc::new(connection_ids),
+            thread_id,
+        }
+    }
+
+    pub(crate) fn new_with_request_recipients(
+        outgoing: Arc<OutgoingMessageSender>,
+        request_recipients: ServerRequestRecipients,
+        notification_connection_ids: Vec<ConnectionId>,
+        thread_id: ThreadId,
+    ) -> Self {
+        Self {
+            outgoing,
+            request_recipients: Arc::new(request_recipients),
+            notification_connection_ids: Arc::new(notification_connection_ids),
             thread_id,
         }
     }
@@ -165,11 +203,7 @@ impl ThreadScopedOutgoingMessageSender {
         payload: ServerRequestPayload,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
         self.outgoing
-            .send_request_to_connections(
-                Some(self.connection_ids.as_slice()),
-                payload,
-                Some(self.thread_id),
-            )
+            .send_request_to_recipients(&self.request_recipients, payload, Some(self.thread_id))
             .await
     }
 
@@ -191,11 +225,14 @@ impl ThreadScopedOutgoingMessageSender {
         self.outgoing
             .analytics_events_client
             .track_notification(&notification);
-        if self.connection_ids.is_empty() {
+        if self.notification_connection_ids.is_empty() {
             return;
         }
         self.outgoing
-            .send_server_notification_to_connections(self.connection_ids.as_slice(), notification)
+            .send_server_notification_to_connections(
+                self.notification_connection_ids.as_slice(),
+                notification,
+            )
             .await;
     }
 
@@ -236,6 +273,43 @@ impl ThreadScopedOutgoingMessageSender {
     }
 }
 
+impl ServerRequestRecipients {
+    pub(crate) fn normal(connection_ids: Vec<ConnectionId>) -> Self {
+        Self {
+            connection_ids,
+            external_controller_connection_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn external_controller(connection_id: ConnectionId) -> Self {
+        Self {
+            connection_ids: vec![connection_id],
+            external_controller_connection_ids: vec![connection_id],
+        }
+    }
+
+    fn connection_ids(&self) -> &[ConnectionId] {
+        &self.connection_ids
+    }
+
+    fn delivery_for(&self, connection_id: ConnectionId) -> ServerRequestDelivery {
+        if self
+            .external_controller_connection_ids
+            .contains(&connection_id)
+        {
+            ServerRequestDelivery::ExternalController
+        } else {
+            ServerRequestDelivery::Normal
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerRequestDelivery {
+    Normal,
+    ExternalController,
+}
+
 impl OutgoingMessageSender {
     pub(crate) fn new(
         sender: mpsc::Sender<OutgoingEnvelope>,
@@ -244,7 +318,7 @@ impl OutgoingMessageSender {
         Self {
             next_server_request_id: AtomicI64::new(0),
             sender,
-            request_id_to_callback: Mutex::new(HashMap::new()),
+            request_id_to_callback: Arc::new(Mutex::new(HashMap::new())),
             request_contexts: Mutex::new(HashMap::new()),
             analytics_events_client,
         }
@@ -331,6 +405,7 @@ impl OutgoingMessageSender {
                 PendingCallbackEntry {
                     callback: tx_approve,
                     recipient_connection_ids: connection_ids.map(<[ConnectionId]>::to_vec),
+                    external_delivery_connection_ids: Vec::new(),
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -381,6 +456,87 @@ impl OutgoingMessageSender {
         (outgoing_message_id, rx_approve)
     }
 
+    async fn send_request_to_recipients(
+        &self,
+        recipients: &ServerRequestRecipients,
+        request: ServerRequestPayload,
+        thread_id: Option<ThreadId>,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        let id = self.next_request_id();
+        let outgoing_message_id = id.clone();
+        let request = request.request_with_id(outgoing_message_id.clone());
+
+        let (tx_approve, rx_approve) = oneshot::channel();
+        {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            request_id_to_callback.insert(
+                id,
+                PendingCallbackEntry {
+                    callback: tx_approve,
+                    recipient_connection_ids: Some(recipients.connection_ids().to_vec()),
+                    external_delivery_connection_ids: Vec::new(),
+                    thread_id,
+                    request: request.clone(),
+                },
+            );
+        }
+
+        let mut send_error = None;
+        for connection_id in recipients.connection_ids() {
+            let write_complete_tx = self.tracked_write_completion(
+                outgoing_message_id.clone(),
+                *connection_id,
+                recipients.delivery_for(*connection_id),
+            );
+            if let Err(err) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id: *connection_id,
+                    message: OutgoingMessage::Request(request.clone()),
+                    write_complete_tx,
+                })
+                .await
+            {
+                send_error = Some(err);
+                break;
+            }
+            self.analytics_events_client
+                .track_server_request(connection_id.0, request.clone());
+        }
+
+        if let Some(err) = send_error {
+            warn!("failed to send request {outgoing_message_id:?} to client: {err:?}");
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            request_id_to_callback.remove(&outgoing_message_id);
+        }
+        (outgoing_message_id, rx_approve)
+    }
+
+    fn tracked_write_completion(
+        &self,
+        request_id: RequestId,
+        connection_id: ConnectionId,
+        delivery: ServerRequestDelivery,
+    ) -> Option<oneshot::Sender<()>> {
+        if delivery == ServerRequestDelivery::Normal {
+            return None;
+        }
+
+        let (write_complete_tx, write_complete_rx) = oneshot::channel();
+        let request_id_to_callback = Arc::clone(&self.request_id_to_callback);
+        tokio::spawn(async move {
+            if write_complete_rx.await.is_err() {
+                return;
+            }
+
+            let mut request_id_to_callback = request_id_to_callback.lock().await;
+            if let Some(entry) = request_id_to_callback.get_mut(&request_id) {
+                entry.mark_external_delivered_to(connection_id);
+            }
+        });
+        Some(write_complete_tx)
+    }
+
     pub(crate) async fn replay_requests_to_connection_for_thread(
         &self,
         connection_id: ConnectionId,
@@ -401,7 +557,7 @@ impl OutgoingMessageSender {
             let mut requests = request_id_to_callback
                 .values_mut()
                 .filter_map(|entry| {
-                    if entry.thread_id == Some(thread_id) {
+                    if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         Some(entry.request.clone())
                     } else {
@@ -413,6 +569,31 @@ impl OutgoingMessageSender {
             requests
         };
         self.send_pending_requests_to_connection(connection_id, requests)
+            .await;
+    }
+
+    pub(crate) async fn rebind_requests_for_thread_to_external_controller_connection(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) {
+        let requests = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let mut requests = request_id_to_callback
+                .values_mut()
+                .filter_map(|entry| {
+                    if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
+                        entry.recipient_connection_ids = Some(vec![connection_id]);
+                        Some(entry.request.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            requests.sort_by(|left, right| left.id().cmp(right.id()));
+            requests
+        };
+        self.send_pending_requests_to_external_controller_connection(connection_id, requests)
             .await;
     }
 
@@ -441,6 +622,32 @@ impl OutgoingMessageSender {
                     connection_id,
                     message: OutgoingMessage::Request(request),
                     write_complete_tx: None,
+                })
+                .await
+            {
+                warn!("failed to resend request to client: {err:?}");
+            }
+        }
+    }
+
+    async fn send_pending_requests_to_external_controller_connection(
+        &self,
+        connection_id: ConnectionId,
+        requests: Vec<ServerRequest>,
+    ) {
+        for request in requests {
+            let request_id = request.id().clone();
+            let write_complete_tx = self.tracked_write_completion(
+                request_id,
+                connection_id,
+                ServerRequestDelivery::ExternalController,
+            );
+            if let Err(err) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message: OutgoingMessage::Request(request),
+                    write_complete_tx,
                 })
                 .await
             {
@@ -607,6 +814,20 @@ impl OutgoingMessageSender {
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
         requests
+    }
+
+    #[cfg(test)]
+    async fn request_has_external_delivery(
+        &self,
+        id: &RequestId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        let request_id_to_callback = self.request_id_to_callback.lock().await;
+        request_id_to_callback.get(id).is_some_and(|entry| {
+            entry
+                .external_delivery_connection_ids
+                .contains(&connection_id)
+        })
     }
 
     pub(crate) async fn cancel_requests_for_thread(
@@ -1509,25 +1730,7 @@ mod tests {
         let (request_id, mut wait_for_result) = outgoing
             .send_request_to_connections(
                 Some(&[ConnectionId(1)]),
-                ServerRequestPayload::CommandExecutionRequestApproval(
-                    CommandExecutionRequestApprovalParams {
-                        thread_id: thread_id.to_string(),
-                        turn_id: "turn-1".to_string(),
-                        item_id: "item-1".to_string(),
-                        started_at_ms: 0,
-                        approval_id: None,
-                        environment_id: None,
-                        reason: None,
-                        network_approval_context: None,
-                        command: Some("echo hi".to_string()),
-                        cwd: None,
-                        command_actions: None,
-                        additional_permissions: None,
-                        proposed_execpolicy_amendment: None,
-                        proposed_network_policy_amendments: None,
-                        available_decisions: None,
-                    },
-                ),
+                command_execution_request_approval(thread_id),
                 Some(thread_id),
             )
             .await;
@@ -1583,6 +1786,182 @@ mod tests {
             .expect("waiter should receive a callback")
             .expect("authorized response should resolve successfully");
         assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_controller_request_rebinds_before_external_delivery() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller(ConnectionId(2)),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+        drop(write_complete_tx.expect("external controller request should track write completion"));
+
+        outgoing
+            .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(rebound_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("rebound request should be sent")
+        else {
+            panic!("expected rebound request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(rebound_request.id(), &request_id);
+        assert!(write_complete_tx.is_none());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_controller_request_is_not_redelivered_after_external_delivery() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller(ConnectionId(2)),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+        write_complete_tx
+            .expect("external controller request should track write completion")
+            .send(())
+            .expect("write completion receiver should be waiting");
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if outgoing
+                    .request_has_external_delivery(&request_id, ConnectionId(2))
+                    .await
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("external delivery should be recorded");
+
+        outgoing
+            .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    fn command_execution_request_approval(thread_id: ThreadId) -> ServerRequestPayload {
+        ServerRequestPayload::CommandExecutionRequestApproval(
+            CommandExecutionRequestApprovalParams {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                started_at_ms: 0,
+                approval_id: None,
+                environment_id: None,
+                reason: None,
+                network_approval_context: None,
+                command: Some("echo hi".to_string()),
+                cwd: None,
+                command_actions: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: None,
+                available_decisions: None,
+            },
+        )
     }
 
     #[tokio::test]
