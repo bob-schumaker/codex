@@ -379,6 +379,23 @@ pub struct ConfigReadResponse {
     pub layers: Option<Vec<ConfigLayer>>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ExternalControllerModeRequirement {
+    Disabled,
+    BestEffort,
+    Required,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalControllersRequirements {
+    pub mode: Option<ExternalControllerModeRequirement>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -395,6 +412,7 @@ pub struct ConfigRequirements {
     pub allow_managed_hooks_only: Option<bool>,
     pub allow_appshots: Option<bool>,
     pub allow_remote_control: Option<bool>,
+    pub external_controllers: Option<ExternalControllersRequirements>,
     pub computer_use: Option<ComputerUseRequirements>,
     pub browser_use: Option<BrowserUseRequirements>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,

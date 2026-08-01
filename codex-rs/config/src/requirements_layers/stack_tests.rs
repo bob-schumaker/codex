@@ -88,6 +88,9 @@ allowed_sandbox_modes = ["workspace-write"]
 default_permissions = ":workspace"
 allow_remote_control = true
 
+[external_controllers]
+mode = "required"
+
 [allowed_permission_profiles]
 ":read-only" = true
 ":workspace" = true
@@ -101,6 +104,9 @@ allowed_approval_policies = ["never"]
 allowed_sandbox_modes = ["read-only"]
 default_permissions = ":read-only"
 allow_remote_control = false
+
+[external_controllers]
+mode = "disabled"
 
 [allowed_permission_profiles]
 ":danger-full-access" = false
@@ -124,6 +130,9 @@ allow_remote_control = false
 ":danger-full-access" = false
 ":read-only" = true
 ":workspace" = false
+
+[external_controllers]
+mode = "disabled"
 "#
         )
     );

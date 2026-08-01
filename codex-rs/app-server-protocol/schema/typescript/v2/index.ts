@@ -145,6 +145,8 @@ export type { ExternalAgentDetectedConnectorCandidate } from "./ExternalAgentDet
 export type { ExternalAgentDetectedConnectorSource } from "./ExternalAgentDetectedConnectorSource";
 export type { ExternalAgentImportedConnectorCandidate } from "./ExternalAgentImportedConnectorCandidate";
 export type { ExternalAgentImportedConnectorSource } from "./ExternalAgentImportedConnectorSource";
+export type { ExternalControllerModeRequirement } from "./ExternalControllerModeRequirement";
+export type { ExternalControllersRequirements } from "./ExternalControllersRequirements";
 export type { FeedbackRequirements } from "./FeedbackRequirements";
 export type { FeedbackUploadParams } from "./FeedbackUploadParams";
 export type { FeedbackUploadResponse } from "./FeedbackUploadResponse";

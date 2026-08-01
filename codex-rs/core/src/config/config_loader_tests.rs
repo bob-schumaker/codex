@@ -1294,6 +1294,9 @@ allowed_approval_policies = ["never", "on-request"]
 allowed_web_search_modes = ["cached"]
 enforce_residency = "us"
 
+[external_controllers]
+mode = "required"
+
 [features]
 personality = true
 "#,
@@ -1325,6 +1328,13 @@ personality = true
         Some(codex_config::FeatureRequirementsToml {
             entries: BTreeMap::from([("personality".to_string(), true)]),
         })
+    );
+    assert_eq!(
+        config_requirements_toml
+            .external_controllers
+            .as_ref()
+            .and_then(|requirements| requirements.value.mode),
+        Some(codex_config::ExternalControllerModeRequirement::Required)
     );
     let config_requirements: ConfigRequirements = config_requirements_toml.try_into()?;
     assert_eq!(
@@ -1365,6 +1375,13 @@ personality = true
         Some(codex_config::FeatureRequirementsToml {
             entries: BTreeMap::from([("personality".to_string(), true)]),
         })
+    );
+    assert_eq!(
+        config_requirements
+            .external_controllers
+            .as_ref()
+            .and_then(|requirements| requirements.value.mode),
+        Some(codex_config::ExternalControllerModeRequirement::Required)
     );
     Ok(())
 }

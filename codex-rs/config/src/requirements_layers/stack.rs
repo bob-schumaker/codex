@@ -229,6 +229,7 @@ fn populate_merged_regular_fields_with_sources(
         allow_managed_hooks_only,
         allow_appshots,
         allow_remote_control,
+        external_controllers,
         computer_use,
         browser_use,
         windows,
@@ -274,6 +275,7 @@ fn populate_merged_regular_fields_with_sources(
     set_sourced!(allow_appshots, &["allow_appshots"]);
     set_sourced!(allow_remote_control, &["allow_remote_control"]);
     set_sourced!(auto_review, &["auto_review"]);
+    set_sourced!(external_controllers, &["external_controllers"]);
     set_sourced!(computer_use, &["computer_use"]);
     set_sourced!(browser_use, &["browser_use"]);
     set_sourced!(windows, &["windows"]);

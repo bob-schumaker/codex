@@ -3228,6 +3228,7 @@ impl Config {
             allow_managed_hooks_only: _,
             allow_appshots: _,
             allow_remote_control: _,
+            external_controllers: _,
             computer_use: _,
             feature_requirements,
             managed_hooks: _,

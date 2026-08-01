@@ -23,6 +23,8 @@ use codex_app_server_protocol::ConfiguredHookHandler;
 use codex_app_server_protocol::ConfiguredHookMatcherGroup;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
+use codex_app_server_protocol::ExternalControllerModeRequirement as ApiExternalControllerModeRequirement;
+use codex_app_server_protocol::ExternalControllersRequirements;
 use codex_app_server_protocol::FeedbackRequirements;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ManagedHooksRequirements;
@@ -402,6 +404,9 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
         allow_managed_hooks_only: requirements.allow_managed_hooks_only,
         allow_appshots: requirements.allow_appshots,
         allow_remote_control: requirements.allow_remote_control,
+        external_controllers: requirements
+            .external_controllers
+            .map(map_external_controllers_requirements_to_api),
         computer_use: requirements
             .computer_use
             .map(map_computer_use_requirements_to_api),
@@ -438,6 +443,30 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
             enabled: feedback.enabled,
         }),
         windows_sandbox_private_desktop,
+    }
+}
+
+fn map_external_controllers_requirements_to_api(
+    requirements: codex_config::ExternalControllersRequirementsToml,
+) -> ExternalControllersRequirements {
+    ExternalControllersRequirements {
+        mode: requirements.mode.map(map_external_controller_mode_to_api),
+    }
+}
+
+fn map_external_controller_mode_to_api(
+    mode: codex_config::ExternalControllerModeRequirement,
+) -> ApiExternalControllerModeRequirement {
+    match mode {
+        codex_config::ExternalControllerModeRequirement::Disabled => {
+            ApiExternalControllerModeRequirement::Disabled
+        }
+        codex_config::ExternalControllerModeRequirement::BestEffort => {
+            ApiExternalControllerModeRequirement::BestEffort
+        }
+        codex_config::ExternalControllerModeRequirement::Required => {
+            ApiExternalControllerModeRequirement::Required
+        }
     }
 }
 
@@ -654,11 +683,14 @@ fn config_write_error(code: ConfigWriteErrorCode, message: impl Into<String>) ->
 mod tests {
     use super::map_requirements_toml_to_api;
     use codex_app_server_protocol::AutoReviewRequirements;
+    use codex_app_server_protocol::ExternalControllerModeRequirement as ApiExternalControllerModeRequirement;
     use codex_app_server_protocol::FeedbackRequirements;
     use codex_app_server_protocol::WindowsSandboxSetupMode;
     use codex_config::AutoReviewRequirementsToml;
     use codex_config::ComputerUseRequirementsToml;
     use codex_config::ConfigRequirementsToml;
+    use codex_config::ExternalControllerModeRequirement;
+    use codex_config::ExternalControllersRequirementsToml;
     use codex_config::ModelsRequirementsToml;
     use codex_config::NewThreadModelDefaultsToml;
     use codex_config::WindowsRequirementsToml;
@@ -723,6 +755,25 @@ mod tests {
         });
 
         assert_eq!(mapped.allow_remote_control, Some(false));
+    }
+
+    #[test]
+    fn requirements_api_includes_model_auto_review_and_new_thread_defaults() {
+
+    fn requirements_api_includes_external_controllers_policy() {
+        let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
+            external_controllers: Some(ExternalControllersRequirementsToml {
+                mode: Some(ExternalControllerModeRequirement::BestEffort),
+            }),
+            ..ConfigRequirementsToml::default()
+        });
+
+        assert_eq!(
+            mapped
+                .external_controllers
+                .and_then(|requirements| requirements.mode),
+            Some(ApiExternalControllerModeRequirement::BestEffort)
+        );
     }
 
     #[test]

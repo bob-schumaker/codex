@@ -168,6 +168,7 @@ pub struct ConfigRequirements {
     pub allow_managed_hooks_only: Option<Sourced<bool>>,
     pub allow_appshots: Option<Sourced<bool>>,
     pub allow_remote_control: Option<Sourced<bool>>,
+    pub external_controllers: Option<Sourced<ExternalControllersRequirementsToml>>,
     pub computer_use: Option<Sourced<ComputerUseRequirementsToml>>,
     pub feature_requirements: Option<Sourced<FeatureRequirementsToml>>,
     pub managed_hooks: Option<ConstrainedWithSource<ManagedHooksRequirementsToml>>,
@@ -220,6 +221,7 @@ impl Default for ConfigRequirements {
             allow_managed_hooks_only: None,
             allow_appshots: None,
             allow_remote_control: None,
+            external_controllers: None,
             computer_use: None,
             feature_requirements: None,
             managed_hooks: None,
@@ -815,6 +817,35 @@ impl BrowserUseRequirementsToml {
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalControllersRequirementsToml {
+    pub mode: Option<ExternalControllerModeRequirement>,
+}
+
+impl ExternalControllersRequirementsToml {
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none()
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalControllerModeRequirement {
+    Disabled,
+    BestEffort,
+    Required,
+}
+
+impl fmt::Display for ExternalControllerModeRequirement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExternalControllerModeRequirement::Disabled => write!(f, "disabled"),
+            ExternalControllerModeRequirement::BestEffort => write!(f, "best_effort"),
+            ExternalControllerModeRequirement::Required => write!(f, "required"),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct WindowsRequirementsToml {
     pub allowed_sandbox_implementations: Option<Vec<WindowsSandboxModeToml>>,
     pub sandbox_private_desktop: Option<bool>,
@@ -941,6 +972,7 @@ pub struct ConfigRequirementsToml {
     pub allow_managed_hooks_only: Option<bool>,
     pub allow_appshots: Option<bool>,
     pub allow_remote_control: Option<bool>,
+    pub external_controllers: Option<ExternalControllersRequirementsToml>,
     pub computer_use: Option<ComputerUseRequirementsToml>,
     pub browser_use: Option<BrowserUseRequirementsToml>,
     pub windows: Option<WindowsRequirementsToml>,
@@ -1040,6 +1072,7 @@ pub struct ConfigRequirementsWithSources {
     pub allow_managed_hooks_only: Option<Sourced<bool>>,
     pub allow_appshots: Option<Sourced<bool>>,
     pub allow_remote_control: Option<Sourced<bool>>,
+    pub external_controllers: Option<Sourced<ExternalControllersRequirementsToml>>,
     pub computer_use: Option<Sourced<ComputerUseRequirementsToml>>,
     pub browser_use: Option<Sourced<BrowserUseRequirementsToml>>,
     pub windows: Option<Sourced<WindowsRequirementsToml>>,
@@ -1095,6 +1128,7 @@ impl ConfigRequirementsWithSources {
             allow_managed_hooks_only: _,
             allow_appshots: _,
             allow_remote_control: _,
+            external_controllers: _,
             computer_use: _,
             browser_use: _,
             windows: _,
@@ -1143,6 +1177,7 @@ impl ConfigRequirementsWithSources {
                 allow_managed_hooks_only,
                 allow_appshots,
                 allow_remote_control,
+                external_controllers,
                 computer_use,
                 browser_use,
                 windows,
@@ -1220,6 +1255,7 @@ impl ConfigRequirementsWithSources {
             allow_managed_hooks_only,
             allow_appshots,
             allow_remote_control,
+            external_controllers,
             computer_use,
             browser_use,
             windows,
@@ -1256,6 +1292,7 @@ impl ConfigRequirementsWithSources {
             allow_managed_hooks_only: allow_managed_hooks_only.map(|sourced| sourced.value),
             allow_appshots: allow_appshots.map(|sourced| sourced.value),
             allow_remote_control: allow_remote_control.map(|sourced| sourced.value),
+            external_controllers: external_controllers.map(|sourced| sourced.value),
             computer_use: computer_use.map(|sourced| sourced.value),
             browser_use: browser_use.map(|sourced| sourced.value),
             windows: windows.map(|sourced| sourced.value),
@@ -1361,6 +1398,10 @@ impl ConfigRequirementsToml {
             && self.allow_managed_hooks_only.is_none()
             && self.allow_appshots.is_none()
             && self.allow_remote_control.is_none()
+            && self
+                .external_controllers
+                .as_ref()
+                .is_none_or(ExternalControllersRequirementsToml::is_empty)
             && self
                 .computer_use
                 .as_ref()
@@ -1546,6 +1587,7 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             allow_managed_hooks_only,
             allow_appshots,
             allow_remote_control,
+            external_controllers,
             computer_use,
             browser_use: _,
             windows,
@@ -1905,6 +1947,7 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             allow_managed_hooks_only,
             allow_appshots,
             allow_remote_control,
+            external_controllers,
             computer_use,
             feature_requirements,
             managed_hooks,
@@ -2062,6 +2105,7 @@ mod tests {
             allow_managed_hooks_only,
             allow_appshots,
             allow_remote_control,
+            external_controllers,
             computer_use,
             browser_use,
             windows,
@@ -2110,6 +2154,8 @@ mod tests {
             allow_appshots: allow_appshots
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
             allow_remote_control: allow_remote_control
+                .map(|value| Sourced::new(value, RequirementSource::Unknown)),
+            external_controllers: external_controllers
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
             computer_use: computer_use.map(|value| Sourced::new(value, RequirementSource::Unknown)),
             browser_use: browser_use.map(|value| Sourced::new(value, RequirementSource::Unknown)),
@@ -2262,6 +2308,25 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_external_controllers_requirements() -> Result<()> {
+        let requirements: ConfigRequirementsToml = from_str(
+            r#"
+                [external_controllers]
+                mode = "required"
+            "#,
+        )?;
+
+        assert_eq!(
+            requirements.external_controllers,
+            Some(ExternalControllersRequirementsToml {
+                mode: Some(ExternalControllerModeRequirement::Required),
+            })
+        );
+        assert!(!requirements.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn deserialize_computer_use_requirements() -> Result<()> {
         let requirements: ConfigRequirementsToml = from_str(
             r#"
@@ -2359,6 +2424,9 @@ mod tests {
             required_on_models: Some(vec!["managed-model".to_string()]),
             ignore_rules: None,
         };
+        let external_controllers = ExternalControllersRequirementsToml {
+            mode: Some(ExternalControllerModeRequirement::Required),
+        };
         let models = ModelsRequirementsToml {
             new_thread: Some(NewThreadModelDefaultsToml {
                 model: Some("managed-model".to_string()),
@@ -2405,6 +2473,7 @@ mod tests {
             allow_managed_hooks_only: Some(true),
             allow_appshots: Some(false),
             allow_remote_control: Some(false),
+            external_controllers: Some(external_controllers.clone()),
             computer_use: Some(computer_use.clone()),
             browser_use: None,
             windows: Some(windows.clone()),
@@ -2470,6 +2539,10 @@ mod tests {
                 allow_appshots: Some(Sourced::new(/*value*/ false, enforce_source.clone(),)),
                 allow_remote_control: Some(Sourced::new(
                     /*value*/ false,
+                    enforce_source.clone(),
+                )),
+                external_controllers: Some(Sourced::new(
+                    external_controllers,
                     enforce_source.clone(),
                 )),
                 computer_use: Some(Sourced::new(computer_use, enforce_source.clone())),

@@ -45,6 +45,7 @@ use codex_app_server_protocol::ThreadSourceKind;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
+use codex_config::ExternalControllerModeRequirement;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
 use codex_config::types::ResumeCwdMode;
@@ -268,6 +269,45 @@ async fn start_embedded_app_server(
     .await
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalControllerLaunchPolicy {
+    Disabled,
+    BestEffort,
+    Required,
+}
+
+impl ExternalControllerLaunchPolicy {
+    fn from_config(config: &Config) -> Self {
+        let mode = config
+            .config_layer_stack
+            .requirements()
+            .external_controllers
+            .as_ref()
+            .and_then(|requirements| requirements.value.mode);
+        Self::from_mode(mode)
+    }
+
+    fn from_mode(mode: Option<ExternalControllerModeRequirement>) -> Self {
+        match mode {
+            Some(ExternalControllerModeRequirement::Disabled) => Self::Disabled,
+            Some(ExternalControllerModeRequirement::BestEffort) | None => Self::BestEffort,
+            Some(ExternalControllerModeRequirement::Required) => Self::Required,
+        }
+    }
+
+    fn endpoint_config(self) -> InProcessLocalControllerEndpointConfig {
+        match self {
+            Self::Disabled => InProcessLocalControllerEndpointConfig::Disabled,
+            Self::BestEffort => InProcessLocalControllerEndpointConfig::BestEffort {
+                main_thread_id: None,
+            },
+            Self::Required => InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AppServerTarget {
     Embedded,
@@ -275,7 +315,6 @@ pub(crate) enum AppServerTarget {
     Remote { endpoint: RemoteAppServerEndpoint },
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExternalControllerAvailability {
     EmbeddedSupported {
@@ -318,13 +357,24 @@ impl AppServerTarget {
 
     fn external_controller_availability(
         &self,
+        launch_policy: ExternalControllerLaunchPolicy,
         endpoint_status: Option<&InProcessLocalControllerEndpointStatus>,
     ) -> ExternalControllerAvailability {
         match self {
+            Self::Embedded if launch_policy == ExternalControllerLaunchPolicy::Disabled => {
+                ExternalControllerAvailability::PolicyDisabled
+            }
             Self::Embedded => match endpoint_status {
                 Some(InProcessLocalControllerEndpointStatus::Available(metadata)) => {
                     ExternalControllerAvailability::EmbeddedSupported {
                         metadata: metadata.clone(),
+                    }
+                }
+                Some(InProcessLocalControllerEndpointStatus::Unavailable { reason })
+                    if launch_policy == ExternalControllerLaunchPolicy::Required =>
+                {
+                    ExternalControllerAvailability::LaunchFailed {
+                        reason: reason.clone(),
                     }
                 }
                 Some(InProcessLocalControllerEndpointStatus::Unavailable { reason }) => {
@@ -521,7 +571,8 @@ async fn start_app_server(
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppServerClient> {
-    let app_server = match target {
+    let external_controller_policy = ExternalControllerLaunchPolicy::from_config(&config);
+    let app_server_result = match target {
         AppServerTarget::Embedded => start_embedded_app_server(
             arg0_paths,
             config,
@@ -539,10 +590,20 @@ async fn start_app_server(
         AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
             connect_remote_app_server(endpoint.clone()).await
         }
-    }?;
-    report_external_controller_availability(
-        &target.external_controller_availability(app_server.local_controller_endpoint_status()),
-    );
+    };
+    if let Err(err) = &app_server_result
+        && matches!(target, AppServerTarget::Embedded)
+        && external_controller_policy == ExternalControllerLaunchPolicy::Required
+    {
+        report_external_controller_availability(&ExternalControllerAvailability::LaunchFailed {
+            reason: err.to_string(),
+        });
+    }
+    let app_server = app_server_result?;
+    report_external_controller_availability(&target.external_controller_availability(
+        external_controller_policy,
+        app_server.local_controller_endpoint_status(),
+    ));
     Ok(app_server)
 }
 
@@ -634,6 +695,7 @@ where
     F: FnOnce(InProcessClientStartArgs) -> Fut,
     Fut: Future<Output = std::io::Result<InProcessAppServerClient>>,
 {
+    let external_controller_policy = ExternalControllerLaunchPolicy::from_config(&config);
     let config_warnings = config
         .startup_warnings
         .iter()
@@ -665,9 +727,7 @@ where
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        local_controller_endpoint: InProcessLocalControllerEndpointConfig::BestEffort {
-            main_thread_id: None,
-        },
+        local_controller_endpoint: external_controller_policy.endpoint_config(),
     })
     .await
     .wrap_err("failed to start embedded app server")?;
@@ -2130,6 +2190,56 @@ mod tests {
             .await
     }
 
+    async fn build_config_with_enterprise_requirement(
+        temp_dir: &TempDir,
+        requirement: impl Into<String>,
+    ) -> std::io::Result<Config> {
+        ConfigBuilder::default()
+            .codex_home(temp_dir.path().to_path_buf())
+            .cloud_config_bundle(
+                codex_config::test_support::CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                    requirement.into(),
+                ),
+            )
+            .build()
+            .await
+    }
+
+    async fn capture_embedded_controller_endpoint_config(
+        config: Config,
+    ) -> color_eyre::Result<InProcessLocalControllerEndpointConfig> {
+        let observed_endpoint_config = Arc::new(std::sync::Mutex::new(None));
+        let observed_endpoint_config_for_start = Arc::clone(&observed_endpoint_config);
+
+        let result = start_embedded_app_server_with(
+            Arg0DispatchPaths::default(),
+            config,
+            Vec::new(),
+            LoaderOverrides::default(),
+            /*strict_config*/ false,
+            CloudConfigBundleLoader::default(),
+            codex_feedback::CodexFeedback::new(),
+            /*log_db*/ None,
+            /*state_db*/ None,
+            Arc::new(EnvironmentManager::default_for_tests()),
+            move |args| async move {
+                *observed_endpoint_config_for_start
+                    .lock()
+                    .expect("observed endpoint config lock should not be poisoned") =
+                    Some(args.local_controller_endpoint);
+                Err(std::io::Error::other("stop after capture"))
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        observed_endpoint_config
+            .lock()
+            .expect("observed endpoint config lock should not be poisoned")
+            .clone()
+            .ok_or_else(|| color_eyre::eyre::eyre!("endpoint config was not captured"))
+    }
+
     fn write_session_rollout(
         codex_home: &Path,
         filename_ts: &str,
@@ -2725,6 +2835,50 @@ mod tests {
     }
 
     #[test]
+    fn external_controller_launch_policy_defaults_to_best_effort() {
+        assert_eq!(
+            ExternalControllerLaunchPolicy::from_mode(/*mode*/ None),
+            ExternalControllerLaunchPolicy::BestEffort
+        );
+        assert_eq!(
+            ExternalControllerLaunchPolicy::BestEffort.endpoint_config(),
+            InProcessLocalControllerEndpointConfig::BestEffort {
+                main_thread_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn external_controller_launch_policy_can_disable_endpoint() {
+        assert_eq!(
+            ExternalControllerLaunchPolicy::from_mode(Some(
+                ExternalControllerModeRequirement::Disabled
+            )),
+            ExternalControllerLaunchPolicy::Disabled
+        );
+        assert_eq!(
+            ExternalControllerLaunchPolicy::Disabled.endpoint_config(),
+            InProcessLocalControllerEndpointConfig::Disabled
+        );
+    }
+
+    #[test]
+    fn external_controller_launch_policy_can_require_endpoint() {
+        assert_eq!(
+            ExternalControllerLaunchPolicy::from_mode(Some(
+                ExternalControllerModeRequirement::Required
+            )),
+            ExternalControllerLaunchPolicy::Required
+        );
+        assert_eq!(
+            ExternalControllerLaunchPolicy::Required.endpoint_config(),
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            }
+        );
+    }
+
+    #[test]
     fn external_controller_availability_reports_embedded_supported() {
         let metadata = LocalControllerEndpointMetadata {
             version: 1,
@@ -2739,7 +2893,10 @@ mod tests {
         let status = InProcessLocalControllerEndpointStatus::Available(metadata.clone());
 
         assert_eq!(
-            AppServerTarget::Embedded.external_controller_availability(Some(&status)),
+            AppServerTarget::Embedded.external_controller_availability(
+                ExternalControllerLaunchPolicy::BestEffort,
+                Some(&status),
+            ),
             ExternalControllerAvailability::EmbeddedSupported { metadata }
         );
     }
@@ -2751,9 +2908,40 @@ mod tests {
         };
 
         assert_eq!(
-            AppServerTarget::Embedded.external_controller_availability(Some(&status)),
+            AppServerTarget::Embedded.external_controller_availability(
+                ExternalControllerLaunchPolicy::BestEffort,
+                Some(&status),
+            ),
             ExternalControllerAvailability::EmbeddedUnavailable {
                 reason: Some("peer credentials unavailable".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn external_controller_availability_reports_policy_disabled() {
+        assert_eq!(
+            AppServerTarget::Embedded.external_controller_availability(
+                ExternalControllerLaunchPolicy::Disabled,
+                Some(&InProcessLocalControllerEndpointStatus::Disabled),
+            ),
+            ExternalControllerAvailability::PolicyDisabled
+        );
+    }
+
+    #[test]
+    fn external_controller_availability_reports_required_launch_failure() {
+        let status = InProcessLocalControllerEndpointStatus::Unavailable {
+            reason: "socket path unavailable".to_string(),
+        };
+
+        assert_eq!(
+            AppServerTarget::Embedded.external_controller_availability(
+                ExternalControllerLaunchPolicy::Required,
+                Some(&status),
+            ),
+            ExternalControllerAvailability::LaunchFailed {
+                reason: "socket path unavailable".to_string(),
             }
         );
     }
@@ -2770,7 +2958,7 @@ mod tests {
                     socket_path: daemon_socket_path,
                 },
             }
-            .external_controller_availability(None),
+            .external_controller_availability(ExternalControllerLaunchPolicy::BestEffort, None),
             ExternalControllerAvailability::DaemonUnsupported
         );
         assert_eq!(
@@ -2779,7 +2967,7 @@ mod tests {
                     socket_path: remote_socket_path,
                 },
             }
-            .external_controller_availability(None),
+            .external_controller_availability(ExternalControllerLaunchPolicy::BestEffort, None),
             ExternalControllerAvailability::RemoteUnsupported
         );
         Ok(())
@@ -3434,39 +3622,54 @@ mod tests {
     {
         let temp_dir = TempDir::new()?;
         let config = build_config(&temp_dir).await?;
-        let observed_endpoint_config = Arc::new(std::sync::Mutex::new(None));
-        let observed_endpoint_config_for_start = Arc::clone(&observed_endpoint_config);
 
-        let result = start_embedded_app_server_with(
-            Arg0DispatchPaths::default(),
-            config,
-            Vec::new(),
-            LoaderOverrides::default(),
-            /*strict_config*/ false,
-            CloudConfigBundleLoader::default(),
-            codex_feedback::CodexFeedback::new(),
-            /*log_db*/ None,
-            /*state_db*/ None,
-            Arc::new(EnvironmentManager::default_for_tests()),
-            move |args| async move {
-                *observed_endpoint_config_for_start
-                    .lock()
-                    .expect("observed endpoint config lock should not be poisoned") =
-                    Some(args.local_controller_endpoint);
-                Err(std::io::Error::other("stop after capture"))
-            },
-        )
-        .await;
-
-        assert!(result.is_err());
         assert_eq!(
-            observed_endpoint_config
-                .lock()
-                .expect("observed endpoint config lock should not be poisoned")
-                .as_ref(),
-            Some(&InProcessLocalControllerEndpointConfig::BestEffort {
+            capture_embedded_controller_endpoint_config(config).await?,
+            InProcessLocalControllerEndpointConfig::BestEffort {
                 main_thread_id: None,
-            })
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn embedded_app_server_can_disable_controller_endpoint_by_policy()
+    -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_config_with_enterprise_requirement(
+            &temp_dir,
+            r#"
+                [external_controllers]
+                mode = "disabled"
+            "#,
+        )
+        .await?;
+
+        assert_eq!(
+            capture_embedded_controller_endpoint_config(config).await?,
+            InProcessLocalControllerEndpointConfig::Disabled
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn embedded_app_server_can_require_controller_endpoint_by_policy()
+    -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_config_with_enterprise_requirement(
+            &temp_dir,
+            r#"
+                [external_controllers]
+                mode = "required"
+            "#,
+        )
+        .await?;
+
+        assert_eq!(
+            capture_embedded_controller_endpoint_config(config).await?,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            }
         );
         Ok(())
     }

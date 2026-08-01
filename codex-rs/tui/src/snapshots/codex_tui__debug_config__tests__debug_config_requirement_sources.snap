@@ -1,5 +1,6 @@
 ---
 source: tui/src/debug_config.rs
+assertion_line: 1029
 expression: rendered.as_str()
 ---
 /debug-config
@@ -22,6 +23,7 @@ Requirements:
   - allow_managed_hooks_only: true (source: MDM managed_config.toml (legacy))
   - allow_appshots: false (source: MDM managed_config.toml (legacy))
   - allow_remote_control: false (source: MDM managed_config.toml (legacy))
+  - external_controllers.mode: required (source: MDM managed_config.toml (legacy))
   - guardian_policy_config: configured (source: MDM managed_config.toml (legacy))
   - features: guardian_approval=true (source: MDM managed_config.toml (legacy))
   - mcp_servers: docs (source: MDM managed_config.toml (legacy))

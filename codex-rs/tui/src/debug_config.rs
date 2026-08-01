@@ -301,6 +301,21 @@ fn render_debug_config_lines(
         ));
     }
 
+    if let Some(mode) = requirements_toml
+        .external_controllers
+        .as_ref()
+        .and_then(|requirements| requirements.mode)
+    {
+        requirement_lines.push(requirement_line(
+            "external_controllers.mode",
+            mode.to_string(),
+            requirements
+                .external_controllers
+                .as_ref()
+                .map(|sourced| &sourced.source),
+        ));
+    }
+
     if requirements_toml.guardian_policy_config.is_some() {
         requirement_lines.push(requirement_line(
             "guardian_policy_config",
@@ -663,6 +678,8 @@ mod tests {
     use codex_config::Constrained;
     use codex_config::ConstrainedWithSource;
     use codex_config::ConstraintError;
+    use codex_config::ExternalControllerModeRequirement;
+    use codex_config::ExternalControllersRequirementsToml;
     use codex_config::FeatureRequirementsToml;
     use codex_config::FilesystemConstraints;
     use codex_config::HookEventsToml;
@@ -899,6 +916,12 @@ interrupt_message = false
                 /*value*/ false,
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
             )),
+            external_controllers: Some(Sourced::new(
+                ExternalControllersRequirementsToml {
+                    mode: Some(ExternalControllerModeRequirement::Required),
+                },
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
             feature_requirements: Some(Sourced::new(
                 FeatureRequirementsToml {
                     entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
@@ -951,6 +974,9 @@ interrupt_message = false
             allow_managed_hooks_only: Some(true),
             allow_appshots: Some(false),
             allow_remote_control: Some(false),
+            external_controllers: Some(ExternalControllersRequirementsToml {
+                mode: Some(ExternalControllerModeRequirement::Required),
+            }),
             computer_use: None,
             browser_use: None,
             windows: Some(WindowsRequirementsToml {
@@ -1030,6 +1056,9 @@ interrupt_message = false
         )));
         assert!(rendered.contains(&format!(
             "allow_remote_control: false (source: {requirements_source})"
+        )));
+        assert!(rendered.contains(&format!(
+            "external_controllers.mode: required (source: {requirements_source})"
         )));
         assert!(rendered.contains(&format!(
             "guardian_policy_config: configured (source: {requirements_source})"

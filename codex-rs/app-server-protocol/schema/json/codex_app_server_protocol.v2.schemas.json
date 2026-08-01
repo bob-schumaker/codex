@@ -5071,6 +5071,16 @@
             }
           ]
         },
+        "externalControllers": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExternalControllersRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "featureRequirements": {
           "additionalProperties": {
             "type": "boolean"
@@ -6858,6 +6868,29 @@
         "remoteMcpServersConfig"
       ],
       "type": "string"
+    },
+    "ExternalControllerModeRequirement": {
+      "enum": [
+        "disabled",
+        "bestEffort",
+        "required"
+      ],
+      "type": "string"
+    },
+    "ExternalControllersRequirements": {
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExternalControllerModeRequirement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
     },
     "FeedbackRequirements": {
       "properties": {
