@@ -16,6 +16,7 @@ pub(super) struct ListenerTaskContext {
     pub(super) fallback_model_provider: String,
     pub(super) codex_home: PathBuf,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
+    pub(super) controller_processor: ControllerRequestProcessor,
 }
 
 struct UnloadingState {

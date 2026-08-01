@@ -280,7 +280,7 @@ pub(crate) fn admit_initialized_client_request(
     origin: ConnectionOrigin,
     method: &str,
 ) -> Result<(), JSONRPCErrorError> {
-    let Some(_rule) = client_request_rule(method) else {
+    let Some(rule) = client_request_rule(method) else {
         return Err(controller_not_allowed(
             "controller admission is not defined for this method",
         ));
@@ -291,8 +291,17 @@ pub(crate) fn admit_initialized_client_request(
         | ConnectionOrigin::InProcess
         | ConnectionOrigin::WebSocket
         | ConnectionOrigin::RemoteControl => Ok(()),
+        ConnectionOrigin::ExternalController
+            if method.starts_with("controller/")
+                && matches!(
+                    rule.required_authority,
+                    RequiredAuthority::PreParticipation | RequiredAuthority::StandingSession
+                ) =>
+        {
+            Ok(())
+        }
         ConnectionOrigin::ExternalController => Err(controller_not_allowed(
-            "external controller connections are not enabled yet",
+            "external controller normal interface is not enabled yet",
         )),
     }
 }
@@ -305,11 +314,14 @@ pub(crate) fn server_request_response_rule(method: &str) -> Option<AdmissionRule
 }
 
 pub(crate) fn continuation_rule_for(kind: ContinuationKind) -> AdmissionRule {
-    CONTINUATION_ADMISSION
+    let Some(rule) = CONTINUATION_ADMISSION
         .iter()
         .find(|entry| entry.kind == kind)
         .map(|entry| entry.rule)
-        .expect("every continuation kind must have an admission rule")
+    else {
+        unreachable!("every continuation kind must have an admission rule");
+    };
+    rule
 }
 
 fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
@@ -327,7 +339,7 @@ fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
                 authorization_epoch: None,
                 owner_epoch: None,
             })
-            .expect("controller error data should serialize"),
+            .unwrap_or(serde_json::Value::Null),
         ),
     }
 }

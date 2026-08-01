@@ -229,6 +229,10 @@ impl ControllerSessionCoordinator {
         &self.owner
     }
 
+    pub(crate) fn main_thread_id(&self) -> Option<ThreadId> {
+        (!matches!(self.owner, InteractiveOwner::Closed)).then_some(self.main_thread_id)
+    }
+
     pub(crate) fn session_for(&self, connection_id: ConnectionId) -> Option<&ControllerSession> {
         self.sessions.get(&connection_id)
     }

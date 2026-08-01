@@ -82,10 +82,24 @@ fn non_controller_origins_keep_existing_admission() {
 }
 
 #[test]
-fn external_controller_origin_is_disabled_before_session_manager_lands() {
+fn external_controller_origin_allows_controller_control_plane_only() {
+    assert_eq!(
+        admit_initialized_client_request(
+            ConnectionOrigin::ExternalController,
+            "controller/requestParticipation"
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        admit_initialized_client_request(
+            ConnectionOrigin::ExternalController,
+            "controller/acquireControl"
+        ),
+        Ok(())
+    );
     let error =
         admit_initialized_client_request(ConnectionOrigin::ExternalController, "thread/list")
-            .expect_err("external controller requests should be disabled");
+            .expect_err("normal app-server interface should remain disabled in this slice");
 
     assert_controller_not_allowed(error);
 }

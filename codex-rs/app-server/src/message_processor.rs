@@ -8,9 +8,13 @@ use crate::attestation::app_server_attestation_provider;
 use crate::config_manager::ConfigManager;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::controller_admission::admit_initialized_client_request;
+use crate::controller_enrollment::ControllerCredentialProof;
+use crate::controller_enrollment::ControllerEnrollmentPolicy;
+use crate::controller_enrollment::ControllerEnrollmentSource;
+use crate::controller_session::ControllerSessionClock;
+use crate::controller_session::ControllerSessionConfig;
 use crate::current_time::app_server_time_provider;
 use crate::error_code::invalid_request;
-use crate::error_code::method_not_found;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::guardian_agent_spawner;
@@ -27,6 +31,7 @@ use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
+use crate::request_processors::ControllerRequestProcessor;
 use crate::request_processors::EnvironmentRequestProcessor;
 use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
@@ -112,6 +117,7 @@ pub(crate) struct MessageProcessor {
     command_exec_processor: CommandExecRequestProcessor,
     process_exec_processor: ProcessExecRequestProcessor,
     config_processor: ConfigRequestProcessor,
+    controller_processor: ControllerRequestProcessor,
     environment_processor: EnvironmentRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
@@ -134,6 +140,7 @@ pub(crate) struct MessageProcessor {
 pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
     initialized: OnceLock<InitializedConnectionSessionState>,
+    controller_credential_proof: std::sync::Mutex<Option<ControllerCredentialProof>>,
 }
 
 #[derive(Debug)]
@@ -157,6 +164,7 @@ impl ConnectionSessionState {
         Self {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             initialized: OnceLock::new(),
+            controller_credential_proof: std::sync::Mutex::new(None),
         }
     }
 
@@ -204,6 +212,21 @@ impl ConnectionSessionState {
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
         self.initialized.set(session).map_err(|_| ())
     }
+
+    #[cfg(test)]
+    pub(crate) fn bind_controller_credential_proof(&self, proof: ControllerCredentialProof) {
+        *self
+            .controller_credential_proof
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(proof);
+    }
+
+    pub(crate) fn controller_credential_proof(&self) -> Option<ControllerCredentialProof> {
+        self.controller_credential_proof
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 pub(crate) struct MessageProcessorArgs {
@@ -223,7 +246,19 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
+    pub(crate) controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
+}
+
+struct InitializedClientRequest {
+    connection_request_id: ConnectionRequestId,
+    connection_origin: ConnectionOrigin,
+    codex_request: ClientRequest,
+    session: Arc<ConnectionSessionState>,
+    request_context: RequestContext,
+    app_server_client_name: Option<String>,
+    client_version: Option<String>,
+    client_mcp_extensions: ClientMcpExtensions,
 }
 
 impl MessageProcessor {
@@ -247,6 +282,7 @@ impl MessageProcessor {
             code_mode_session_provider,
             rpc_transport,
             remote_control_handle,
+            controller_enrollment_source,
             plugin_startup_tasks,
         } = args;
         let thread_state_manager = ThreadStateManager::new();
@@ -426,6 +462,14 @@ impl MessageProcessor {
             on_effective_plugins_changed,
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
+        let controller_processor = ControllerRequestProcessor::new(
+            controller_enrollment_source,
+            ControllerEnrollmentPolicy::BestEffort,
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(5 * 60),
+            },
+        );
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -452,6 +496,7 @@ impl MessageProcessor {
             log_db,
             Arc::clone(&skills_watcher),
             config_warnings,
+            controller_processor.clone(),
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),
@@ -466,6 +511,7 @@ impl MessageProcessor {
             thread_watch_manager,
             thread_list_state_permit,
             Arc::clone(&skills_watcher),
+            controller_processor.clone(),
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.
@@ -513,6 +559,7 @@ impl MessageProcessor {
             command_exec_processor,
             process_exec_processor,
             config_processor,
+            controller_processor,
             environment_processor,
             external_agent_config_processor,
             feedback_processor,
@@ -857,6 +904,7 @@ impl MessageProcessor {
         let client_mcp_extensions = session.client_mcp_extensions();
         let error_request_id = connection_request_id.clone();
         let rpc_gate = Arc::clone(&session.rpc_gate);
+        let session_for_request = Arc::clone(&session);
         let processor = Arc::clone(self);
         let span = request_context.span();
         let request = QueuedInitializedRequest::new(
@@ -864,9 +912,11 @@ impl MessageProcessor {
             async move {
                 let processor_for_request = Arc::clone(&processor);
                 let result = processor_for_request
-                    .handle_initialized_client_request(
+                    .handle_initialized_client_request(InitializedClientRequest {
                         connection_request_id,
+                        connection_origin,
                         codex_request,
+                        session: session_for_request,
                         request_context,
                         app_server_client_name,
                         client_version,
@@ -895,13 +945,18 @@ impl MessageProcessor {
 
     async fn handle_initialized_client_request(
         self: Arc<Self>,
-        connection_request_id: ConnectionRequestId,
-        codex_request: ClientRequest,
-        request_context: RequestContext,
-        app_server_client_name: Option<String>,
-        client_version: Option<String>,
-        client_mcp_extensions: ClientMcpExtensions,
+        initialized_request: InitializedClientRequest,
     ) -> Result<(), JSONRPCErrorError> {
+        let InitializedClientRequest {
+            connection_request_id,
+            connection_origin,
+            codex_request,
+            session,
+            request_context,
+            app_server_client_name,
+            client_version,
+            client_mcp_extensions,
+        } = initialized_request;
         let connection_id = connection_request_id.connection_id;
         let request_id = ConnectionRequestId {
             connection_id,
@@ -994,13 +1049,28 @@ impl MessageProcessor {
                 .clients_revoke(params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ControllerRequestParticipation { .. }
-            | ClientRequest::ControllerAcquireControl { .. }
-            | ClientRequest::ControllerReleaseControl { .. }
-            | ClientRequest::ControllerSignOff { .. } => Err(method_not_found(
-                "external controller APIs are not implemented yet",
-            )),
-            ClientRequest::ConfigRequirementsRead { params: _, .. } => self
+            ClientRequest::ControllerRequestParticipation { params, .. } => self
+                .controller_processor
+                .request_participation(
+                    connection_id,
+                    connection_origin,
+                    session.controller_credential_proof(),
+                    params,
+                )
+                .map(|response| Some(response.into())),
+            ClientRequest::ControllerAcquireControl { .. } => self
+                .controller_processor
+                .acquire_control(connection_id, connection_origin)
+                .map(|response| Some(response.into())),
+            ClientRequest::ControllerReleaseControl { .. } => self
+                .controller_processor
+                .release_control(connection_id, connection_origin)
+                .map(|response| Some(response.into())),
+            ClientRequest::ControllerSignOff { .. } => self
+                .controller_processor
+                .sign_off(connection_id, connection_origin)
+                .map(|response| Some(response.into())),
+            ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor
                 .config_requirements_read()
                 .await
@@ -1059,7 +1129,7 @@ impl MessageProcessor {
                 .unwatch(connection_id, params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ModelProviderCapabilitiesRead { params: _, .. } => self
+            ClientRequest::ModelProviderCapabilitiesRead { .. } => self
                 .config_processor
                 .model_provider_capabilities_read()
                 .await
@@ -1367,7 +1437,7 @@ impl MessageProcessor {
                     .thread_realtime_stop(&request_id, params)
                     .await
             }
-            ClientRequest::ThreadRealtimeListVoices { params: _, .. } => {
+            ClientRequest::ThreadRealtimeListVoices { .. } => {
                 self.turn_processor.thread_realtime_list_voices().await
             }
             ClientRequest::ReviewStart { params, .. } => {

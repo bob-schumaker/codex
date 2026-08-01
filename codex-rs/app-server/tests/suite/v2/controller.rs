@@ -1,5 +1,7 @@
 use anyhow::Result;
 use app_test_support::TestAppServer;
+use codex_app_server_protocol::ControllerErrorCode;
+use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::RequestId;
 use pretty_assertions::assert_eq;
@@ -9,10 +11,9 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-const CONTROLLER_NOT_IMPLEMENTED: &str = "external controller APIs are not implemented yet";
 
 #[tokio::test]
-async fn controller_methods_return_not_implemented_stub() -> Result<()> {
+async fn controller_methods_require_external_controller_origin() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -40,14 +41,24 @@ async fn controller_methods_return_not_implemented_stub() -> Result<()> {
         )
         .await??;
 
-        assert_controller_not_implemented_error(error);
+        assert_controller_not_allowed_error(error)?;
     }
 
     Ok(())
 }
 
-fn assert_controller_not_implemented_error(error: JSONRPCError) {
-    assert_eq!(error.error.code, -32601);
-    assert_eq!(error.error.message, CONTROLLER_NOT_IMPLEMENTED);
-    assert_eq!(error.error.data, None);
+fn assert_controller_not_allowed_error(error: JSONRPCError) -> Result<()> {
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(
+        error.error.message,
+        "controller methods require an external controller connection"
+    );
+    let data: ControllerErrorData = serde_json::from_value(
+        error
+            .error
+            .data
+            .expect("controller error should include data"),
+    )?;
+    assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+    Ok(())
 }

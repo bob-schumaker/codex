@@ -3,6 +3,7 @@ use super::MessageProcessor;
 use super::MessageProcessorArgs;
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
+use crate::controller_enrollment::EmptyControllerEnrollmentSource;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::AppServerTransport;
@@ -309,6 +310,7 @@ async fn build_test_processor(
         code_mode_session_provider: None,
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
+        controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
     }));
     (processor, outgoing_rx)

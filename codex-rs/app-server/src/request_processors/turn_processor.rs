@@ -98,6 +98,7 @@ pub(crate) struct TurnRequestProcessor {
     thread_watch_manager: ThreadWatchManager,
     thread_list_state_permit: Arc<Semaphore>,
     skills_watcher: Arc<SkillsWatcher>,
+    controller_processor: ControllerRequestProcessor,
 }
 
 fn map_additional_context(
@@ -153,6 +154,7 @@ impl TurnRequestProcessor {
         thread_watch_manager: ThreadWatchManager,
         thread_list_state_permit: Arc<Semaphore>,
         skills_watcher: Arc<SkillsWatcher>,
+        controller_processor: ControllerRequestProcessor,
     ) -> Self {
         let agent_runner = AgentRunner::new(Arc::downgrade(&thread_manager));
         Self {
@@ -169,6 +171,7 @@ impl TurnRequestProcessor {
             thread_watch_manager,
             thread_list_state_permit,
             skills_watcher,
+            controller_processor,
         }
     }
 
@@ -1514,6 +1517,7 @@ impl TurnRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            controller_processor: self.controller_processor.clone(),
         }
     }
 

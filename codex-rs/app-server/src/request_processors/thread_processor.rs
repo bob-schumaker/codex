@@ -431,6 +431,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) background_tasks: TaskTracker,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
+    pub(super) controller_processor: ControllerRequestProcessor,
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
@@ -463,6 +464,7 @@ impl ThreadRequestProcessor {
         log_db: Option<LogDbLayer>,
         skills_watcher: Arc<SkillsWatcher>,
         initial_config_warnings: Vec<ConfigWarningNotification>,
+        controller_processor: ControllerRequestProcessor,
     ) -> Self {
         Self {
             auth_manager,
@@ -482,6 +484,7 @@ impl ThreadRequestProcessor {
             background_tasks: TaskTracker::new(),
             skills_watcher,
             initial_config_warnings: Arc::new(initial_config_warnings),
+            controller_processor,
         }
     }
 
@@ -983,6 +986,7 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            controller_processor: self.controller_processor.clone(),
         }
     }
 
@@ -1094,6 +1098,7 @@ impl ThreadRequestProcessor {
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             skills_watcher: Arc::clone(&self.skills_watcher),
+            controller_processor: self.controller_processor.clone(),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
@@ -1438,6 +1443,9 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
         let notif = thread_started_notification(thread);
+        listener_task_context
+            .controller_processor
+            .register_main_thread(thread_id);
         listener_task_context
             .outgoing
             .send_response_with_thread_originator(request_id, response, thread_originator)

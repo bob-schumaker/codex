@@ -6,6 +6,7 @@
 //! connection before a controller session grant is created.
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use codex_protocol::ThreadId;
@@ -19,8 +20,23 @@ use crate::transport::ConnectionId;
 /// Implementations are expected to read Codex-owned user configuration or a
 /// platform credential store. Socket metadata, launch nonces, and display
 /// strings must not be treated as enrollment records.
-pub(crate) trait ControllerEnrollmentSource {
+pub(crate) trait ControllerEnrollmentSource: Send + Sync {
     fn enrollment_for(&self, subject_id: &str) -> Option<ControllerEnrollmentRecord>;
+}
+
+impl<T: ControllerEnrollmentSource + ?Sized> ControllerEnrollmentSource for Arc<T> {
+    fn enrollment_for(&self, subject_id: &str) -> Option<ControllerEnrollmentRecord> {
+        self.as_ref().enrollment_for(subject_id)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct EmptyControllerEnrollmentSource;
+
+impl ControllerEnrollmentSource for EmptyControllerEnrollmentSource {
+    fn enrollment_for(&self, _subject_id: &str) -> Option<ControllerEnrollmentRecord> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

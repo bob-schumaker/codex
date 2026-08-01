@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicBool;
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
 use crate::connection_cleanup::ConnectionCleanupTasks;
+use crate::controller_enrollment::EmptyControllerEnrollmentSource;
 use crate::message_processor::MessageProcessor;
 use crate::message_processor::MessageProcessorArgs;
 use crate::outgoing_message::ConnectionId;
@@ -925,6 +926,7 @@ pub async fn run_main_with_transport_options(
             code_mode_session_provider,
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle.clone()),
+            controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
