@@ -424,8 +424,9 @@ impl ControllerSessionCoordinator {
                 Ok(())
             }
             InteractiveOwner::TuiOwned { .. } => Ok(()),
-            InteractiveOwner::TransferPending { .. } => {
-                Err(ControllerSessionError::TransferPending)
+            InteractiveOwner::TransferPending { owner_epoch } => {
+                self.transfer_to_tui_owned_after(owner_epoch);
+                Ok(())
             }
             InteractiveOwner::TuiUnavailable { .. } => Err(ControllerSessionError::TuiUnavailable),
             InteractiveOwner::Closed => Err(ControllerSessionError::MainThreadClosed),

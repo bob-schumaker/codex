@@ -67,6 +67,7 @@ use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ClientRequestSerializationScope;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::ExperimentalApi;
@@ -902,13 +903,21 @@ impl MessageProcessor {
         let admission_rule =
             admit_initialized_client_request(connection_origin, codex_request.method_name())?;
         let connection_id = connection_request_id.connection_id;
+        let serialization_scope = codex_request.serialization_scope();
+        if let Some(thread_id) = primary_input_reclaim_thread_id(
+            connection_origin,
+            admission_rule,
+            serialization_scope.as_ref(),
+        ) {
+            self.controller_processor
+                .reclaim_for_primary_thread_input(thread_id)?;
+        }
         self.initialize_processor.track_initialized_request(
             connection_id,
             connection_request_id.request_id.clone(),
             &codex_request,
         );
 
-        let serialization_scope = codex_request.serialization_scope();
         let app_server_client_name = session.app_server_client_name().map(str::to_string);
         let client_version = session.client_version().map(str::to_string);
         let client_mcp_extensions = session.client_mcp_extensions();
@@ -1683,6 +1692,33 @@ fn controller_request_target(
                 "external controller target extraction is not enabled for this method",
             )),
         },
+    }
+}
+
+fn primary_input_reclaim_thread_id(
+    origin: ConnectionOrigin,
+    rule: AdmissionRule,
+    serialization_scope: Option<&ClientRequestSerializationScope>,
+) -> Option<&str> {
+    if matches!(origin, ConnectionOrigin::ExternalController)
+        || !matches!(rule.required_authority, RequiredAuthority::ActiveOwner)
+    {
+        return None;
+    }
+
+    match serialization_scope {
+        Some(ClientRequestSerializationScope::Thread { thread_id }) => Some(thread_id.as_str()),
+        Some(
+            ClientRequestSerializationScope::Global(_)
+            | ClientRequestSerializationScope::GlobalSharedRead(_)
+            | ClientRequestSerializationScope::ThreadPath { .. }
+            | ClientRequestSerializationScope::CommandExecProcess { .. }
+            | ClientRequestSerializationScope::Process { .. }
+            | ClientRequestSerializationScope::FuzzyFileSearchSession { .. }
+            | ClientRequestSerializationScope::FsWatch { .. }
+            | ClientRequestSerializationScope::McpOauth { .. },
+        )
+        | None => None,
     }
 }
 

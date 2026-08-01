@@ -255,6 +255,29 @@ impl ControllerRequestProcessor {
 
         authorize_target(rule.target, target, main_thread_id)
     }
+
+    pub(crate) fn reclaim_for_primary_thread_input(
+        &self,
+        thread_id: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_mut() else {
+            return Ok(());
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return Ok(());
+        };
+        if main_thread_id.to_string() != thread_id {
+            return Ok(());
+        }
+
+        coordinator
+            .reclaim_for_tui()
+            .map_err(controller_session_error)
+    }
 }
 
 fn authorize_target(

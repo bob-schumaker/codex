@@ -167,6 +167,32 @@ fn transfer_pending_and_deadlines_are_deterministic() {
         /*owner_epoch*/ 3,
     );
 
+    let reclaim_clock = ManualClock::new();
+    let mut reclaim_coordinator = new_coordinator(main_thread_id, &reclaim_clock);
+    reclaim_coordinator
+        .request_participation(
+            controller,
+            grant(&reclaim_clock, main_thread_id, /*epoch*/ 4),
+        )
+        .expect("participation should grant initial lease");
+    reclaim_coordinator
+        .release_control(controller)
+        .expect("release should return ownership to TUI");
+    let stale_transfer = reclaim_coordinator
+        .begin_transfer_to_controller(controller)
+        .expect("standing session should begin transfer");
+    reclaim_coordinator
+        .reclaim_for_tui()
+        .expect("TUI input should reclaim a pending controller transfer");
+    assert_eq!(
+        reclaim_coordinator.interactive_owner(),
+        &InteractiveOwner::TuiOwned { owner_epoch: 4 }
+    );
+    assert_eq!(
+        reclaim_coordinator.complete_transfer_to_controller(stale_transfer),
+        Err(ControllerSessionError::StaleOwnership)
+    );
+
     let lease_clock = ManualClock::new();
     let mut lease_coordinator = new_coordinator(main_thread_id, &lease_clock);
     lease_coordinator

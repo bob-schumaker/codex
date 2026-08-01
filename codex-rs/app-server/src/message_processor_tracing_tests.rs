@@ -273,16 +273,8 @@ impl TracingHarness {
     where
         T: serde::de::DeserializeOwned,
     {
-        let request_id = integer_request_id(&request);
-        let request = request_from_client_request(request);
-        self.processor
-            .process_request(
-                connection_id,
-                connection_origin,
-                request,
-                &AppServerTransport::Stdio,
-                session,
-            )
+        let request_id = self
+            .submit_for_connection(connection_id, connection_origin, session, request)
             .await;
         read_response_for_connection(&mut self.outgoing_rx, connection_id, request_id).await
     }
@@ -294,6 +286,19 @@ impl TracingHarness {
         session: Arc<ConnectionSessionState>,
         request: ClientRequest,
     ) -> JSONRPCError {
+        let request_id = self
+            .submit_for_connection(connection_id, connection_origin, session, request)
+            .await;
+        read_error_for_connection(&mut self.outgoing_rx, connection_id, request_id).await
+    }
+
+    async fn submit_for_connection(
+        &mut self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        session: Arc<ConnectionSessionState>,
+        request: ClientRequest,
+    ) -> i64 {
         let request_id = integer_request_id(&request);
         let request = request_from_client_request(request);
         self.processor
@@ -305,7 +310,7 @@ impl TracingHarness {
                 session,
             )
             .await;
-        read_error_for_connection(&mut self.outgoing_rx, connection_id, request_id).await
+        request_id
     }
 
     async fn raw_request_error_with_origin(
@@ -1048,17 +1053,52 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             assert!(reacquired.session.active_lease.is_some());
             assert!(reacquired.session.effective_capabilities.mutate_main_thread);
 
-            let _: TurnStartResponse = harness
-                .request_for_connection(
-                    EXTERNAL_CONNECTION_ID,
-                    ConnectionOrigin::ExternalController,
-                    Arc::clone(&external_session),
+            let primary_session = Arc::clone(&harness.session);
+            let primary_turn_request_id = harness
+                .submit_for_connection(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    primary_session,
                     controller_turn_start_request(
                         /*request_id*/ 40_010,
                         started.thread.id.clone(),
                     ),
                 )
                 .await;
+            let stale_controller_turn_request_id = harness
+                .submit_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_turn_start_request(
+                        /*request_id*/ 40_011,
+                        started.thread.id.clone(),
+                    ),
+                )
+                .await;
+
+            let _: TurnStartResponse = read_response_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                primary_turn_request_id,
+            )
+            .await;
+            let stale_controller_turn = read_error_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                stale_controller_turn_request_id,
+            )
+            .await;
+            let stale_controller_turn_data: ControllerErrorData = serde_json::from_value(
+                stale_controller_turn
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                stale_controller_turn_data.code,
+                ControllerErrorCode::StaleOwnership
+            );
 
             let second_session = Arc::new(ConnectionSessionState::new());
             let _: InitializeResponse = harness
@@ -1066,7 +1106,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_initialize_request(/*request_id*/ 40_011),
+                    controller_initialize_request(/*request_id*/ 40_012),
                 )
                 .await;
             second_session
@@ -1076,19 +1116,21 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_participation_request(/*request_id*/ 40_012),
+                    controller_participation_request(/*request_id*/ 40_013),
                 )
                 .await;
             assert_eq!(
                 second_participation.status,
                 ControllerParticipationStatus::Approved
             );
-            assert_eq!(
-                second_participation
-                    .session
-                    .expect("second approved session")
-                    .active_lease,
-                None
+            let second_approved_session = second_participation
+                .session
+                .expect("second approved session");
+            assert!(second_approved_session.active_lease.is_some());
+            assert!(
+                second_approved_session
+                    .effective_capabilities
+                    .mutate_main_thread
             );
 
             let _: ControllerSignOffResponse = harness
@@ -1096,7 +1138,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
-                    controller_no_params_request(/*request_id*/ 40_013, "controller/signOff"),
+                    controller_no_params_request(/*request_id*/ 40_014, "controller/signOff"),
                 )
                 .await;
             let after_signoff = harness
@@ -1105,7 +1147,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_no_params_request(
-                        /*request_id*/ 40_014,
+                        /*request_id*/ 40_015,
                         "controller/releaseControl",
                     ),
                 )
