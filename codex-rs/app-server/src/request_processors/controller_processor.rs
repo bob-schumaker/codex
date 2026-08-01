@@ -65,6 +65,7 @@ struct PromptRebind {
     thread_id: ThreadId,
     connection_id: ConnectionId,
     delivery: PromptRebindDelivery,
+    fallback_connection_id: Option<ConnectionId>,
 }
 
 enum PromptRebindDelivery {
@@ -289,7 +290,10 @@ impl ControllerRequestProcessor {
 
         match coordinator.interactive_owner() {
             InteractiveOwner::ControllerOwned { connection_id, .. } => {
-                ServerRequestRecipients::external_controller(*connection_id)
+                ServerRequestRecipients::external_controller_with_fallback(
+                    *connection_id,
+                    state.tui_connection_id,
+                )
             }
             InteractiveOwner::TuiOwned { .. } => {
                 if let Some(tui_connection_id) = state.tui_connection_id {
@@ -478,6 +482,7 @@ impl ControllerRequestProcessor {
             thread_id,
             connection_id,
             delivery,
+            fallback_connection_id,
         }) = rebind
         {
             match delivery {
@@ -491,6 +496,7 @@ impl ControllerRequestProcessor {
                         .rebind_requests_for_thread_to_external_controller_connection(
                             thread_id,
                             connection_id,
+                            fallback_connection_id,
                         )
                         .await;
                 }
@@ -515,6 +521,7 @@ fn prompt_rebind_after_transition(
                 thread_id,
                 connection_id: *connection_id,
                 delivery: PromptRebindDelivery::ExternalController,
+                fallback_connection_id: tui_connection_id,
             });
         }
         InteractiveOwner::TuiOwned { .. } => tui_connection_id?,
@@ -526,6 +533,7 @@ fn prompt_rebind_after_transition(
         thread_id,
         connection_id,
         delivery: PromptRebindDelivery::Normal,
+        fallback_connection_id: None,
     })
 }
 

@@ -124,6 +124,7 @@ struct PendingCallbackEntry {
     callback: oneshot::Sender<ClientRequestResult>,
     recipient_connection_ids: Option<Vec<ConnectionId>>,
     external_delivery_connection_ids: Vec<ConnectionId>,
+    external_delivery_fallback_connection_id: Option<ConnectionId>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
@@ -133,6 +134,7 @@ struct PendingCallbackEntry {
 pub(crate) struct ServerRequestRecipients {
     connection_ids: Vec<ConnectionId>,
     external_controller_connection_ids: Vec<ConnectionId>,
+    external_delivery_fallback_connection_id: Option<ConnectionId>,
 }
 
 #[derive(Clone)]
@@ -278,13 +280,18 @@ impl ServerRequestRecipients {
         Self {
             connection_ids,
             external_controller_connection_ids: Vec::new(),
+            external_delivery_fallback_connection_id: None,
         }
     }
 
-    pub(crate) fn external_controller(connection_id: ConnectionId) -> Self {
+    pub(crate) fn external_controller_with_fallback(
+        controller_connection_id: ConnectionId,
+        fallback_connection_id: Option<ConnectionId>,
+    ) -> Self {
         Self {
-            connection_ids: vec![connection_id],
-            external_controller_connection_ids: vec![connection_id],
+            connection_ids: vec![controller_connection_id],
+            external_controller_connection_ids: vec![controller_connection_id],
+            external_delivery_fallback_connection_id: fallback_connection_id,
         }
     }
 
@@ -406,6 +413,7 @@ impl OutgoingMessageSender {
                     callback: tx_approve,
                     recipient_connection_ids: connection_ids.map(<[ConnectionId]>::to_vec),
                     external_delivery_connection_ids: Vec::new(),
+                    external_delivery_fallback_connection_id: None,
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -475,6 +483,8 @@ impl OutgoingMessageSender {
                     callback: tx_approve,
                     recipient_connection_ids: Some(recipients.connection_ids().to_vec()),
                     external_delivery_connection_ids: Vec::new(),
+                    external_delivery_fallback_connection_id: recipients
+                        .external_delivery_fallback_connection_id,
                     thread_id,
                     request: request.clone(),
                 },
@@ -524,14 +534,44 @@ impl OutgoingMessageSender {
 
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
         let request_id_to_callback = Arc::clone(&self.request_id_to_callback);
+        let sender = self.sender.clone();
         tokio::spawn(async move {
-            if write_complete_rx.await.is_err() {
-                return;
-            }
+            let write_completed = write_complete_rx.await.is_ok();
 
-            let mut request_id_to_callback = request_id_to_callback.lock().await;
-            if let Some(entry) = request_id_to_callback.get_mut(&request_id) {
-                entry.mark_external_delivered_to(connection_id);
+            let fallback_request = {
+                let mut request_id_to_callback = request_id_to_callback.lock().await;
+                let Some(entry) = request_id_to_callback.get_mut(&request_id) else {
+                    return;
+                };
+                if write_completed {
+                    entry.mark_external_delivered_to(connection_id);
+                    return;
+                }
+
+                if !entry.can_resolve_from(connection_id) || entry.has_external_delivery() {
+                    return;
+                }
+                let Some(fallback_connection_id) = entry.external_delivery_fallback_connection_id
+                else {
+                    return;
+                };
+                entry.recipient_connection_ids = Some(vec![fallback_connection_id]);
+                entry.external_delivery_fallback_connection_id = None;
+                (fallback_connection_id, entry.request.clone())
+            };
+
+            let (fallback_connection_id, request) = fallback_request;
+            if let Err(err) = sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id: fallback_connection_id,
+                    message: OutgoingMessage::Request(request),
+                    write_complete_tx: None,
+                })
+                .await
+            {
+                warn!(
+                    "failed to rebind externally undelivered request to fallback client: {err:?}"
+                );
             }
         });
         Some(write_complete_tx)
@@ -576,6 +616,7 @@ impl OutgoingMessageSender {
         &self,
         thread_id: ThreadId,
         connection_id: ConnectionId,
+        fallback_connection_id: Option<ConnectionId>,
     ) {
         let requests = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
@@ -584,6 +625,7 @@ impl OutgoingMessageSender {
                 .filter_map(|entry| {
                     if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
+                        entry.external_delivery_fallback_connection_id = fallback_connection_id;
                         Some(entry.request.clone())
                     } else {
                         None
@@ -1798,7 +1840,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
             outgoing.clone(),
-            ServerRequestRecipients::external_controller(ConnectionId(2)),
+            ServerRequestRecipients::external_controller_with_fallback(ConnectionId(2), None),
             vec![ConnectionId(1), ConnectionId(2)],
             thread_id,
         );
@@ -1863,6 +1905,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_controller_write_failure_rebinds_to_fallback_before_external_delivery() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+            ),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+        drop(write_complete_tx.expect("external controller request should track write completion"));
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(rebound_request),
+            write_complete_tx,
+        } = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("fallback rebind should not time out")
+            .expect("fallback request should be sent")
+        else {
+            panic!("expected fallback request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(rebound_request.id(), &request_id);
+        assert!(write_complete_tx.is_none());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
     async fn external_controller_request_is_not_redelivered_after_external_delivery() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
@@ -1872,7 +1991,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
             outgoing.clone(),
-            ServerRequestRecipients::external_controller(ConnectionId(2)),
+            ServerRequestRecipients::external_controller_with_fallback(ConnectionId(2), None),
             vec![ConnectionId(1), ConnectionId(2)],
             thread_id,
         );
