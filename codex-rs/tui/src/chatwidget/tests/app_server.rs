@@ -169,6 +169,46 @@ async fn safety_buffering_offers_one_retry_with_app_wording() {
 }
 
 #[tokio::test]
+async fn controller_control_plane_notifications_do_not_write_transcript_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    drain_insert_history(&mut rx);
+
+    let thread_id = ThreadId::new();
+    chat.handle_server_notification(
+        ServerNotification::ControllerAuthorizationChanged(
+            codex_app_server_protocol::ControllerAuthorizationChangedNotification {
+                session_id: "controller-session".to_string(),
+                main_thread_id: thread_id.to_string(),
+                reason: codex_app_server_protocol::ControllerAuthorizationChangedReason::Approved,
+                authorization_epoch: 1,
+                owner_epoch: 0,
+                session_sequence: 1,
+                session: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ControllerControlOwnershipChanged(
+            codex_app_server_protocol::ControllerControlOwnershipChangedNotification {
+                session_id: "controller-session".to_string(),
+                main_thread_id: thread_id.to_string(),
+                reason:
+                    codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
+                authorization_epoch: 1,
+                owner_epoch: 2,
+                session_sequence: 2,
+                active_lease: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert!(chat.active_cell_transcript_key().is_none());
+}
+
+#[tokio::test]
 async fn safety_buffering_does_not_offer_retry_in_side_conversation() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_side_conversation_active(/*active*/ true);
