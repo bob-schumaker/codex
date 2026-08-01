@@ -119,12 +119,38 @@ pub enum InProcessLocalControllerEndpointConfig {
     /// Do not expose a local-controller socket.
     #[default]
     Disabled,
+    /// Try to expose a local-controller socket backed by this in-process
+    /// runtime. Startup continues without controllers if endpoint setup fails.
+    BestEffort {
+        /// Main thread known at launch time, if any. Fresh TUI launches usually
+        /// start before the main thread exists, so `None` is valid.
+        main_thread_id: Option<String>,
+    },
     /// Expose a local-controller socket backed by this in-process runtime.
     Enabled {
         /// Main thread known at launch time, if any. Fresh TUI launches usually
         /// start before the main thread exists, so `None` is valid.
         main_thread_id: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InProcessLocalControllerEndpointStatus {
+    /// The caller did not request a local-controller endpoint.
+    Disabled,
+    /// The local-controller endpoint was published successfully.
+    Available(LocalControllerEndpointMetadata),
+    /// Endpoint setup failed and the runtime continued without controllers.
+    Unavailable { reason: String },
+}
+
+impl InProcessLocalControllerEndpointStatus {
+    pub fn metadata(&self) -> Option<&LocalControllerEndpointMetadata> {
+        match self {
+            Self::Available(metadata) => Some(metadata),
+            Self::Disabled | Self::Unavailable { .. } => None,
+        }
+    }
 }
 
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
@@ -307,7 +333,7 @@ pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
-    local_controller_endpoint: Option<LocalControllerEndpointMetadata>,
+    local_controller_endpoint_status: InProcessLocalControllerEndpointStatus,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
@@ -363,7 +389,12 @@ impl InProcessClientHandle {
 
     /// Metadata for the embedded local-controller endpoint, when enabled.
     pub fn local_controller_endpoint(&self) -> Option<&LocalControllerEndpointMetadata> {
-        self.local_controller_endpoint.as_ref()
+        self.local_controller_endpoint_status.metadata()
+    }
+
+    /// Startup status for the embedded local-controller endpoint.
+    pub fn local_controller_endpoint_status(&self) -> &InProcessLocalControllerEndpointStatus {
+        &self.local_controller_endpoint_status
     }
 
     /// Requests runtime shutdown and waits for worker termination.
@@ -530,21 +561,55 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (external_transport_event_tx, external_transport_event_rx) =
         mpsc::channel::<TransportEvent>(channel_capacity);
     let external_transport_shutdown_token = CancellationToken::new();
-    let local_controller_endpoint_handle = match &args.local_controller_endpoint {
-        InProcessLocalControllerEndpointConfig::Disabled => None,
-        InProcessLocalControllerEndpointConfig::Enabled { main_thread_id } => Some(
-            codex_app_server_transport::local_controller::start_local_controller_acceptor(
+    let (local_controller_endpoint_handle, local_controller_endpoint_status) = match &args
+        .local_controller_endpoint
+    {
+        InProcessLocalControllerEndpointConfig::Disabled => {
+            (None, InProcessLocalControllerEndpointStatus::Disabled)
+        }
+        InProcessLocalControllerEndpointConfig::BestEffort { main_thread_id } => {
+            match codex_app_server_transport::local_controller::start_local_controller_acceptor(
                 args.config.codex_home.as_path(),
                 main_thread_id.clone(),
                 external_transport_event_tx.clone(),
                 external_transport_shutdown_token.clone(),
             )
-            .await?,
-        ),
+            .await
+            {
+                Ok(handle) => {
+                    let metadata = handle.metadata().clone();
+                    (
+                        Some(handle),
+                        InProcessLocalControllerEndpointStatus::Available(metadata),
+                    )
+                }
+                Err(err) => {
+                    warn!(%err, "local-controller endpoint unavailable; continuing without controllers");
+                    (
+                        None,
+                        InProcessLocalControllerEndpointStatus::Unavailable {
+                            reason: err.to_string(),
+                        },
+                    )
+                }
+            }
+        }
+        InProcessLocalControllerEndpointConfig::Enabled { main_thread_id } => {
+            let handle =
+                codex_app_server_transport::local_controller::start_local_controller_acceptor(
+                    args.config.codex_home.as_path(),
+                    main_thread_id.clone(),
+                    external_transport_event_tx.clone(),
+                    external_transport_shutdown_token.clone(),
+                )
+                .await?;
+            let metadata = handle.metadata().clone();
+            (
+                Some(handle),
+                InProcessLocalControllerEndpointStatus::Available(metadata),
+            )
+        }
     };
-    let local_controller_endpoint = local_controller_endpoint_handle
-        .as_ref()
-        .map(|handle| handle.metadata().clone());
     drop(external_transport_event_tx);
 
     let runtime_handle = tokio::spawn(async move {
@@ -1072,7 +1137,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
-        local_controller_endpoint,
+        local_controller_endpoint_status,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -1277,7 +1342,7 @@ mod tests {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
-            local_controller_endpoint: None,
+            local_controller_endpoint_status: InProcessLocalControllerEndpointStatus::Disabled,
             _test_codex_home: None,
         };
 

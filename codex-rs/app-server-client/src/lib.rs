@@ -29,6 +29,7 @@ use std::time::Duration;
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
+pub use codex_app_server::in_process::InProcessLocalControllerEndpointStatus;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 pub use codex_app_server::in_process::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
@@ -443,7 +444,7 @@ pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
-    local_controller_endpoint: Option<LocalControllerEndpointMetadata>,
+    local_controller_endpoint_status: InProcessLocalControllerEndpointStatus,
 }
 
 #[derive(Clone)]
@@ -472,7 +473,7 @@ impl InProcessAppServerClient {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
-        let local_controller_endpoint = handle.local_controller_endpoint().cloned();
+        let local_controller_endpoint_status = handle.local_controller_endpoint_status().clone();
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
@@ -585,7 +586,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
-            local_controller_endpoint,
+            local_controller_endpoint_status,
         })
     }
 
@@ -598,7 +599,12 @@ impl InProcessAppServerClient {
     /// Metadata for the embedded local-controller endpoint, when this client
     /// started one.
     pub fn local_controller_endpoint(&self) -> Option<&LocalControllerEndpointMetadata> {
-        self.local_controller_endpoint.as_ref()
+        self.local_controller_endpoint_status.metadata()
+    }
+
+    /// Startup status for the embedded local-controller endpoint.
+    pub fn local_controller_endpoint_status(&self) -> &InProcessLocalControllerEndpointStatus {
+        &self.local_controller_endpoint_status
     }
 
     /// Sends a typed client request and returns raw JSON-RPC result.
@@ -755,7 +761,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
-            local_controller_endpoint: _,
+            local_controller_endpoint_status: _,
         } = self;
         let mut worker_handle = worker_handle;
         // Drop the caller-facing receiver before asking the worker to shut
@@ -936,6 +942,17 @@ impl AppServerClient {
             Self::Remote(_) => None,
         }
     }
+
+    /// Startup status for an embedded local-controller endpoint. Remote
+    /// app-server connections never publish a per-TUI local-controller endpoint.
+    pub fn local_controller_endpoint_status(
+        &self,
+    ) -> Option<&InProcessLocalControllerEndpointStatus> {
+        match self {
+            Self::InProcess(client) => Some(client.local_controller_endpoint_status()),
+            Self::Remote(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1040,7 +1057,8 @@ mod tests {
     ) -> TestClient {
         let codex_home = match &local_controller_endpoint {
             InProcessLocalControllerEndpointConfig::Disabled => TempDir::new(),
-            InProcessLocalControllerEndpointConfig::Enabled { .. } => TempDir::new_in("/tmp"),
+            InProcessLocalControllerEndpointConfig::BestEffort { .. }
+            | InProcessLocalControllerEndpointConfig::Enabled { .. } => TempDir::new_in("/tmp"),
         }
         .expect("temp dir");
         let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
@@ -2264,7 +2282,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
-            local_controller_endpoint: None,
+            local_controller_endpoint_status: InProcessLocalControllerEndpointStatus::Disabled,
         };
 
         let event = timeout(Duration::from_secs(2), client.next_event())
@@ -2520,7 +2538,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
-            local_controller_endpoint: None,
+            local_controller_endpoint_status: InProcessLocalControllerEndpointStatus::Disabled,
         };
 
         client.shutdown().await.expect("shutdown should complete");
