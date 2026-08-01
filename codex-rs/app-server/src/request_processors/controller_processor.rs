@@ -36,7 +36,9 @@ use crate::controller_session::ControllerSessionClock;
 use crate::controller_session::ControllerSessionConfig;
 use crate::controller_session::ControllerSessionCoordinator;
 use crate::controller_session::ControllerSessionError;
+use crate::controller_session::InteractiveOwner;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::ConnectionId;
 use crate::transport::ConnectionOrigin;
 
@@ -44,6 +46,7 @@ const CONTROLLER_TRANSFER_RETRY_AFTER: u64 = 50;
 
 #[derive(Clone)]
 pub(crate) struct ControllerRequestProcessor {
+    outgoing: Arc<OutgoingMessageSender>,
     state: Arc<Mutex<ControllerProcessorState>>,
     enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     enrollment_policy: ControllerEnrollmentPolicy,
@@ -53,7 +56,13 @@ pub(crate) struct ControllerRequestProcessor {
 
 struct ControllerProcessorState {
     coordinator: Option<ControllerSessionCoordinator>,
+    tui_connection_id: Option<ConnectionId>,
     launch_state: ControllerLaunchState,
+}
+
+struct PromptRebind {
+    thread_id: ThreadId,
+    connection_id: ConnectionId,
 }
 
 pub(crate) enum ControllerRequestTarget {
@@ -69,14 +78,17 @@ pub(crate) struct ControllerNormalAuthorization {
 
 impl ControllerRequestProcessor {
     pub(crate) fn new(
+        outgoing: Arc<OutgoingMessageSender>,
         enrollment_source: Arc<dyn ControllerEnrollmentSource>,
         enrollment_policy: ControllerEnrollmentPolicy,
         clock: ControllerSessionClock,
         session_config: ControllerSessionConfig,
     ) -> Self {
         Self {
+            outgoing,
             state: Arc::new(Mutex::new(ControllerProcessorState {
                 coordinator: None,
+                tui_connection_id: None,
                 launch_state: ControllerLaunchState::Starting,
             })),
             enrollment_source,
@@ -86,12 +98,17 @@ impl ControllerRequestProcessor {
         }
     }
 
-    pub(crate) fn register_main_thread(&self, main_thread_id: ThreadId) {
+    pub(crate) fn register_main_thread(
+        &self,
+        main_thread_id: ThreadId,
+        tui_connection_id: ConnectionId,
+    ) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.coordinator.is_none() {
+            state.tui_connection_id = Some(tui_connection_id);
             state.coordinator = Some(ControllerSessionCoordinator::new(
                 main_thread_id,
                 self.clock.clone(),
@@ -100,7 +117,7 @@ impl ControllerRequestProcessor {
         }
     }
 
-    pub(crate) fn request_participation(
+    pub(crate) async fn request_participation(
         &self,
         connection_id: ConnectionId,
         origin: ConnectionOrigin,
@@ -108,112 +125,98 @@ impl ControllerRequestProcessor {
         params: ControllerRequestParticipationParams,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Err(main_thread_unavailable(state.launch_state.clone()));
-        };
-        let Some(main_thread_id) = coordinator.main_thread_id() else {
-            return Err(main_thread_closed());
-        };
-
         let verifier = ControllerEnrollmentVerifier::new(
             Arc::clone(&self.enrollment_source),
             self.enrollment_policy,
             self.clock.clone(),
         );
-        let grant = match verifier.verify(
-            connection_id,
-            main_thread_id,
-            ControllerParticipationEvidence {
-                display_claims: ControllerDisplayClaims {
-                    controller_name: params.controller_name,
-                    description: params.description,
-                },
-                credential_proof,
-            },
-        ) {
-            Ok(grant) => grant,
-            Err(err) => {
-                return Ok(ControllerRequestParticipationResponse {
-                    status: ControllerParticipationStatus::Rejected,
-                    session: None,
-                    denial: Some(ControllerParticipationDenial {
-                        message: enrollment_error_message(&err).to_string(),
-                        data: enrollment_error_data(err, Some(main_thread_id)),
-                    }),
-                });
-            }
-        };
 
-        let session = coordinator
-            .request_participation(connection_id, grant)
-            .map_err(controller_session_error)?;
-        Ok(ControllerRequestParticipationResponse {
-            status: ControllerParticipationStatus::Approved,
-            session: Some(session),
-            denial: None,
-        })
+        let (response, rebind) = self.with_main_thread_rebind(|coordinator, main_thread_id| {
+            let grant = match verifier.verify(
+                connection_id,
+                main_thread_id,
+                ControllerParticipationEvidence {
+                    display_claims: ControllerDisplayClaims {
+                        controller_name: params.controller_name,
+                        description: params.description,
+                    },
+                    credential_proof,
+                },
+            ) {
+                Ok(grant) => grant,
+                Err(err) => {
+                    return Ok(ControllerRequestParticipationResponse {
+                        status: ControllerParticipationStatus::Rejected,
+                        session: None,
+                        denial: Some(ControllerParticipationDenial {
+                            message: enrollment_error_message(&err).to_string(),
+                            data: enrollment_error_data(err, Some(main_thread_id)),
+                        }),
+                    });
+                }
+            };
+
+            let session = coordinator
+                .request_participation(connection_id, grant)
+                .map_err(controller_session_error)?;
+            Ok(ControllerRequestParticipationResponse {
+                status: ControllerParticipationStatus::Approved,
+                session: Some(session),
+                denial: None,
+            })
+        })?;
+
+        self.rebind_pending_prompts(rebind).await;
+        response
     }
 
-    pub(crate) fn acquire_control(
+    pub(crate) async fn acquire_control(
         &self,
         connection_id: ConnectionId,
         origin: ConnectionOrigin,
     ) -> Result<ControllerAcquireControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Err(main_thread_unavailable(state.launch_state.clone()));
-        };
-        coordinator
-            .acquire_control(connection_id)
-            .map(|session| ControllerAcquireControlResponse { session })
-            .map_err(controller_session_error)
+        let (response, rebind) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator
+                .acquire_control(connection_id)
+                .map(|session| ControllerAcquireControlResponse { session })
+                .map_err(controller_session_error)
+        })?;
+        self.rebind_pending_prompts(rebind).await;
+        response
     }
 
-    pub(crate) fn release_control(
+    pub(crate) async fn release_control(
         &self,
         connection_id: ConnectionId,
         origin: ConnectionOrigin,
     ) -> Result<ControllerReleaseControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Err(main_thread_unavailable(state.launch_state.clone()));
-        };
-        coordinator
-            .release_control(connection_id)
-            .map(|session| ControllerReleaseControlResponse { session })
-            .map_err(controller_session_error)
+        let (response, rebind) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator
+                .release_control(connection_id)
+                .map(|session| ControllerReleaseControlResponse { session })
+                .map_err(controller_session_error)
+        })?;
+        self.rebind_pending_prompts(rebind).await;
+        response
     }
 
-    pub(crate) fn sign_off(
+    pub(crate) async fn sign_off(
         &self,
         connection_id: ConnectionId,
         origin: ConnectionOrigin,
     ) -> Result<ControllerSignOffResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Err(main_thread_unavailable(state.launch_state.clone()));
-        };
-        coordinator.revoke_session(connection_id);
-        Ok(ControllerSignOffResponse {})
+        let (response, rebind) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator.revoke_session(connection_id);
+            Ok(ControllerSignOffResponse {})
+        })?;
+        self.rebind_pending_prompts(rebind).await;
+        response
     }
 
-    pub(crate) fn authorize_normal_request(
+    pub(crate) async fn authorize_normal_request(
         &self,
         connection_id: ConnectionId,
         rule: AdmissionRule,
@@ -241,62 +244,73 @@ impl ControllerRequestProcessor {
             RequiredAuthority::StandingSession | RequiredAuthority::ActiveOwner => {}
         }
 
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Err(main_thread_unavailable(state.launch_state.clone()));
-        };
-
-        let main_thread_id = match rule.required_authority {
-            RequiredAuthority::StandingSession => coordinator
-                .require_standing_session(connection_id)
-                .map_err(controller_session_error)?,
-            RequiredAuthority::ActiveOwner => coordinator
-                .require_active_owner(connection_id)
-                .map_err(controller_session_error)?,
-            RequiredAuthority::PreParticipation | RequiredAuthority::TuiOnly => unreachable!(),
-        };
-
-        authorize_target(rule.target, target, main_thread_id)
+        let (result, rebind) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            let authorized_main_thread_id = match rule.required_authority {
+                RequiredAuthority::StandingSession => coordinator
+                    .require_standing_session(connection_id)
+                    .map_err(controller_session_error),
+                RequiredAuthority::ActiveOwner => coordinator
+                    .require_active_owner(connection_id)
+                    .map_err(controller_session_error),
+                RequiredAuthority::PreParticipation | RequiredAuthority::TuiOnly => unreachable!(),
+            };
+            authorized_main_thread_id
+                .and_then(|main_thread_id| authorize_target(rule.target, target, main_thread_id))
+        })?;
+        self.rebind_pending_prompts(rebind).await;
+        result
     }
 
-    pub(crate) fn reclaim_for_primary_thread_input(
+    pub(crate) async fn reclaim_for_primary_thread_input(
         &self,
         thread_id: &str,
     ) -> Result<(), JSONRPCErrorError> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(coordinator) = state.coordinator.as_mut() else {
-            return Ok(());
-        };
-        let Some(main_thread_id) = coordinator.main_thread_id() else {
-            return Ok(());
-        };
-        if main_thread_id.to_string() != thread_id {
-            return Ok(());
-        }
+        let (result, rebind) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tui_connection_id = state.tui_connection_id;
+            let Some(coordinator) = state.coordinator.as_mut() else {
+                return Ok(());
+            };
+            let Some(main_thread_id) = coordinator.main_thread_id() else {
+                return Ok(());
+            };
+            if main_thread_id.to_string() != thread_id {
+                return Ok(());
+            }
 
-        coordinator
-            .reclaim_for_tui()
-            .map_err(controller_session_error)
+            let owner_before = coordinator.interactive_owner().clone();
+            let result = coordinator
+                .reclaim_for_tui()
+                .map_err(controller_session_error);
+            let rebind = prompt_rebind_after_transition(
+                main_thread_id,
+                tui_connection_id,
+                &owner_before,
+                coordinator.interactive_owner(),
+            );
+            (result, rebind)
+        };
+        self.rebind_pending_prompts(rebind).await;
+        result
     }
 
-    pub(crate) fn authorize_server_response(
+    pub(crate) async fn authorize_server_response(
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
         response: &ServerResponse,
     ) -> Result<(), JSONRPCErrorError> {
         let method = response.method();
-        reject_controller_session_scoped_response(response)?;
         self.authorize_server_request_resolution(connection_id, thread_id, &method)
+            .await?;
+        reject_controller_session_scoped_response(response)?;
+        Ok(())
     }
 
-    pub(crate) fn authorize_server_request_error(
+    pub(crate) async fn authorize_server_request_error(
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
@@ -307,9 +321,23 @@ impl ControllerRequestProcessor {
             thread_id,
             server_request_method(request),
         )
+        .await
     }
 
-    fn authorize_server_request_resolution(
+    pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
+        let Ok((result, rebind)) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator.revoke_session(connection_id);
+            Ok(())
+        }) else {
+            return;
+        };
+        if result.is_err() {
+            return;
+        }
+        self.rebind_pending_prompts(rebind).await;
+    }
+
+    async fn authorize_server_request_resolution(
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
@@ -336,22 +364,22 @@ impl ControllerRequestProcessor {
                         ),
                     ));
                 };
-                let mut state = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some(coordinator) = state.coordinator.as_mut() else {
-                    return Err(main_thread_unavailable(state.launch_state.clone()));
-                };
-                let main_thread_id = coordinator
-                    .require_active_owner(connection_id)
-                    .map_err(controller_session_error)?;
-                authorize_target(
-                    rule.target,
-                    ControllerRequestTarget::ExactThread(thread_id.to_string()),
-                    main_thread_id,
-                )?;
-                Ok(())
+                let (result, rebind) =
+                    self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+                        coordinator
+                            .require_active_owner(connection_id)
+                            .map_err(controller_session_error)
+                            .and_then(|main_thread_id| {
+                                authorize_target(
+                                    rule.target,
+                                    ControllerRequestTarget::ExactThread(thread_id.to_string()),
+                                    main_thread_id,
+                                )
+                                .map(|_| ())
+                            })
+                    })?;
+                self.rebind_pending_prompts(rebind).await;
+                result
             }
             RequiredAuthority::TuiOnly => Err(controller_error(
                 "external controller cannot resolve TUI-only server request",
@@ -371,6 +399,71 @@ impl ControllerRequestProcessor {
             }
         }
     }
+
+    fn with_main_thread_rebind<T>(
+        &self,
+        operation: impl FnOnce(
+            &mut ControllerSessionCoordinator,
+            ThreadId,
+        ) -> Result<T, JSONRPCErrorError>,
+    ) -> Result<(Result<T, JSONRPCErrorError>, Option<PromptRebind>), JSONRPCErrorError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let launch_state = state.launch_state.clone();
+        let tui_connection_id = state.tui_connection_id;
+        let Some(coordinator) = state.coordinator.as_mut() else {
+            return Err(main_thread_unavailable(launch_state));
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return Err(main_thread_closed());
+        };
+        let owner_before = coordinator.interactive_owner().clone();
+        let result = operation(coordinator, main_thread_id);
+        let rebind = prompt_rebind_after_transition(
+            main_thread_id,
+            tui_connection_id,
+            &owner_before,
+            coordinator.interactive_owner(),
+        );
+        Ok((result, rebind))
+    }
+
+    async fn rebind_pending_prompts(&self, rebind: Option<PromptRebind>) {
+        if let Some(PromptRebind {
+            thread_id,
+            connection_id,
+        }) = rebind
+        {
+            self.outgoing
+                .rebind_requests_for_thread_to_connection(thread_id, connection_id)
+                .await;
+        }
+    }
+}
+
+fn prompt_rebind_after_transition(
+    thread_id: ThreadId,
+    tui_connection_id: Option<ConnectionId>,
+    owner_before: &InteractiveOwner,
+    owner_after: &InteractiveOwner,
+) -> Option<PromptRebind> {
+    if owner_before == owner_after {
+        return None;
+    }
+
+    let connection_id = match owner_after {
+        InteractiveOwner::ControllerOwned { connection_id, .. } => *connection_id,
+        InteractiveOwner::TuiOwned { .. } => tui_connection_id?,
+        InteractiveOwner::TransferPending { .. }
+        | InteractiveOwner::TuiUnavailable { .. }
+        | InteractiveOwner::Closed => return None,
+    };
+    Some(PromptRebind {
+        thread_id,
+        connection_id,
+    })
 }
 
 fn server_request_method(request: &ServerRequest) -> &'static str {

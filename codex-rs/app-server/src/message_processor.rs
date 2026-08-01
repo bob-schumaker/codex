@@ -474,6 +474,7 @@ impl MessageProcessor {
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let controller_processor = ControllerRequestProcessor::new(
+            outgoing.clone(),
             controller_enrollment_source,
             ControllerEnrollmentPolicy::BestEffort,
             ControllerSessionClock::from_fn(std::time::Instant::now),
@@ -808,6 +809,9 @@ impl MessageProcessor {
                 "timed out waiting for connection RPCs to drain"
             );
         }
+        self.controller_processor
+            .connection_closed(connection_id)
+            .await;
         self.outgoing.connection_closed(connection_id).await;
         self.fs_processor.connection_closed(connection_id).await;
         self.command_exec_processor
@@ -886,11 +890,11 @@ impl MessageProcessor {
                 return false;
             }
         };
-        if let Err(err) = self.controller_processor.authorize_server_response(
-            connection_id,
-            pending_request.thread_id,
-            &response,
-        ) {
+        if let Err(err) = self
+            .controller_processor
+            .authorize_server_response(connection_id, pending_request.thread_id, &response)
+            .await
+        {
             tracing::warn!(
                 ?connection_id,
                 ?request_id,
@@ -916,11 +920,15 @@ impl MessageProcessor {
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
             return true;
         };
-        if let Err(err) = self.controller_processor.authorize_server_request_error(
-            connection_id,
-            pending_request.thread_id,
-            &pending_request.request,
-        ) {
+        if let Err(err) = self
+            .controller_processor
+            .authorize_server_request_error(
+                connection_id,
+                pending_request.thread_id,
+                &pending_request.request,
+            )
+            .await
+        {
             tracing::warn!(
                 ?connection_id,
                 ?request_id,
@@ -1007,7 +1015,8 @@ impl MessageProcessor {
             serialization_scope.as_ref(),
         ) {
             self.controller_processor
-                .reclaim_for_primary_thread_input(thread_id)?;
+                .reclaim_for_primary_thread_input(thread_id)
+                .await?;
         }
         self.initialize_processor.track_initialized_request(
             connection_id,
@@ -1085,11 +1094,11 @@ impl MessageProcessor {
                 && !codex_request.method_name().starts_with("controller/")
             {
                 let target = controller_request_target(&codex_request, admission_rule)?;
-                Some(self.controller_processor.authorize_normal_request(
-                    connection_id,
-                    admission_rule,
-                    target,
-                )?)
+                Some(
+                    self.controller_processor
+                        .authorize_normal_request(connection_id, admission_rule, target)
+                        .await?,
+                )
             } else {
                 None
             };
@@ -1188,18 +1197,22 @@ impl MessageProcessor {
                     session.controller_credential_proof(),
                     params,
                 )
+                .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerAcquireControl { .. } => self
                 .controller_processor
                 .acquire_control(connection_id, connection_origin)
+                .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerReleaseControl { .. } => self
                 .controller_processor
                 .release_control(connection_id, connection_origin)
+                .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerSignOff { .. } => self
                 .controller_processor
                 .sign_off(connection_id, connection_origin)
+                .await
                 .map(|response| Some(response.into())),
             ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor

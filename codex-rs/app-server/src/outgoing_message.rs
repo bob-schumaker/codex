@@ -387,19 +387,33 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
     ) {
         let requests = self.pending_requests_for_thread(thread_id).await;
-        for request in requests {
-            if let Err(err) = self
-                .sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id,
-                    message: OutgoingMessage::Request(request),
-                    write_complete_tx: None,
+        self.send_pending_requests_to_connection(connection_id, requests)
+            .await;
+    }
+
+    pub(crate) async fn rebind_requests_for_thread_to_connection(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) {
+        let requests = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let mut requests = request_id_to_callback
+                .values_mut()
+                .filter_map(|entry| {
+                    if entry.thread_id == Some(thread_id) {
+                        entry.recipient_connection_ids = Some(vec![connection_id]);
+                        Some(entry.request.clone())
+                    } else {
+                        None
+                    }
                 })
-                .await
-            {
-                warn!("failed to resend request to client: {err:?}");
-            }
-        }
+                .collect::<Vec<_>>();
+            requests.sort_by(|left, right| left.id().cmp(right.id()));
+            requests
+        };
+        self.send_pending_requests_to_connection(connection_id, requests)
+            .await;
     }
 
     pub(crate) async fn pending_server_request(
@@ -413,6 +427,26 @@ impl OutgoingMessageSender {
                 thread_id: entry.thread_id,
                 request: entry.request.clone(),
             })
+    }
+
+    async fn send_pending_requests_to_connection(
+        &self,
+        connection_id: ConnectionId,
+        requests: Vec<ServerRequest>,
+    ) {
+        for request in requests {
+            if let Err(err) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message: OutgoingMessage::Request(request),
+                    write_complete_tx: None,
+                })
+                .await
+            {
+                warn!("failed to resend request to client: {err:?}");
+            }
+        }
     }
 
     pub(crate) async fn notify_client_response_from_connection(
@@ -1463,6 +1497,92 @@ mod tests {
             .expect("wait should not time out")
             .expect("waiter should receive a callback");
         assert_eq!(result, Err(error));
+    }
+
+    #[tokio::test]
+    async fn rebind_requests_for_thread_moves_resolution_to_new_connection() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let thread_id = ThreadId::new();
+
+        let (request_id, mut wait_for_result) = outgoing
+            .send_request_to_connections(
+                Some(&[ConnectionId(1)]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    CommandExecutionRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        started_at_ms: 0,
+                        approval_id: None,
+                        environment_id: None,
+                        reason: None,
+                        network_approval_context: None,
+                        command: Some("echo hi".to_string()),
+                        cwd: None,
+                        command_actions: None,
+                        additional_permissions: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            ..
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(initial_request.id(), &request_id);
+
+        outgoing
+            .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(2))
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(rebound_request),
+            ..
+        } = rx.recv().await.expect("rebound request should be sent")
+        else {
+            panic!("expected rebound request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(rebound_request.id(), &request_id);
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
     }
 
     #[tokio::test]

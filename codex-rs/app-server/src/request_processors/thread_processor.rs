@@ -1445,7 +1445,7 @@ impl ThreadRequestProcessor {
         let notif = thread_started_notification(thread);
         listener_task_context
             .controller_processor
-            .register_main_thread(thread_id);
+            .register_main_thread(thread_id, request_id.connection_id);
         listener_task_context
             .outgoing
             .send_response_with_thread_originator(request_id, response, thread_originator)
