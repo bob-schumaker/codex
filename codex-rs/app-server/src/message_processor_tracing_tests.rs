@@ -17,6 +17,7 @@ use app_test_support::write_mock_responses_config_toml;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
@@ -31,7 +32,9 @@ use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
+use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -842,6 +845,26 @@ fn controller_turn_start_request(request_id: i64, thread_id: impl Into<String>) 
     }
 }
 
+fn command_execution_approval_payload(thread_id: impl Into<String>) -> ServerRequestPayload {
+    ServerRequestPayload::CommandExecutionRequestApproval(CommandExecutionRequestApprovalParams {
+        thread_id: thread_id.into(),
+        turn_id: "turn-1".to_string(),
+        item_id: "item-1".to_string(),
+        started_at_ms: 0,
+        approval_id: None,
+        environment_id: None,
+        reason: None,
+        network_approval_context: None,
+        command: Some("echo hi".to_string()),
+        cwd: None,
+        command_actions: None,
+        additional_permissions: None,
+        proposed_execpolicy_amendment: None,
+        proposed_network_policy_amendments: None,
+        available_decisions: None,
+    })
+}
+
 fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
     ControllerCredentialProof {
         subject_id: "controller-subject".to_string(),
@@ -1053,6 +1076,136 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             assert!(reacquired.session.active_lease.is_some());
             assert!(reacquired.session.effective_capabilities.mutate_main_thread);
 
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            let (approval_request_id, wait_for_approval) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: approval_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let approval_result = tokio::time::timeout(Duration::from_secs(1), wait_for_approval)
+                .await
+                .expect("approval response should not time out")
+                .expect("approval waiter should receive response")
+                .expect("controller accept should resolve successfully");
+            assert_eq!(approval_result, serde_json::json!({ "decision": "accept" }));
+
+            let (session_scoped_request_id, mut wait_for_session_scoped) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: session_scoped_request_id.clone(),
+                        result: serde_json::json!({ "decision": "acceptForSession" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_session_scoped)
+                    .await
+                    .is_err()
+            );
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: session_scoped_request_id,
+                        result: serde_json::json!({ "decision": "cancel" }),
+                    },
+                )
+                .await;
+            let session_scoped_cleanup_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_session_scoped)
+                    .await
+                    .expect("cleanup response should not time out")
+                    .expect("approval waiter should receive cleanup response")
+                    .expect("controller cancel should resolve successfully");
+            assert_eq!(
+                session_scoped_cleanup_result,
+                serde_json::json!({ "decision": "cancel" })
+            );
+
+            let _: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_010,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            let (stale_approval_request_id, mut wait_for_stale_approval) = harness
+                .processor
+                .outgoing
+                .send_request_to_connections(
+                    Some(&[EXTERNAL_CONNECTION_ID]),
+                    command_execution_approval_payload(started.thread.id.clone()),
+                    Some(main_thread_id),
+                )
+                .await;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: stale_approval_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_stale_approval)
+                    .await
+                    .is_err()
+            );
+
+            let reacquired_after_prompt_stale: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_011,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(
+                reacquired_after_prompt_stale
+                    .session
+                    .effective_capabilities
+                    .mutate_main_thread
+            );
+
             let primary_session = Arc::clone(&harness.session);
             let primary_turn_request_id = harness
                 .submit_for_connection(
@@ -1060,7 +1213,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::Stdio,
                     primary_session,
                     controller_turn_start_request(
-                        /*request_id*/ 40_010,
+                        /*request_id*/ 40_012,
                         started.thread.id.clone(),
                     ),
                 )
@@ -1071,7 +1224,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_turn_start_request(
-                        /*request_id*/ 40_011,
+                        /*request_id*/ 40_013,
                         started.thread.id.clone(),
                     ),
                 )
@@ -1106,7 +1259,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_initialize_request(/*request_id*/ 40_012),
+                    controller_initialize_request(/*request_id*/ 40_014),
                 )
                 .await;
             second_session
@@ -1116,7 +1269,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_participation_request(/*request_id*/ 40_013),
+                    controller_participation_request(/*request_id*/ 40_015),
                 )
                 .await;
             assert_eq!(
@@ -1138,7 +1291,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
-                    controller_no_params_request(/*request_id*/ 40_014, "controller/signOff"),
+                    controller_no_params_request(/*request_id*/ 40_016, "controller/signOff"),
                 )
                 .await;
             let after_signoff = harness
@@ -1147,7 +1300,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_no_params_request(
-                        /*request_id*/ 40_015,
+                        /*request_id*/ 40_017,
                         "controller/releaseControl",
                     ),
                 )

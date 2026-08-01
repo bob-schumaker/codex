@@ -121,9 +121,30 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 
 struct PendingCallbackEntry {
     callback: oneshot::Sender<ClientRequestResult>,
+    recipient_connection_ids: Option<Vec<ConnectionId>>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingServerRequest {
+    pub(crate) thread_id: Option<ThreadId>,
+    pub(crate) request: ServerRequest,
+}
+
+enum TakeRequestCallbackResult {
+    Found(RequestId, Box<PendingCallbackEntry>),
+    Missing,
+    UnauthorizedConnection,
+}
+
+impl PendingCallbackEntry {
+    fn can_resolve_from(&self, connection_id: ConnectionId) -> bool {
+        self.recipient_connection_ids
+            .as_ref()
+            .is_none_or(|connection_ids| connection_ids.contains(&connection_id))
+    }
 }
 
 impl ThreadScopedOutgoingMessageSender {
@@ -309,6 +330,7 @@ impl OutgoingMessageSender {
                 id,
                 PendingCallbackEntry {
                     callback: tx_approve,
+                    recipient_connection_ids: connection_ids.map(<[ConnectionId]>::to_vec),
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -380,11 +402,41 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn pending_server_request(
+        &self,
+        id: &RequestId,
+    ) -> Option<PendingServerRequest> {
+        let request_id_to_callback = self.request_id_to_callback.lock().await;
+        request_id_to_callback
+            .get(id)
+            .map(|entry| PendingServerRequest {
+                thread_id: entry.thread_id,
+                request: entry.request.clone(),
+            })
+    }
 
+    pub(crate) async fn notify_client_response_from_connection(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        result: Result,
+    ) {
+        let entry = self
+            .take_request_callback_from_connection(connection_id, &id)
+            .await;
+
+        self.notify_client_response_entry(entry, id, result).await;
+    }
+
+    async fn notify_client_response_entry(
+        &self,
+        entry: TakeRequestCallbackResult,
+        id: RequestId,
+        result: Result,
+    ) {
         match entry {
-            Some((id, entry)) => {
+            TakeRequestCallbackResult::Found(id, entry) => {
+                let entry = *entry;
                 let completed_at_ms = now_unix_timestamp_ms();
                 if let Ok(response) = entry.request.response_from_result(result.clone())
                     && !matches!(response, ServerResponse::PermissionsRequestApproval { .. })
@@ -396,17 +448,35 @@ impl OutgoingMessageSender {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
             }
-            None => {
+            TakeRequestCallbackResult::Missing => {
                 warn!("could not find callback for {id:?}");
             }
+            TakeRequestCallbackResult::UnauthorizedConnection => {}
         }
     }
 
-    pub(crate) async fn notify_client_error(&self, id: RequestId, error: JSONRPCErrorError) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn notify_client_error_from_connection(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) {
+        let entry = self
+            .take_request_callback_from_connection(connection_id, &id)
+            .await;
 
+        self.notify_client_error_entry(entry, id, error).await;
+    }
+
+    async fn notify_client_error_entry(
+        &self,
+        entry: TakeRequestCallbackResult,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) {
         match entry {
-            Some((id, entry)) => {
+            TakeRequestCallbackResult::Found(id, entry) => {
+                let entry = *entry;
                 warn!("client responded with error for {id:?}: {error:?}");
                 self.analytics_events_client
                     .track_server_request_aborted(now_unix_timestamp_ms(), id.clone());
@@ -414,20 +484,23 @@ impl OutgoingMessageSender {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
             }
-            None => {
+            TakeRequestCallbackResult::Missing => {
                 warn!("could not find callback for {id:?}");
             }
+            TakeRequestCallbackResult::UnauthorizedConnection => {}
         }
     }
 
     pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
         let entry = self.take_request_callback(id).await;
-        if let Some((request_id, _entry)) = entry {
-            self.analytics_events_client
-                .track_server_request_aborted(now_unix_timestamp_ms(), request_id);
-            true
-        } else {
-            false
+        match entry {
+            TakeRequestCallbackResult::Found(request_id, _entry) => {
+                self.analytics_events_client
+                    .track_server_request_aborted(now_unix_timestamp_ms(), request_id);
+                true
+            }
+            TakeRequestCallbackResult::Missing
+            | TakeRequestCallbackResult::UnauthorizedConnection => false,
         }
     }
 
@@ -452,12 +525,39 @@ impl OutgoingMessageSender {
         }
     }
 
-    async fn take_request_callback(
-        &self,
-        id: &RequestId,
-    ) -> Option<(RequestId, PendingCallbackEntry)> {
+    async fn take_request_callback(&self, id: &RequestId) -> TakeRequestCallbackResult {
         let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-        request_id_to_callback.remove_entry(id)
+        request_id_to_callback
+            .remove_entry(id)
+            .map(|(request_id, entry)| {
+                TakeRequestCallbackResult::Found(request_id, Box::new(entry))
+            })
+            .unwrap_or(TakeRequestCallbackResult::Missing)
+    }
+
+    async fn take_request_callback_from_connection(
+        &self,
+        connection_id: ConnectionId,
+        id: &RequestId,
+    ) -> TakeRequestCallbackResult {
+        let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+        let Some(entry) = request_id_to_callback.get(id) else {
+            return TakeRequestCallbackResult::Missing;
+        };
+        if !entry.can_resolve_from(connection_id) {
+            warn!(
+                request_id = ?id,
+                ?connection_id,
+                "dropping server-request response from non-recipient connection"
+            );
+            return TakeRequestCallbackResult::UnauthorizedConnection;
+        }
+        request_id_to_callback
+            .remove_entry(id)
+            .map(|(request_id, entry)| {
+                TakeRequestCallbackResult::Found(request_id, Box::new(entry))
+            })
+            .unwrap_or(TakeRequestCallbackResult::Missing)
     }
 
     pub(crate) async fn pending_requests_for_thread(
@@ -1311,9 +1411,53 @@ mod tests {
         let error = internal_error("refresh failed");
 
         outgoing
-            .notify_client_error(request_id, error.clone())
+            .notify_client_error_from_connection(ConnectionId(1), request_id, error.clone())
             .await;
 
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback");
+        assert_eq!(result, Err(error));
+    }
+
+    #[tokio::test]
+    async fn server_request_response_ignores_non_recipient_connection() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+
+        let (request_id, mut wait_for_result) = outgoing
+            .send_request_to_connections(
+                Some(&[ConnectionId(1)]),
+                ServerRequestPayload::ApplyPatchApproval(ApplyPatchApprovalParams {
+                    conversation_id: ThreadId::new(),
+                    call_id: "call-id".to_string(),
+                    file_changes: HashMap::new(),
+                    reason: None,
+                    grant_root: None,
+                }),
+                /*thread_id*/ None,
+            )
+            .await;
+
+        outgoing
+            .notify_client_error_from_connection(
+                ConnectionId(2),
+                request_id.clone(),
+                internal_error("wrong connection"),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        let error = internal_error("target connection");
+        outgoing
+            .notify_client_error_from_connection(ConnectionId(1), request_id, error.clone())
+            .await;
         let result = timeout(Duration::from_secs(1), wait_for_result)
             .await
             .expect("wait should not time out")

@@ -621,12 +621,20 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                         Some(InProcessClientMessage::ServerRequestResponse { request_id, result }) => {
                             outgoing_message_sender
-                                .notify_client_response(request_id, result)
+                                .notify_client_response_from_connection(
+                                    IN_PROCESS_CONNECTION_ID,
+                                    request_id,
+                                    result,
+                                )
                                 .await;
                         }
                         Some(InProcessClientMessage::ServerRequestError { request_id, error }) => {
                             outgoing_message_sender
-                                .notify_client_error(request_id, error)
+                                .notify_client_error_from_connection(
+                                    IN_PROCESS_CONNECTION_ID,
+                                    request_id,
+                                    error,
+                                )
                                 .await;
                         }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
@@ -695,7 +703,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     _ => unreachable!("we just sent a ServerRequest variant"),
                                 };
                                 outgoing_message_sender
-                                    .notify_client_error(request_id, error)
+                                    .notify_client_error_from_connection(
+                                        IN_PROCESS_CONNECTION_ID,
+                                        request_id,
+                                        error,
+                                    )
                                     .await;
                             }
                         }

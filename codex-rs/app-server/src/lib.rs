@@ -1108,11 +1108,17 @@ pub async fn run_main_with_transport_options(
                                         }
                                     }
                                     JSONRPCMessage::Response(response) => {
-                                        if !connections.contains_key(&connection_id) {
+                                        let Some(connection_state) = connections.get(&connection_id) else {
                                             warn!("dropping response from unknown connection: {connection_id:?}");
                                             continue;
-                                        }
-                                        processor.process_response(response).await;
+                                        };
+                                        processor
+                                            .process_response(
+                                                connection_id,
+                                                connection_state.origin,
+                                                response,
+                                            )
+                                            .await;
                                     }
                                     JSONRPCMessage::Notification(notification) => {
                                         if !connections.contains_key(&connection_id) {
@@ -1122,11 +1128,17 @@ pub async fn run_main_with_transport_options(
                                         processor.process_notification(notification).await;
                                     }
                                     JSONRPCMessage::Error(err) => {
-                                        if !connections.contains_key(&connection_id) {
+                                        let Some(connection_state) = connections.get(&connection_id) else {
                                             warn!("dropping error from unknown connection: {connection_id:?}");
                                             continue;
-                                        }
-                                        processor.process_error(err).await;
+                                        };
+                                        processor
+                                            .process_error(
+                                                connection_id,
+                                                connection_state.origin,
+                                                err,
+                                            )
+                                            .await;
                                     }
                                 }
                             }

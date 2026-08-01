@@ -76,6 +76,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::experimental_required_message;
@@ -824,16 +825,112 @@ impl MessageProcessor {
     }
 
     /// Handle a standalone JSON-RPC response originating from the peer.
-    pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
+    pub(crate) async fn process_response(
+        &self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        response: JSONRPCResponse,
+    ) {
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
-        self.outgoing.notify_client_response(id, result).await
+        if self
+            .authorize_server_request_response(connection_id, connection_origin, &id, &result)
+            .await
+        {
+            self.outgoing
+                .notify_client_response_from_connection(connection_id, id, result)
+                .await;
+        }
     }
 
     /// Handle an error object received from the peer.
-    pub(crate) async fn process_error(&self, err: JSONRPCError) {
+    pub(crate) async fn process_error(
+        &self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        err: JSONRPCError,
+    ) {
         tracing::error!("<- error: {:?}", err);
-        self.outgoing.notify_client_error(err.id, err.error).await;
+        if self
+            .authorize_server_request_error(connection_id, connection_origin, &err.id)
+            .await
+        {
+            self.outgoing
+                .notify_client_error_from_connection(connection_id, err.id, err.error)
+                .await;
+        }
+    }
+
+    async fn authorize_server_request_response(
+        &self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        request_id: &RequestId,
+        result: &codex_app_server_protocol::Result,
+    ) -> bool {
+        if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
+            return true;
+        }
+
+        let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
+            return true;
+        };
+        let response = match pending_request.request.response_from_result(result.clone()) {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    ?connection_id,
+                    ?request_id,
+                    "dropping invalid external-controller server-request response: {err}"
+                );
+                return false;
+            }
+        };
+        if let Err(err) = self.controller_processor.authorize_server_response(
+            connection_id,
+            pending_request.thread_id,
+            &response,
+        ) {
+            tracing::warn!(
+                ?connection_id,
+                ?request_id,
+                error = ?err,
+                "dropping unauthorized external-controller server-request response"
+            );
+            return false;
+        }
+
+        true
+    }
+
+    async fn authorize_server_request_error(
+        &self,
+        connection_id: ConnectionId,
+        connection_origin: ConnectionOrigin,
+        request_id: &RequestId,
+    ) -> bool {
+        if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
+            return true;
+        }
+
+        let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
+            return true;
+        };
+        if let Err(err) = self.controller_processor.authorize_server_request_error(
+            connection_id,
+            pending_request.thread_id,
+            &pending_request.request,
+        ) {
+            tracing::warn!(
+                ?connection_id,
+                ?request_id,
+                error = ?err,
+                "dropping unauthorized external-controller server-request error"
+            );
+            return false;
+        }
+
+        true
     }
 
     async fn handle_client_request(

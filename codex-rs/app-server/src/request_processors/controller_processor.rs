@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
@@ -13,12 +14,17 @@ use codex_app_server_protocol::ControllerRequestParticipationParams;
 use codex_app_server_protocol::ControllerRequestParticipationResponse;
 use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ControllerSignOffResponse;
+use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::PermissionGrantScope;
+use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerResponse;
 use codex_protocol::ThreadId;
 
 use crate::controller_admission::AdmissionRule;
 use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
+use crate::controller_admission::server_request_response_rule;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerDisplayClaims;
 use crate::controller_enrollment::ControllerEnrollmentError;
@@ -278,6 +284,151 @@ impl ControllerRequestProcessor {
             .reclaim_for_tui()
             .map_err(controller_session_error)
     }
+
+    pub(crate) fn authorize_server_response(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: Option<ThreadId>,
+        response: &ServerResponse,
+    ) -> Result<(), JSONRPCErrorError> {
+        let method = response.method();
+        reject_controller_session_scoped_response(response)?;
+        self.authorize_server_request_resolution(connection_id, thread_id, &method)
+    }
+
+    pub(crate) fn authorize_server_request_error(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: Option<ThreadId>,
+        request: &ServerRequest,
+    ) -> Result<(), JSONRPCErrorError> {
+        self.authorize_server_request_resolution(
+            connection_id,
+            thread_id,
+            server_request_method(request),
+        )
+    }
+
+    fn authorize_server_request_resolution(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: Option<ThreadId>,
+        method: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        let Some(rule) = server_request_response_rule(method) else {
+            return Err(controller_error(
+                "external controller cannot resolve unclassified server request",
+                error_data(
+                    ControllerErrorCode::ControllerNotAllowed,
+                    ControllerRetryDisposition::DoNotRetry,
+                ),
+            ));
+        };
+
+        match rule.required_authority {
+            RequiredAuthority::ActiveOwner => {
+                let Some(thread_id) = thread_id else {
+                    return Err(controller_error(
+                        "external controller server response requires a main-thread prompt binding",
+                        error_data(
+                            ControllerErrorCode::ControllerNotAllowed,
+                            ControllerRetryDisposition::DoNotRetry,
+                        ),
+                    ));
+                };
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(coordinator) = state.coordinator.as_mut() else {
+                    return Err(main_thread_unavailable(state.launch_state.clone()));
+                };
+                let main_thread_id = coordinator
+                    .require_active_owner(connection_id)
+                    .map_err(controller_session_error)?;
+                authorize_target(
+                    rule.target,
+                    ControllerRequestTarget::ExactThread(thread_id.to_string()),
+                    main_thread_id,
+                )?;
+                Ok(())
+            }
+            RequiredAuthority::TuiOnly => Err(controller_error(
+                "external controller cannot resolve TUI-only server request",
+                error_data(
+                    ControllerErrorCode::ControllerNotAllowed,
+                    ControllerRetryDisposition::DoNotRetry,
+                ),
+            )),
+            RequiredAuthority::PreParticipation | RequiredAuthority::StandingSession => {
+                Err(controller_error(
+                    "external controller server response requires active ownership",
+                    error_data(
+                        ControllerErrorCode::ControllerNotAllowed,
+                        ControllerRetryDisposition::DoNotRetry,
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+fn server_request_method(request: &ServerRequest) -> &'static str {
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { .. } => {
+            "item/commandExecution/requestApproval"
+        }
+        ServerRequest::FileChangeRequestApproval { .. } => "item/fileChange/requestApproval",
+        ServerRequest::ToolRequestUserInput { .. } => "item/tool/requestUserInput",
+        ServerRequest::McpServerElicitationRequest { .. } => "mcpServer/elicitation/request",
+        ServerRequest::PermissionsRequestApproval { .. } => "item/permissions/requestApproval",
+        ServerRequest::DynamicToolCall { .. } => "item/tool/call",
+        ServerRequest::ChatgptAuthTokensRefresh { .. } => "account/chatgptAuthTokens/refresh",
+        ServerRequest::AttestationGenerate { .. } => "attestation/generate",
+        ServerRequest::CurrentTimeRead { .. } => "currentTime/read",
+        ServerRequest::ApplyPatchApproval { .. } => "applyPatchApproval",
+        ServerRequest::ExecCommandApproval { .. } => "execCommandApproval",
+    }
+}
+
+fn reject_controller_session_scoped_response(
+    response: &ServerResponse,
+) -> Result<(), JSONRPCErrorError> {
+    let reject = match response {
+        ServerResponse::CommandExecutionRequestApproval { response, .. } => {
+            matches!(
+                response.decision,
+                CommandExecutionApprovalDecision::AcceptForSession
+            )
+        }
+        ServerResponse::FileChangeRequestApproval { response, .. } => {
+            matches!(
+                response.decision,
+                FileChangeApprovalDecision::AcceptForSession
+            )
+        }
+        ServerResponse::PermissionsRequestApproval { response, .. } => {
+            matches!(response.scope, PermissionGrantScope::Session)
+        }
+        ServerResponse::ToolRequestUserInput { .. }
+        | ServerResponse::McpServerElicitationRequest { .. }
+        | ServerResponse::DynamicToolCall { .. }
+        | ServerResponse::ChatgptAuthTokensRefresh { .. }
+        | ServerResponse::AttestationGenerate { .. }
+        | ServerResponse::CurrentTimeRead { .. }
+        | ServerResponse::ApplyPatchApproval { .. }
+        | ServerResponse::ExecCommandApproval { .. } => false,
+    };
+    if reject {
+        return Err(controller_error(
+            "external controller cannot grant session-scoped approval",
+            error_data(
+                ControllerErrorCode::ControllerNotAllowed,
+                ControllerRetryDisposition::DoNotRetry,
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn authorize_target(
