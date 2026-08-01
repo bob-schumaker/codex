@@ -1,8 +1,7 @@
 //! Controller admission policy registry.
 //!
-//! This module is intentionally not wired into dispatch yet. It is the default-deny
-//! review table that later controller admission code will enforce before any
-//! existing app-server handler runs.
+//! This module is the default-deny review table used before initialized
+//! app-server dispatch and by the external-controller normal-interface gate.
 #![allow(dead_code)]
 
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
@@ -279,7 +278,7 @@ pub(crate) fn client_request_rule(method: &str) -> Option<AdmissionRule> {
 pub(crate) fn admit_initialized_client_request(
     origin: ConnectionOrigin,
     method: &str,
-) -> Result<(), JSONRPCErrorError> {
+) -> Result<AdmissionRule, JSONRPCErrorError> {
     let Some(rule) = client_request_rule(method) else {
         return Err(controller_not_allowed(
             "controller admission is not defined for this method",
@@ -290,7 +289,7 @@ pub(crate) fn admit_initialized_client_request(
         ConnectionOrigin::Stdio
         | ConnectionOrigin::InProcess
         | ConnectionOrigin::WebSocket
-        | ConnectionOrigin::RemoteControl => Ok(()),
+        | ConnectionOrigin::RemoteControl => Ok(rule),
         ConnectionOrigin::ExternalController
             if method.starts_with("controller/")
                 && matches!(
@@ -298,11 +297,9 @@ pub(crate) fn admit_initialized_client_request(
                     RequiredAuthority::PreParticipation | RequiredAuthority::StandingSession
                 ) =>
         {
-            Ok(())
+            Ok(rule)
         }
-        ConnectionOrigin::ExternalController => Err(controller_not_allowed(
-            "external controller normal interface is not enabled yet",
-        )),
+        ConnectionOrigin::ExternalController => Ok(rule),
     }
 }
 
@@ -324,7 +321,7 @@ pub(crate) fn continuation_rule_for(kind: ContinuationKind) -> AdmissionRule {
     rule
 }
 
-fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
+pub(crate) fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
     JSONRPCErrorError {
         code: INVALID_REQUEST_ERROR_CODE,
         message: message.to_string(),

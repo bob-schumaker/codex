@@ -32,6 +32,9 @@ use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -772,6 +775,68 @@ fn controller_no_params_request(request_id: i64, method: &str) -> ClientRequest 
     .expect("controller request should parse")
 }
 
+fn controller_thread_list_request(request_id: i64) -> ClientRequest {
+    ClientRequest::ThreadList {
+        request_id: RequestId::Integer(request_id),
+        params: ThreadListParams {
+            cursor: None,
+            limit: Some(100),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: None,
+            source_kinds: None,
+            archived: None,
+            section_id: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: None,
+            ancestor_thread_id: None,
+        },
+    }
+}
+
+fn controller_thread_read_request(request_id: i64, thread_id: impl Into<String>) -> ClientRequest {
+    ClientRequest::ThreadRead {
+        request_id: RequestId::Integer(request_id),
+        params: ThreadReadParams {
+            thread_id: thread_id.into(),
+            include_turns: false,
+        },
+    }
+}
+
+fn controller_turn_start_request(request_id: i64, thread_id: impl Into<String>) -> ClientRequest {
+    ClientRequest::TurnStart {
+        request_id: RequestId::Integer(request_id),
+        params: TurnStartParams {
+            environments: None,
+            thread_id: thread_id.into(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "controller input".to_string(),
+                text_elements: Vec::new(),
+            }],
+            responsesapi_client_metadata: None,
+            additional_context: None,
+            cwd: None,
+            runtime_workspace_roots: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            permissions: None,
+            approvals_reviewer: None,
+            model: None,
+            service_tier: None,
+            effort: None,
+            summary: None,
+            personality: None,
+            output_schema: None,
+            collaboration_mode: None,
+            multi_agent_mode: None,
+        },
+    }
+}
+
 fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
     ControllerCredentialProof {
         subject_id: "controller-subject".to_string(),
@@ -816,7 +881,7 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
             );
             assert_eq!(
                 error.error.message,
-                "external controller normal interface is not enabled yet"
+                "controller main thread is not available yet"
             );
             let data: ControllerErrorData = serde_json::from_value(
                 error
@@ -824,8 +889,8 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
                     .data
                     .expect("controller error should include data"),
             )?;
-            assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
-            assert_eq!(data.retry, ControllerRetryDisposition::DoNotRetry);
+            assert_eq!(data.code, ControllerErrorCode::MainThreadUnavailable);
+            assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
             harness.shutdown().await;
             Ok(())
         },
@@ -910,13 +975,72 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             assert!(released.session.effective_capabilities.read_main_thread);
             assert!(!released.session.effective_capabilities.mutate_main_thread);
 
+            let listed: ThreadListResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_list_request(/*request_id*/ 40_006),
+                )
+                .await;
+            assert_eq!(
+                listed
+                    .data
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![started.thread.id.clone()]
+            );
+            assert_eq!(listed.next_cursor, None);
+            assert_eq!(listed.backwards_cursor, None);
+
+            let wrong_thread = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_read_request(
+                        /*request_id*/ 40_007,
+                        "00000000-0000-7000-8000-000000000000",
+                    ),
+                )
+                .await;
+            let wrong_thread_data: ControllerErrorData =
+                serde_json::from_value(wrong_thread.error.data.expect("typed controller error"))?;
+            assert_eq!(
+                wrong_thread_data.code,
+                ControllerErrorCode::DifferentThreadTarget
+            );
+
+            let mutation_without_lease = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_turn_start_request(
+                        /*request_id*/ 40_008,
+                        started.thread.id.clone(),
+                    ),
+                )
+                .await;
+            let mutation_without_lease_data: ControllerErrorData = serde_json::from_value(
+                mutation_without_lease
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                mutation_without_lease_data.code,
+                ControllerErrorCode::StaleOwnership
+            );
+
             let reacquired: ControllerAcquireControlResponse = harness
                 .request_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_no_params_request(
-                        /*request_id*/ 40_006,
+                        /*request_id*/ 40_009,
                         "controller/acquireControl",
                     ),
                 )
@@ -924,13 +1048,25 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             assert!(reacquired.session.active_lease.is_some());
             assert!(reacquired.session.effective_capabilities.mutate_main_thread);
 
+            let _: TurnStartResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_turn_start_request(
+                        /*request_id*/ 40_010,
+                        started.thread.id.clone(),
+                    ),
+                )
+                .await;
+
             let second_session = Arc::new(ConnectionSessionState::new());
             let _: InitializeResponse = harness
                 .request_for_connection(
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_initialize_request(/*request_id*/ 40_007),
+                    controller_initialize_request(/*request_id*/ 40_011),
                 )
                 .await;
             second_session
@@ -940,7 +1076,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_participation_request(/*request_id*/ 40_008),
+                    controller_participation_request(/*request_id*/ 40_012),
                 )
                 .await;
             assert_eq!(
@@ -960,7 +1096,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
-                    controller_no_params_request(/*request_id*/ 40_009, "controller/signOff"),
+                    controller_no_params_request(/*request_id*/ 40_013, "controller/signOff"),
                 )
                 .await;
             let after_signoff = harness
@@ -969,7 +1105,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_no_params_request(
-                        /*request_id*/ 40_010,
+                        /*request_id*/ 40_014,
                         "controller/releaseControl",
                     ),
                 )

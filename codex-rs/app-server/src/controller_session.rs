@@ -365,6 +365,51 @@ impl ControllerSessionCoordinator {
             .ok_or(ControllerSessionError::ParticipationRequired)
     }
 
+    pub(crate) fn require_standing_session(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Result<ThreadId, ControllerSessionError> {
+        let now = self.clock.now();
+        self.expire_deadlines_at(now);
+        self.ensure_not_terminal()?;
+        self.require_live_session(connection_id, now)?;
+        Ok(self.main_thread_id)
+    }
+
+    pub(crate) fn require_active_owner(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Result<ThreadId, ControllerSessionError> {
+        let now = self.clock.now();
+        self.expire_deadlines_at(now);
+        self.ensure_not_terminal()?;
+        self.require_live_session(connection_id, now)?;
+
+        let Some(session) = self.sessions.get(&connection_id) else {
+            return Err(ControllerSessionError::ParticipationRequired);
+        };
+        if session.current_active_lease(&self.owner, now).is_some() {
+            return Ok(self.main_thread_id);
+        }
+
+        match &self.owner {
+            InteractiveOwner::ControllerOwned {
+                connection_id: owner_connection_id,
+                ..
+            } if *owner_connection_id != connection_id => {
+                Err(ControllerSessionError::OwnershipConflict)
+            }
+            InteractiveOwner::TransferPending { .. } => {
+                Err(ControllerSessionError::TransferPending)
+            }
+            InteractiveOwner::TuiUnavailable { .. } => Err(ControllerSessionError::TuiUnavailable),
+            InteractiveOwner::Closed => Err(ControllerSessionError::MainThreadClosed),
+            InteractiveOwner::TuiOwned { .. } | InteractiveOwner::ControllerOwned { .. } => {
+                Err(ControllerSessionError::StaleOwnership)
+            }
+        }
+    }
+
     pub(crate) fn reclaim_for_tui(&mut self) -> Result<(), ControllerSessionError> {
         let now = self.clock.now();
         self.expire_active_lease_at(now);

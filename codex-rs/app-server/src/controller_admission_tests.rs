@@ -73,35 +73,42 @@ fn non_controller_origins_keep_existing_admission() {
         ConnectionOrigin::WebSocket,
         ConnectionOrigin::RemoteControl,
     ] {
-        assert_eq!(
-            admit_initialized_client_request(origin, "thread/list"),
-            Ok(()),
+        assert!(
+            admit_initialized_client_request(origin, "thread/list").is_ok(),
             "{origin:?} should preserve existing app-server behavior"
         );
     }
 }
 
 #[test]
-fn external_controller_origin_allows_controller_control_plane_only() {
+fn external_controller_origin_returns_normal_interface_rules() {
     assert_eq!(
         admit_initialized_client_request(
             ConnectionOrigin::ExternalController,
             "controller/requestParticipation"
         ),
-        Ok(())
+        Ok(AdmissionRule {
+            target: TargetExtraction::None,
+            required_authority: RequiredAuthority::PreParticipation,
+        })
     );
     assert_eq!(
         admit_initialized_client_request(
             ConnectionOrigin::ExternalController,
             "controller/acquireControl"
         ),
-        Ok(())
+        Ok(AdmissionRule {
+            target: TargetExtraction::MainThreadOnly,
+            required_authority: RequiredAuthority::StandingSession,
+        })
     );
-    let error =
-        admit_initialized_client_request(ConnectionOrigin::ExternalController, "thread/list")
-            .expect_err("normal app-server interface should remain disabled in this slice");
-
-    assert_controller_not_allowed(error);
+    assert_eq!(
+        admit_initialized_client_request(ConnectionOrigin::ExternalController, "thread/list"),
+        Ok(AdmissionRule {
+            target: TargetExtraction::CollectionFiltered,
+            required_authority: RequiredAuthority::StandingSession,
+        })
+    );
 }
 
 #[test]

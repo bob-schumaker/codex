@@ -7,7 +7,11 @@ use std::sync::atomic::AtomicBool;
 use crate::attestation::app_server_attestation_provider;
 use crate::config_manager::ConfigManager;
 use crate::connection_rpc_gate::ConnectionRpcGate;
+use crate::controller_admission::AdmissionRule;
+use crate::controller_admission::RequiredAuthority;
+use crate::controller_admission::TargetExtraction;
 use crate::controller_admission::admit_initialized_client_request;
+use crate::controller_admission::controller_not_allowed;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
@@ -31,7 +35,9 @@ use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
+use crate::request_processors::ControllerNormalAuthorization;
 use crate::request_processors::ControllerRequestProcessor;
+use crate::request_processors::ControllerRequestTarget;
 use crate::request_processors::EnvironmentRequestProcessor;
 use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
@@ -69,6 +75,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_chatgpt::workspace_settings;
@@ -253,6 +261,7 @@ pub(crate) struct MessageProcessorArgs {
 struct InitializedClientRequest {
     connection_request_id: ConnectionRequestId,
     connection_origin: ConnectionOrigin,
+    admission_rule: AdmissionRule,
     codex_request: ClientRequest,
     session: Arc<ConnectionSessionState>,
     request_context: RequestContext,
@@ -890,7 +899,8 @@ impl MessageProcessor {
         {
             return Err(invalid_request(experimental_required_message(reason)));
         }
-        admit_initialized_client_request(connection_origin, codex_request.method_name())?;
+        let admission_rule =
+            admit_initialized_client_request(connection_origin, codex_request.method_name())?;
         let connection_id = connection_request_id.connection_id;
         self.initialize_processor.track_initialized_request(
             connection_id,
@@ -915,6 +925,7 @@ impl MessageProcessor {
                     .handle_initialized_client_request(InitializedClientRequest {
                         connection_request_id,
                         connection_origin,
+                        admission_rule,
                         codex_request,
                         session: session_for_request,
                         request_context,
@@ -950,6 +961,7 @@ impl MessageProcessor {
         let InitializedClientRequest {
             connection_request_id,
             connection_origin,
+            admission_rule,
             codex_request,
             session,
             request_context,
@@ -962,6 +974,19 @@ impl MessageProcessor {
             connection_id,
             request_id: codex_request.id().clone(),
         };
+        let controller_authorization =
+            if matches!(connection_origin, ConnectionOrigin::ExternalController)
+                && !codex_request.method_name().starts_with("controller/")
+            {
+                let target = controller_request_target(&codex_request, admission_rule)?;
+                Some(self.controller_processor.authorize_normal_request(
+                    connection_id,
+                    admission_rule,
+                    target,
+                )?)
+            } else {
+                None
+            };
 
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
@@ -1269,7 +1294,14 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadList { params, .. } => {
-                self.thread_processor.thread_list(params).await
+                if let Some(authorization) = controller_authorization
+                    .as_ref()
+                    .filter(|authorization| authorization.filter_collection_to_main_thread)
+                {
+                    self.controller_thread_list(authorization).await
+                } else {
+                    self.thread_processor.thread_list(params).await
+                }
             }
             ClientRequest::ThreadSearch { params, .. } => {
                 self.thread_processor.thread_search(params).await
@@ -1587,6 +1619,70 @@ impl MessageProcessor {
             }
         }
         Ok(())
+    }
+
+    async fn controller_thread_list(
+        &self,
+        authorization: &ControllerNormalAuthorization,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let response = self
+            .thread_processor
+            .thread_read(ThreadReadParams {
+                thread_id: authorization.main_thread_id.clone(),
+                include_turns: false,
+            })
+            .await?;
+        let Some(ClientResponsePayload::ThreadRead(response)) = response else {
+            return Err(controller_not_allowed(
+                "external controller thread/list could not read the authorized main thread",
+            ));
+        };
+        Ok(Some(
+            ThreadListResponse {
+                data: vec![response.thread],
+                next_cursor: None,
+                backwards_cursor: None,
+            }
+            .into(),
+        ))
+    }
+}
+
+fn controller_request_target(
+    request: &ClientRequest,
+    rule: AdmissionRule,
+) -> Result<ControllerRequestTarget, JSONRPCErrorError> {
+    if matches!(rule.required_authority, RequiredAuthority::TuiOnly) {
+        return Ok(ControllerRequestTarget::None);
+    }
+
+    match rule.target {
+        TargetExtraction::None | TargetExtraction::MainThreadOnly => {
+            Ok(ControllerRequestTarget::None)
+        }
+        TargetExtraction::CollectionFiltered => match request {
+            ClientRequest::ThreadList { .. } => Ok(ControllerRequestTarget::CollectionFiltered),
+            _ => Err(controller_not_allowed(
+                "external controller collection filtering is not enabled for this method",
+            )),
+        },
+        TargetExtraction::ExactThread => match request {
+            ClientRequest::ThreadRead { params, .. } => Ok(ControllerRequestTarget::ExactThread(
+                params.thread_id.clone(),
+            )),
+            ClientRequest::ThreadTurnsList { params, .. } => Ok(
+                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+            ),
+            ClientRequest::ThreadItemsList { params, .. } => Ok(
+                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+            ),
+            ClientRequest::TurnStart { params, .. } => Ok(ControllerRequestTarget::ExactThread(
+                params.thread_id.clone(),
+            )),
+            _ => Err(controller_not_allowed(
+                "external controller target extraction is not enabled for this method",
+            )),
+        },
     }
 }
 

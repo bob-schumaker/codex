@@ -16,6 +16,9 @@ use codex_app_server_protocol::ControllerSignOffResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_protocol::ThreadId;
 
+use crate::controller_admission::AdmissionRule;
+use crate::controller_admission::RequiredAuthority;
+use crate::controller_admission::TargetExtraction;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerDisplayClaims;
 use crate::controller_enrollment::ControllerEnrollmentError;
@@ -45,6 +48,17 @@ pub(crate) struct ControllerRequestProcessor {
 struct ControllerProcessorState {
     coordinator: Option<ControllerSessionCoordinator>,
     launch_state: ControllerLaunchState,
+}
+
+pub(crate) enum ControllerRequestTarget {
+    None,
+    ExactThread(String),
+    CollectionFiltered,
+}
+
+pub(crate) struct ControllerNormalAuthorization {
+    pub(crate) main_thread_id: String,
+    pub(crate) filter_collection_to_main_thread: bool,
 }
 
 impl ControllerRequestProcessor {
@@ -192,6 +206,132 @@ impl ControllerRequestProcessor {
         coordinator.revoke_session(connection_id);
         Ok(ControllerSignOffResponse {})
     }
+
+    pub(crate) fn authorize_normal_request(
+        &self,
+        connection_id: ConnectionId,
+        rule: AdmissionRule,
+        target: ControllerRequestTarget,
+    ) -> Result<ControllerNormalAuthorization, JSONRPCErrorError> {
+        match rule.required_authority {
+            RequiredAuthority::PreParticipation => {
+                return Err(controller_error(
+                    "external controller pre-participation methods do not use the normal interface",
+                    error_data(
+                        ControllerErrorCode::ControllerNotAllowed,
+                        ControllerRetryDisposition::DoNotRetry,
+                    ),
+                ));
+            }
+            RequiredAuthority::TuiOnly => {
+                return Err(controller_error(
+                    "external controller cannot use TUI-only method",
+                    error_data(
+                        ControllerErrorCode::ControllerNotAllowed,
+                        ControllerRetryDisposition::DoNotRetry,
+                    ),
+                ));
+            }
+            RequiredAuthority::StandingSession | RequiredAuthority::ActiveOwner => {}
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_mut() else {
+            return Err(main_thread_unavailable(state.launch_state.clone()));
+        };
+
+        let main_thread_id = match rule.required_authority {
+            RequiredAuthority::StandingSession => coordinator
+                .require_standing_session(connection_id)
+                .map_err(controller_session_error)?,
+            RequiredAuthority::ActiveOwner => coordinator
+                .require_active_owner(connection_id)
+                .map_err(controller_session_error)?,
+            RequiredAuthority::PreParticipation | RequiredAuthority::TuiOnly => unreachable!(),
+        };
+
+        authorize_target(rule.target, target, main_thread_id)
+    }
+}
+
+fn authorize_target(
+    extraction: TargetExtraction,
+    target: ControllerRequestTarget,
+    main_thread_id: ThreadId,
+) -> Result<ControllerNormalAuthorization, JSONRPCErrorError> {
+    let main_thread_id = main_thread_id.to_string();
+    match (extraction, target) {
+        (
+            TargetExtraction::None | TargetExtraction::MainThreadOnly,
+            ControllerRequestTarget::None,
+        ) => Ok(ControllerNormalAuthorization {
+            main_thread_id,
+            filter_collection_to_main_thread: false,
+        }),
+        (TargetExtraction::CollectionFiltered, ControllerRequestTarget::CollectionFiltered) => {
+            Ok(ControllerNormalAuthorization {
+                main_thread_id,
+                filter_collection_to_main_thread: true,
+            })
+        }
+        (TargetExtraction::ExactThread, ControllerRequestTarget::ExactThread(thread_id))
+            if thread_id == main_thread_id =>
+        {
+            Ok(ControllerNormalAuthorization {
+                main_thread_id,
+                filter_collection_to_main_thread: false,
+            })
+        }
+        (TargetExtraction::ExactThread, ControllerRequestTarget::ExactThread(_)) => {
+            Err(thread_target_error(main_thread_id))
+        }
+        (TargetExtraction::ExactThread, ControllerRequestTarget::None) => {
+            Err(thread_target_error(main_thread_id))
+        }
+        (TargetExtraction::CollectionFiltered, ControllerRequestTarget::None) => {
+            Err(controller_error(
+                "external controller collection filter is required for this method",
+                error_data(
+                    ControllerErrorCode::ControllerNotAllowed,
+                    ControllerRetryDisposition::DoNotRetry,
+                ),
+            ))
+        }
+        (
+            TargetExtraction::None
+            | TargetExtraction::MainThreadOnly
+            | TargetExtraction::CollectionFiltered,
+            ControllerRequestTarget::ExactThread(_),
+        )
+        | (
+            TargetExtraction::None
+            | TargetExtraction::MainThreadOnly
+            | TargetExtraction::ExactThread,
+            ControllerRequestTarget::CollectionFiltered,
+        ) => Err(controller_error(
+            "external controller target shape does not match method admission",
+            error_data(
+                ControllerErrorCode::ControllerNotAllowed,
+                ControllerRetryDisposition::DoNotRetry,
+            ),
+        )),
+    }
+}
+
+fn thread_target_error(main_thread_id: String) -> JSONRPCErrorError {
+    controller_error(
+        "external controller request must target the authorized main thread",
+        ControllerErrorData {
+            main_thread_id: Some(main_thread_id),
+            ..error_data(
+                ControllerErrorCode::DifferentThreadTarget,
+                ControllerRetryDisposition::DoNotRetry,
+            )
+        },
+    )
 }
 
 fn require_external_controller_origin(origin: ConnectionOrigin) -> Result<(), JSONRPCErrorError> {
