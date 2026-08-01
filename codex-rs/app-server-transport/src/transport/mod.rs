@@ -24,6 +24,7 @@ use tracing::warn;
 /// plenty for an interactive CLI.
 pub const CHANNEL_CAPACITY: usize = 128;
 
+pub mod local_controller;
 mod remote_control;
 mod stdio;
 mod unix_socket;
