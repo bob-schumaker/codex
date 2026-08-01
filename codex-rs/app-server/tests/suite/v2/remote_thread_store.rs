@@ -473,6 +473,7 @@ async fn start_in_process_client(
             capabilities: None,
         },
         channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        local_controller_endpoint: in_process::InProcessLocalControllerEndpointConfig::Disabled,
     })
     .await
 }

@@ -193,7 +193,7 @@ pub enum ConnectionOrigin {
     WebSocket,
     /// Existing remote-control transport, distinct from local external-controller authority.
     RemoteControl,
-    /// Local external-controller transport origin. No transport currently emits this origin.
+    /// Local external-controller transport origin.
     ExternalController,
 }
 

@@ -28,8 +28,11 @@ use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
+pub use codex_app_server::in_process::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
+pub use codex_app_server::in_process::LocalControllerEndpointMetadata;
 use codex_app_server::in_process::LogDbLayer;
 pub use codex_app_server::in_process::StateDbHandle;
 use codex_app_server_protocol::ClientInfo;
@@ -336,6 +339,8 @@ pub struct InProcessClientStartArgs {
     pub opt_out_notification_methods: Vec<String>,
     /// Queue capacity for command/event channels (clamped to at least 1).
     pub channel_capacity: usize,
+    /// Optional embedded local-controller endpoint startup policy.
+    pub local_controller_endpoint: InProcessLocalControllerEndpointConfig,
 }
 
 fn configured_thread_config_loader(config: &Config) -> Arc<dyn ThreadConfigLoader> {
@@ -390,6 +395,7 @@ impl InProcessClientStartArgs {
             enable_codex_api_key_env: self.enable_codex_api_key_env,
             initialize,
             channel_capacity: self.channel_capacity,
+            local_controller_endpoint: self.local_controller_endpoint,
         }
     }
 }
@@ -437,6 +443,7 @@ pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
+    local_controller_endpoint: Option<LocalControllerEndpointMetadata>,
 }
 
 #[derive(Clone)]
@@ -465,6 +472,7 @@ impl InProcessAppServerClient {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let local_controller_endpoint = handle.local_controller_endpoint().cloned();
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
@@ -577,6 +585,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            local_controller_endpoint,
         })
     }
 
@@ -584,6 +593,12 @@ impl InProcessAppServerClient {
         InProcessAppServerRequestHandle {
             command_tx: self.command_tx.clone(),
         }
+    }
+
+    /// Metadata for the embedded local-controller endpoint, when this client
+    /// started one.
+    pub fn local_controller_endpoint(&self) -> Option<&LocalControllerEndpointMetadata> {
+        self.local_controller_endpoint.as_ref()
     }
 
     /// Sends a typed client request and returns raw JSON-RPC result.
@@ -740,6 +755,7 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            local_controller_endpoint: _,
         } = self;
         let mut worker_handle = worker_handle;
         // Drop the caller-facing receiver before asking the worker to shut
@@ -911,6 +927,15 @@ impl AppServerClient {
             Self::Remote(client) => AppServerRequestHandle::Remote(client.request_handle()),
         }
     }
+
+    /// Metadata for an embedded local-controller endpoint. Remote app-server
+    /// connections never publish a per-TUI local-controller endpoint.
+    pub fn local_controller_endpoint(&self) -> Option<&LocalControllerEndpointMetadata> {
+        match self {
+            Self::InProcess(client) => client.local_controller_endpoint(),
+            Self::Remote(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -931,6 +956,7 @@ mod tests {
     use codex_core::config::ConfigBuilder;
     use codex_core::init_state_db;
     use codex_uds::UnixListener;
+    use codex_uds::UnixStream;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use futures::SinkExt;
     use futures::StreamExt;
@@ -943,9 +969,12 @@ mod tests {
     use tokio::time::timeout;
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::accept_hdr_async;
+    use tokio_tungstenite::client_async;
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::handshake::server::Request as WebSocketRequest;
     use tokio_tungstenite::tungstenite::handshake::server::Response as WebSocketResponse;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
     use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 
     async fn build_test_config() -> Config {
@@ -996,7 +1025,24 @@ mod tests {
         session_source: SessionSource,
         channel_capacity: usize,
     ) -> TestClient {
-        let codex_home = TempDir::new().expect("temp dir");
+        start_test_client_with_capacity_and_local_controller(
+            session_source,
+            channel_capacity,
+            InProcessLocalControllerEndpointConfig::Disabled,
+        )
+        .await
+    }
+
+    async fn start_test_client_with_capacity_and_local_controller(
+        session_source: SessionSource,
+        channel_capacity: usize,
+        local_controller_endpoint: InProcessLocalControllerEndpointConfig,
+    ) -> TestClient {
+        let codex_home = match &local_controller_endpoint {
+            InProcessLocalControllerEndpointConfig::Disabled => TempDir::new(),
+            InProcessLocalControllerEndpointConfig::Enabled { .. } => TempDir::new_in("/tmp"),
+        }
+        .expect("temp dir");
         let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
         let state_db = init_state_db(config.as_ref())
             .await
@@ -1021,6 +1067,7 @@ mod tests {
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity,
+            local_controller_endpoint,
         })
         .await
         .expect("in-process app-server client should start");
@@ -1033,6 +1080,112 @@ mod tests {
 
     async fn start_test_client(session_source: SessionSource) -> TestClient {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn in_process_local_controller_endpoint_routes_external_controller_rpc() {
+        let client = start_test_client_with_capacity_and_local_controller(
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        assert_eq!(metadata.main_thread_id, None);
+        let socket_path = metadata
+            .endpoint_uri
+            .strip_prefix("unix://")
+            .expect("local-controller endpoint should use unix URI");
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .expect("local-controller socket should accept connections");
+        let mut request = "ws://codex-local-controller/"
+            .into_client_request()
+            .expect("websocket request should build");
+        request.headers_mut().insert(
+            LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER,
+            HeaderValue::from_str(metadata.launch_nonce.as_str())
+                .expect("launch nonce should be a valid header"),
+        );
+        let (mut websocket, _response) = client_async(request, stream)
+            .await
+            .expect("local-controller websocket should upgrade");
+
+        write_websocket_message(
+            &mut websocket,
+            JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(1),
+                method: "initialize".to_string(),
+                params: Some(serde_json::json!({
+                    "clientInfo": {
+                        "name": "codex-waveshare",
+                        "version": "0.0.0-test",
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                    },
+                })),
+                trace: None,
+            }),
+        )
+        .await;
+        let initialize_response = loop {
+            match read_websocket_message(&mut websocket).await {
+                JSONRPCMessage::Response(response) if response.id == RequestId::Integer(1) => {
+                    break response;
+                }
+                JSONRPCMessage::Notification(_) => continue,
+                message => panic!("unexpected initialize response message: {message:?}"),
+            }
+        };
+        assert!(initialize_response.result.get("userAgent").is_some());
+
+        write_websocket_message(
+            &mut websocket,
+            JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(2),
+                method: "controller/requestParticipation".to_string(),
+                params: Some(serde_json::json!({
+                    "controllerName": "codex-waveshare",
+                    "description": "external test controller",
+                })),
+                trace: None,
+            }),
+        )
+        .await;
+        let participation_error = loop {
+            match read_websocket_message(&mut websocket).await {
+                JSONRPCMessage::Error(error) if error.id == RequestId::Integer(2) => {
+                    break error;
+                }
+                JSONRPCMessage::Notification(_) => continue,
+                message => panic!("unexpected participation response message: {message:?}"),
+            }
+        };
+        assert_eq!(
+            participation_error
+                .error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("code")),
+            Some(&serde_json::json!("main-thread-unavailable"))
+        );
+        assert_eq!(
+            participation_error
+                .error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("retry")),
+            Some(&serde_json::json!("sameConnection"))
+        );
+
+        client.shutdown().await.expect("shutdown should complete");
     }
 
     async fn start_test_remote_server<F, Fut>(handler: F) -> String
@@ -2111,6 +2264,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            local_controller_endpoint: None,
         };
 
         let event = timeout(Duration::from_secs(2), client.next_event())
@@ -2269,6 +2423,7 @@ mod tests {
             mcp_server_openai_form_elicitation: true,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
         }
         .into_runtime_start_args();
 
@@ -2318,6 +2473,7 @@ mod tests {
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
         }
         .into_runtime_start_args();
 
@@ -2364,6 +2520,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            local_controller_endpoint: None,
         };
 
         client.shutdown().await.expect("shutdown should complete");

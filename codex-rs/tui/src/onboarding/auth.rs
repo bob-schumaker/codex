@@ -1030,6 +1030,7 @@ mod tests {
     use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
     use codex_app_server_client::InProcessAppServerClient;
     use codex_app_server_client::InProcessClientStartArgs;
+    use codex_app_server_client::InProcessLocalControllerEndpointConfig;
     use codex_arg0::Arg0DispatchPaths;
     use codex_cloud_config::cloud_config_bundle_loader_for_storage;
     use pretty_assertions::assert_eq;
@@ -1088,6 +1089,7 @@ mod tests {
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
         })
         .await
         .unwrap();

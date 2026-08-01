@@ -28,6 +28,7 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
+use codex_app_server_client::InProcessLocalControllerEndpointConfig;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
 pub use codex_app_server_client::RemoteAppServerEndpoint;
@@ -581,6 +582,7 @@ where
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
     })
     .await
     .wrap_err("failed to start embedded app server")?;

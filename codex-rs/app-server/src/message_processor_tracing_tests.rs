@@ -599,11 +599,12 @@ async fn read_response_for_connection<T: serde::de::DeserializeOwned>(
         let crate::outgoing_message::OutgoingEnvelope::ToConnection {
             connection_id,
             message,
-            ..
+            write_complete_tx,
         } = envelope
         else {
             continue;
         };
+        acknowledge_write(write_complete_tx);
         if connection_id != expected_connection_id {
             continue;
         }
@@ -640,11 +641,12 @@ async fn read_error_for_connection(
         let crate::outgoing_message::OutgoingEnvelope::ToConnection {
             connection_id,
             message,
-            ..
+            write_complete_tx,
         } = envelope
         else {
             continue;
         };
+        acknowledge_write(write_complete_tx);
         if connection_id != expected_connection_id {
             continue;
         }
@@ -720,11 +722,12 @@ async fn read_server_request_for_connection(
         let crate::outgoing_message::OutgoingEnvelope::ToConnection {
             connection_id,
             message,
-            ..
+            write_complete_tx,
         } = envelope
         else {
             continue;
         };
+        acknowledge_write(write_complete_tx);
         if connection_id != expected_connection_id {
             continue;
         }
@@ -734,6 +737,12 @@ async fn read_server_request_for_connection(
         if request.id() == expected_request_id {
             return request;
         }
+    }
+}
+
+fn acknowledge_write(write_complete_tx: Option<tokio::sync::oneshot::Sender<()>>) {
+    if let Some(write_complete_tx) = write_complete_tx {
+        let _ = write_complete_tx.send(());
     }
 }
 

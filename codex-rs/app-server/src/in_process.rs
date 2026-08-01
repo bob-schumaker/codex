@@ -56,7 +56,6 @@ use crate::controller_enrollment::EmptyControllerEnrollmentSource;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
-use crate::message_processor::ConnectionSessionState;
 use crate::message_processor::MessageProcessor;
 use crate::message_processor::MessageProcessorArgs;
 use crate::outgoing_message::ConnectionId;
@@ -65,7 +64,10 @@ use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::QueuedOutgoingMessage;
 use crate::transport::CHANNEL_CAPACITY;
+use crate::transport::ConnectionOrigin;
+use crate::transport::ConnectionState;
 use crate::transport::OutboundConnectionState;
+use crate::transport::TransportEvent;
 use crate::transport::route_outgoing_envelope;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientNotification;
@@ -73,10 +75,16 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+pub use codex_app_server_transport::local_controller::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
+pub use codex_app_server_transport::local_controller::LocalControllerEndpointMetadata;
+pub use codex_app_server_transport::local_controller::LocalControllerEndpointSupport;
+pub use codex_app_server_transport::local_controller::LocalControllerUnavailableReason;
+pub use codex_app_server_transport::local_controller::local_controller_endpoint_support;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
@@ -93,15 +101,31 @@ pub use codex_state::log_db::LogDbLayer;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use tracing::warn;
 
-const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(0);
+const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(u64::MAX);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // Covers both bounded runtime drains plus the analytics client's 25-second best-effort flush.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(35);
 /// Default bounded channel capacity for in-process runtime queues.
 pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
+
+/// Optional local endpoint that lets external controllers connect to an
+/// embedded in-process app-server.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum InProcessLocalControllerEndpointConfig {
+    /// Do not expose a local-controller socket.
+    #[default]
+    Disabled,
+    /// Expose a local-controller socket backed by this in-process runtime.
+    Enabled {
+        /// Main thread known at launch time, if any. Fresh TUI launches usually
+        /// start before the main thread exists, so `None` is valid.
+        main_thread_id: Option<String>,
+    },
+}
 
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
@@ -110,6 +134,8 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
         notification,
         ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+            | ServerNotification::ControllerAuthorizationChanged(_)
+            | ServerNotification::ControllerControlOwnershipChanged(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
     )
 }
@@ -152,6 +178,8 @@ pub struct InProcessStartArgs {
     pub initialize: InitializeParams,
     /// Capacity used for all runtime queues (clamped to at least 1).
     pub channel_capacity: usize,
+    /// Optional embedded local-controller endpoint startup policy.
+    pub local_controller_endpoint: InProcessLocalControllerEndpointConfig,
 }
 
 /// Event emitted from the app-server to the in-process client.
@@ -197,6 +225,20 @@ enum InProcessClientMessage {
 enum ProcessorCommand {
     Request(Box<ClientRequest>),
     Notification(ClientNotification),
+}
+
+enum InProcessOutboundControlEvent {
+    Opened {
+        connection_id: ConnectionId,
+        writer: mpsc::Sender<QueuedOutgoingMessage>,
+        disconnect_sender: Option<CancellationToken>,
+        initialized: Arc<AtomicBool>,
+        experimental_api_enabled: Arc<AtomicBool>,
+        opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+    },
+    Closed {
+        connection_id: ConnectionId,
+    },
 }
 
 #[derive(Clone)]
@@ -265,6 +307,7 @@ pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
+    local_controller_endpoint: Option<LocalControllerEndpointMetadata>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
@@ -316,6 +359,11 @@ impl InProcessClientHandle {
     /// available.
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
         self.event_rx.recv().await
+    }
+
+    /// Metadata for the embedded local-controller endpoint, when enabled.
+    pub fn local_controller_endpoint(&self) -> Option<&LocalControllerEndpointMetadata> {
+        self.local_controller_endpoint.as_ref()
     }
 
     /// Requests runtime shutdown and waits for worker termination.
@@ -386,13 +434,48 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
 
 async fn run_outbound_router(
     mut outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
+    mut control_rx: mpsc::Receiver<InProcessOutboundControlEvent>,
     mut outbound_connections: HashMap<ConnectionId, OutboundConnectionState>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     loop {
         tokio::select! {
             biased;
-            _ = &mut shutdown_rx => break,
+            _ = &mut shutdown_rx => {
+                for connection_state in outbound_connections.values() {
+                    connection_state.request_disconnect();
+                }
+                break;
+            }
+            event = control_rx.recv() => {
+                let Some(event) = event else {
+                    break;
+                };
+                match event {
+                    InProcessOutboundControlEvent::Opened {
+                        connection_id,
+                        writer,
+                        disconnect_sender,
+                        initialized,
+                        experimental_api_enabled,
+                        opted_out_notification_methods,
+                    } => {
+                        outbound_connections.insert(
+                            connection_id,
+                            OutboundConnectionState::new(
+                                writer,
+                                initialized,
+                                experimental_api_enabled,
+                                opted_out_notification_methods,
+                                disconnect_sender,
+                            ),
+                        );
+                    }
+                    InProcessOutboundControlEvent::Closed { connection_id } => {
+                        outbound_connections.remove(&connection_id);
+                    }
+                }
+            }
             envelope = outgoing_rx.recv() => {
                 let Some(envelope) = envelope else {
                     break;
@@ -401,6 +484,37 @@ async fn run_outbound_router(
             }
         }
     }
+}
+
+fn sync_outbound_state_from_session(connection_state: &ConnectionState) {
+    let opted_out_notification_methods_snapshot =
+        connection_state.session.opted_out_notification_methods();
+    let experimental_api_enabled = connection_state.session.experimental_api_enabled();
+    if let Ok(mut opted_out_notification_methods) = connection_state
+        .outbound_opted_out_notification_methods
+        .write()
+    {
+        *opted_out_notification_methods = opted_out_notification_methods_snapshot;
+    } else {
+        warn!("failed to update outbound opted-out notifications");
+    }
+    connection_state
+        .outbound_experimental_api_enabled
+        .store(experimental_api_enabled, Ordering::Release);
+}
+
+fn initialized_connection_ids(
+    connections: &HashMap<ConnectionId, ConnectionState>,
+) -> Vec<ConnectionId> {
+    connections
+        .iter()
+        .filter_map(|(connection_id, connection_state)| {
+            connection_state
+                .session
+                .initialized()
+                .then_some(*connection_id)
+        })
+        .collect()
 }
 
 async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
@@ -413,8 +527,28 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             .map_err(IoError::other)?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let (external_transport_event_tx, external_transport_event_rx) =
+        mpsc::channel::<TransportEvent>(channel_capacity);
+    let external_transport_shutdown_token = CancellationToken::new();
+    let local_controller_endpoint_handle = match &args.local_controller_endpoint {
+        InProcessLocalControllerEndpointConfig::Disabled => None,
+        InProcessLocalControllerEndpointConfig::Enabled { main_thread_id } => Some(
+            codex_app_server_transport::local_controller::start_local_controller_acceptor(
+                args.config.codex_home.as_path(),
+                main_thread_id.clone(),
+                external_transport_event_tx.clone(),
+                external_transport_shutdown_token.clone(),
+            )
+            .await?,
+        ),
+    };
+    let local_controller_endpoint = local_controller_endpoint_handle
+        .as_ref()
+        .map(|handle| handle.metadata().clone());
+    drop(external_transport_event_tx);
 
     let runtime_handle = tokio::spawn(async move {
+        let mut local_controller_endpoint_handle = local_controller_endpoint_handle;
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
@@ -440,9 +574,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 /*disconnect_sender*/ None,
             ),
         );
+        let (outbound_control_tx, outbound_control_rx) =
+            mpsc::channel::<InProcessOutboundControlEvent>(channel_capacity);
         let (outbound_shutdown_tx, outbound_shutdown_rx) = oneshot::channel();
         let mut outbound_handle = tokio::spawn(run_outbound_router(
             outgoing_rx,
+            outbound_control_rx,
             outbound_connections,
             outbound_shutdown_rx,
         ));
@@ -480,42 +617,42 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
-            let session = Arc::new(ConnectionSessionState::new());
+            let mut external_transport_event_rx = external_transport_event_rx;
             let mut listen_for_threads = true;
+            let mut listen_for_external_transport = true;
+            let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
+            connections.insert(
+                IN_PROCESS_CONNECTION_ID,
+                ConnectionState::new(
+                    ConnectionOrigin::InProcess,
+                    outbound_initialized,
+                    outbound_experimental_api_enabled,
+                    outbound_opted_out_notification_methods,
+                ),
+            );
 
             loop {
                 tokio::select! {
                     command = processor_rx.recv() => {
                         match command {
                             Some(ProcessorCommand::Request(request)) => {
-                                let was_initialized = session.initialized();
+                                let Some(connection_state) =
+                                    connections.get_mut(&IN_PROCESS_CONNECTION_ID)
+                                else {
+                                    break;
+                                };
+                                let was_initialized = connection_state.session.initialized();
                                 processor
                                     .process_client_request(
                                         IN_PROCESS_CONNECTION_ID,
-                                        crate::transport::ConnectionOrigin::InProcess,
+                                        ConnectionOrigin::InProcess,
                                         *request,
-                                        Arc::clone(&session),
-                                        &outbound_initialized,
+                                        Arc::clone(&connection_state.session),
+                                        &connection_state.outbound_initialized,
                                     )
                                     .await;
-                                let opted_out_notification_methods_snapshot =
-                                    session.opted_out_notification_methods();
-                                let experimental_api_enabled =
-                                    session.experimental_api_enabled();
-                                let is_initialized = session.initialized();
-                                if let Ok(mut opted_out_notification_methods) =
-                                    outbound_opted_out_notification_methods.write()
-                                {
-                                    *opted_out_notification_methods =
-                                        opted_out_notification_methods_snapshot;
-                                } else {
-                                    warn!("failed to update outbound opted-out notifications");
-                                }
-                                outbound_experimental_api_enabled.store(
-                                    experimental_api_enabled,
-                                    Ordering::Release,
-                                );
-                                if !was_initialized && is_initialized {
+                                sync_outbound_state_from_session(connection_state);
+                                if !was_initialized && connection_state.session.initialized() {
                                     processor.send_initialize_notifications().await;
                                 }
                             }
@@ -527,14 +664,160 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                     }
+                    event = external_transport_event_rx.recv(), if listen_for_external_transport => {
+                        let Some(event) = event else {
+                            listen_for_external_transport = false;
+                            continue;
+                        };
+                        match event {
+                            TransportEvent::ConnectionOpened {
+                                connection_id,
+                                origin,
+                                writer,
+                                disconnect_sender,
+                            } => {
+                                let outbound_initialized = Arc::new(AtomicBool::new(false));
+                                let outbound_experimental_api_enabled =
+                                    Arc::new(AtomicBool::new(false));
+                                let outbound_opted_out_notification_methods =
+                                    Arc::new(RwLock::new(HashSet::new()));
+                                if outbound_control_tx
+                                    .send(InProcessOutboundControlEvent::Opened {
+                                        connection_id,
+                                        writer,
+                                        disconnect_sender,
+                                        initialized: Arc::clone(&outbound_initialized),
+                                        experimental_api_enabled: Arc::clone(
+                                            &outbound_experimental_api_enabled,
+                                        ),
+                                        opted_out_notification_methods: Arc::clone(
+                                            &outbound_opted_out_notification_methods,
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                connections.insert(
+                                    connection_id,
+                                    ConnectionState::new(
+                                        origin,
+                                        outbound_initialized,
+                                        outbound_experimental_api_enabled,
+                                        outbound_opted_out_notification_methods,
+                                    ),
+                                );
+                            }
+                            TransportEvent::ConnectionClosed { connection_id } => {
+                                let Some(connection_state) = connections.remove(&connection_id) else {
+                                    continue;
+                                };
+                                processor
+                                    .connection_closed(connection_id, &connection_state.session)
+                                    .await;
+                                if outbound_control_tx
+                                    .send(InProcessOutboundControlEvent::Closed { connection_id })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            TransportEvent::IncomingMessage {
+                                connection_id,
+                                message,
+                            } => {
+                                match message {
+                                    JSONRPCMessage::Request(request) => {
+                                        let Some(connection_state) =
+                                            connections.get_mut(&connection_id)
+                                        else {
+                                            warn!(
+                                                "dropping request from unknown in-process external connection: {connection_id:?}"
+                                            );
+                                            continue;
+                                        };
+                                        let was_initialized =
+                                            connection_state.session.initialized();
+                                        processor
+                                            .process_request(
+                                                connection_id,
+                                                connection_state.origin,
+                                                request,
+                                                &crate::transport::AppServerTransport::Off,
+                                                Arc::clone(&connection_state.session),
+                                            )
+                                            .await;
+                                        sync_outbound_state_from_session(connection_state);
+                                        if !was_initialized && connection_state.session.initialized() {
+                                            processor
+                                                .send_initialize_notifications_to_connection(
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            processor
+                                                .connection_initialized(
+                                                    connection_id,
+                                                    connection_state.session.request_attestation(),
+                                                )
+                                                .await;
+                                            connection_state
+                                                .outbound_initialized
+                                                .store(true, Ordering::Release);
+                                        }
+                                    }
+                                    JSONRPCMessage::Response(response) => {
+                                        let Some(connection_state) =
+                                            connections.get(&connection_id)
+                                        else {
+                                            warn!(
+                                                "dropping response from unknown in-process external connection: {connection_id:?}"
+                                            );
+                                            continue;
+                                        };
+                                        processor
+                                            .process_response(
+                                                connection_id,
+                                                connection_state.origin,
+                                                response,
+                                            )
+                                            .await;
+                                    }
+                                    JSONRPCMessage::Notification(notification) => {
+                                        if !connections.contains_key(&connection_id) {
+                                            warn!(
+                                                "dropping notification from unknown in-process external connection: {connection_id:?}"
+                                            );
+                                            continue;
+                                        }
+                                        processor.process_notification(notification).await;
+                                    }
+                                    JSONRPCMessage::Error(err) => {
+                                        let Some(connection_state) =
+                                            connections.get(&connection_id)
+                                        else {
+                                            warn!(
+                                                "dropping error from unknown in-process external connection: {connection_id:?}"
+                                            );
+                                            continue;
+                                        };
+                                        processor
+                                            .process_error(
+                                                connection_id,
+                                                connection_state.origin,
+                                                err,
+                                            )
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     created = thread_created_rx.recv(), if listen_for_threads => {
                         match created {
                             Ok(thread_id) => {
-                                let connection_ids = if session.initialized() {
-                                    vec![IN_PROCESS_CONNECTION_ID]
-                                } else {
-                                    Vec::<ConnectionId>::new()
-                                };
+                                let connection_ids = initialized_connection_ids(&connections);
                                 processor
                                     .try_attach_thread_listener(thread_id, connection_ids)
                                     .await;
@@ -552,9 +835,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 
             processor.clear_runtime_references();
             processor.cancel_active_login().await;
-            processor
-                .connection_closed(IN_PROCESS_CONNECTION_ID, &session)
-                .await;
+            for (connection_id, connection_state) in connections {
+                processor
+                    .connection_closed(connection_id, &connection_state.session)
+                    .await;
+            }
             processor.clear_all_thread_listeners().await;
             processor.drain_background_tasks().await;
             processor.shutdown_threads().await;
@@ -746,6 +1031,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             }
         }
 
+        external_transport_shutdown_token.cancel();
+        if let Some(local_controller_endpoint_handle) = local_controller_endpoint_handle.take() {
+            let _ = local_controller_endpoint_handle.shutdown().await;
+        }
         drop(writer_rx);
         drop(processor_tx);
         outgoing_message_sender
@@ -783,6 +1072,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
+        local_controller_endpoint,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -855,6 +1145,7 @@ mod tests {
                 capabilities: None,
             },
             channel_capacity,
+            local_controller_endpoint: InProcessLocalControllerEndpointConfig::Disabled,
         };
         let mut client = start(args).await.expect("in-process runtime should start");
         client._test_codex_home = Some(codex_home);
@@ -948,8 +1239,10 @@ mod tests {
         drop(outgoing_tx);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (_control_tx, control_rx) = mpsc::channel(/*buffer*/ 1);
         let mut outbound_handle = tokio::spawn(run_outbound_router(
             outgoing_rx,
+            control_rx,
             HashMap::new(),
             shutdown_rx,
         ));
@@ -984,6 +1277,7 @@ mod tests {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
+            local_controller_endpoint: None,
             _test_codex_home: None,
         };
 
