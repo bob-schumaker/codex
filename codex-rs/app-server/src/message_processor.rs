@@ -9,6 +9,7 @@ use crate::config_manager::ConfigManager;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::current_time::app_server_time_provider;
 use crate::error_code::invalid_request;
+use crate::error_code::method_not_found;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::guardian_agent_spawner;
@@ -983,6 +984,12 @@ impl MessageProcessor {
                 .clients_revoke(params)
                 .await
                 .map(|response| Some(response.into())),
+            ClientRequest::ControllerRequestParticipation { .. }
+            | ClientRequest::ControllerAcquireControl { .. }
+            | ClientRequest::ControllerReleaseControl { .. }
+            | ClientRequest::ControllerSignOff { .. } => Err(method_not_found(
+                "external controller APIs are not implemented yet",
+            )),
             ClientRequest::ConfigRequirementsRead { params: _, .. } => self
                 .config_processor
                 .config_requirements_read()

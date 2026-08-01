@@ -44,6 +44,12 @@ pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY B
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
+    "ControllerErrorCode",
+    "ControllerErrorData",
+    "ControllerLaunchState",
+    "ControllerParticipationDenial",
+    "ControllerParticipationStatus",
+    "ControllerRetryDisposition",
     "EnvironmentShellInfo",
     "EnvironmentStatusKind",
     "RemoteControlClient",
@@ -2405,6 +2411,19 @@ mod tests {
         let client_request_ts = ClientRequest::export_to_string()?;
         assert_eq!(client_request_ts.contains("mock/experimentalMethod"), true);
         assert_eq!(
+            client_request_ts.contains("controller/requestParticipation"),
+            true
+        );
+        assert_eq!(
+            client_request_ts.contains("controller/acquireControl"),
+            true
+        );
+        assert_eq!(
+            client_request_ts.contains("controller/releaseControl"),
+            true
+        );
+        assert_eq!(client_request_ts.contains("controller/signOff"), true);
+        assert_eq!(
             client_request_ts.contains("MockExperimentalMethodParams"),
             true
         );
@@ -2416,6 +2435,16 @@ mod tests {
         assert_eq!(
             v2::MockExperimentalMethodResponse::export_to_string()?
                 .contains("MockExperimentalMethodResponse"),
+            true
+        );
+        assert_eq!(
+            v2::ControllerRequestParticipationParams::export_to_string()?
+                .contains("ControllerRequestParticipationParams"),
+            true
+        );
+        assert_eq!(
+            v2::ControllerRequestParticipationResponse::export_to_string()?
+                .contains("ControllerRequestParticipationResponse"),
             true
         );
 
@@ -2929,6 +2958,16 @@ permissionProfile?: string | null};
             flat_v2_bundle_json.contains("RemoteControlClientsListOrder"),
             false
         );
+        for controller_schema in [
+            "ControllerRequestParticipationParams",
+            "ControllerRequestParticipationResponse",
+            "ControllerAcquireControlResponse",
+            "ControllerReleaseControlResponse",
+            "ControllerSignOffResponse",
+            "ControllerErrorData",
+        ] {
+            assert_eq!(flat_v2_bundle_json.contains(controller_schema), false);
+        }
         assert_eq!(flat_v2_bundle_json.contains("#/definitions/v2/"), false);
         assert_eq!(
             flat_v2_bundle_json.contains("\"title\": \"CodexAppServerProtocolV2\""),
@@ -3016,6 +3055,16 @@ permissionProfile?: string | null};
                 .exists(),
             false
         );
+        for schema in [
+            "ControllerRequestParticipationParams.json",
+            "ControllerRequestParticipationResponse.json",
+            "ControllerAcquireControlResponse.json",
+            "ControllerReleaseControlResponse.json",
+            "ControllerSignOffResponse.json",
+            "ControllerErrorData.json",
+        ] {
+            assert_eq!(output_dir.join("v2").join(schema).exists(), false);
+        }
 
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())
@@ -3044,6 +3093,37 @@ permissionProfile?: string | null};
         ] {
             assert!(output_dir.join("v2").join(schema).exists());
         }
+
+        let _cleanup = fs::remove_dir_all(&output_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn generate_json_includes_controller_methods_with_experimental_api() -> Result<()> {
+        let output_dir = std::env::temp_dir().join(format!("codex_schema_{}", Uuid::now_v7()));
+        fs::create_dir(&output_dir)?;
+        generate_json_with_experimental(&output_dir, /*experimental_api*/ true)?;
+
+        let client_request_json = fs::read_to_string(output_dir.join("ClientRequest.json"))?;
+        assert!(client_request_json.contains("controller/requestParticipation"));
+        assert!(client_request_json.contains("controller/acquireControl"));
+        assert!(client_request_json.contains("controller/releaseControl"));
+        assert!(client_request_json.contains("controller/signOff"));
+        for schema in [
+            "ControllerRequestParticipationParams.json",
+            "ControllerRequestParticipationResponse.json",
+            "ControllerAcquireControlResponse.json",
+            "ControllerReleaseControlResponse.json",
+            "ControllerSignOffResponse.json",
+        ] {
+            assert!(output_dir.join("v2").join(schema).exists());
+        }
+
+        let flat_v2_bundle_json =
+            fs::read_to_string(output_dir.join("codex_app_server_protocol.v2.schemas.json"))?;
+        assert!(flat_v2_bundle_json.contains("ControllerErrorData"));
+        assert!(flat_v2_bundle_json.contains("main-thread-unavailable"));
+        assert!(flat_v2_bundle_json.contains("controller-overloaded"));
 
         let _cleanup = fs::remove_dir_all(&output_dir);
         Ok(())

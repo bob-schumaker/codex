@@ -5186,6 +5186,46 @@
           "properties": {
             "method": {
               "enum": [
+                "controller/authorizationChanged"
+              ],
+              "title": "Controller/authorizationChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ControllerAuthorizationChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Controller/authorizationChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "controller/controlOwnershipChanged"
+              ],
+              "title": "Controller/controlOwnershipChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ControllerControlOwnershipChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Controller/controlOwnershipChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "externalAgentConfig/import/progress"
               ],
               "title": "ExternalAgentConfig/import/progressNotificationMethod",
@@ -9484,6 +9524,247 @@
           "turnId"
         ],
         "title": "ContextCompactedNotification",
+        "type": "object"
+      },
+      "ControllerAuthorizationChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "authorizationEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mainThreadId": {
+            "type": "string"
+          },
+          "ownerEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reason": {
+            "$ref": "#/definitions/v2/ControllerAuthorizationChangedReason"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ControllerSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionSequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "authorizationEpoch",
+          "mainThreadId",
+          "ownerEpoch",
+          "reason",
+          "sessionId",
+          "sessionSequence"
+        ],
+        "title": "ControllerAuthorizationChangedNotification",
+        "type": "object"
+      },
+      "ControllerAuthorizationChangedReason": {
+        "enum": [
+          "approved",
+          "rejected",
+          "revoked",
+          "expired",
+          "credentialRotated",
+          "policyChanged",
+          "signOff",
+          "disconnected",
+          "mainThreadClosed",
+          "tuiUnavailable"
+        ],
+        "type": "string"
+      },
+      "ControllerControlOwnershipChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "activeLease": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ControllerLease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorizationEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mainThreadId": {
+            "type": "string"
+          },
+          "ownerEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reason": {
+            "$ref": "#/definitions/v2/ControllerControlOwnershipChangedReason"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionSequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "authorizationEpoch",
+          "mainThreadId",
+          "ownerEpoch",
+          "reason",
+          "sessionId",
+          "sessionSequence"
+        ],
+        "title": "ControllerControlOwnershipChangedNotification",
+        "type": "object"
+      },
+      "ControllerControlOwnershipChangedReason": {
+        "enum": [
+          "initialLeaseGranted",
+          "acquired",
+          "released",
+          "reclaimedByTui",
+          "leaseExpired",
+          "authorizationRevoked",
+          "controllerDisconnected",
+          "signOff",
+          "mainThreadClosed",
+          "tuiUnavailable"
+        ],
+        "type": "string"
+      },
+      "ControllerEffectiveCapabilities": {
+        "properties": {
+          "acquireControl": {
+            "type": "boolean"
+          },
+          "answerPrompts": {
+            "type": "boolean"
+          },
+          "mutateMainThread": {
+            "type": "boolean"
+          },
+          "readMainThread": {
+            "type": "boolean"
+          },
+          "releaseControl": {
+            "type": "boolean"
+          },
+          "subscribeMainThread": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "acquireControl",
+          "answerPrompts",
+          "mutateMainThread",
+          "readMainThread",
+          "releaseControl",
+          "subscribeMainThread"
+        ],
+        "type": "object"
+      },
+      "ControllerLease": {
+        "properties": {
+          "expiresInMs": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "leaseId": {
+            "type": "string"
+          },
+          "ownerEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "leaseId",
+          "ownerEpoch"
+        ],
+        "type": "object"
+      },
+      "ControllerSession": {
+        "properties": {
+          "activeLease": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ControllerLease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorizationEpoch": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "authorizationExpiresInMs": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "effectiveCapabilities": {
+            "$ref": "#/definitions/v2/ControllerEffectiveCapabilities"
+          },
+          "leaseExpiresInMs": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mainThreadId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "sessionSequence": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "authorizationEpoch",
+          "effectiveCapabilities",
+          "mainThreadId",
+          "sessionId",
+          "sessionSequence"
+        ],
         "type": "object"
       },
       "ConversationTextRole": {

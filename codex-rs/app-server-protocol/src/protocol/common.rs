@@ -999,6 +999,30 @@ client_request_definitions! {
         serialization: global("remote-control-clients"),
         response: v2::RemoteControlClientsRevokeResponse,
     },
+    #[experimental("controller/requestParticipation")]
+    ControllerRequestParticipation => "controller/requestParticipation" {
+        params: v2::ControllerRequestParticipationParams,
+        serialization: global("controller"),
+        response: v2::ControllerRequestParticipationResponse,
+    },
+    #[experimental("controller/acquireControl")]
+    ControllerAcquireControl => "controller/acquireControl" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("controller"),
+        response: v2::ControllerAcquireControlResponse,
+    },
+    #[experimental("controller/releaseControl")]
+    ControllerReleaseControl => "controller/releaseControl" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("controller"),
+        response: v2::ControllerReleaseControlResponse,
+    },
+    #[experimental("controller/signOff")]
+    ControllerSignOff => "controller/signOff" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("controller"),
+        response: v2::ControllerSignOffResponse,
+    },
     #[experimental("collaborationMode/list")]
     /// Lists collaboration mode presets.
     CollaborationModeList => "collaborationMode/list" {
@@ -1760,6 +1784,10 @@ server_notification_definitions! {
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),
     RemoteControlStatusChanged => "remoteControl/status/changed" (v2::RemoteControlStatusChangedNotification),
+    #[experimental("controller/authorizationChanged")]
+    ControllerAuthorizationChanged => "controller/authorizationChanged" (v2::ControllerAuthorizationChangedNotification),
+    #[experimental("controller/controlOwnershipChanged")]
+    ControllerControlOwnershipChanged => "controller/controlOwnershipChanged" (v2::ControllerControlOwnershipChangedNotification),
     ExternalAgentConfigImportProgress => "externalAgentConfig/import/progress" (v2::ExternalAgentConfigImportProgressNotification),
     ExternalAgentConfigImportCompleted => "externalAgentConfig/import/completed" (v2::ExternalAgentConfigImportCompletedNotification),
     FsChanged => "fs/changed" (v2::FsChangedNotification),
@@ -1939,6 +1967,119 @@ mod tests {
             let actual = ClientRequest::try_from(request).map_err(|err| err.to_string());
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn controller_requests_are_experimental_and_globally_serialized() -> Result<()> {
+        let request = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "controller/requestParticipation".to_string(),
+            params: Some(json!({
+                "controllerName": "codex-waveshare",
+                "description": "Codex Waveshare controller"
+            })),
+            trace: None,
+        })?;
+
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&request),
+            Some("controller/requestParticipation")
+        );
+        assert_eq!(
+            request.serialization_scope(),
+            Some(ClientRequestSerializationScope::Global("controller"))
+        );
+        assert_eq!(
+            request,
+            ClientRequest::ControllerRequestParticipation {
+                request_id: request_id(),
+                params: v2::ControllerRequestParticipationParams {
+                    controller_name: "codex-waveshare".to_string(),
+                    description: "Codex Waveshare controller".to_string(),
+                },
+            }
+        );
+
+        let acquire = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "controller/acquireControl".to_string(),
+            params: None,
+            trace: None,
+        })?;
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&acquire),
+            Some("controller/acquireControl")
+        );
+        assert_eq!(
+            acquire.serialization_scope(),
+            Some(ClientRequestSerializationScope::Global("controller"))
+        );
+
+        let release = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "controller/releaseControl".to_string(),
+            params: Some(serde_json::Value::Null),
+            trace: None,
+        })?;
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&release),
+            Some("controller/releaseControl")
+        );
+
+        let sign_off = ClientRequest::try_from(JSONRPCRequest {
+            id: request_id(),
+            method: "controller/signOff".to_string(),
+            params: None,
+            trace: None,
+        })?;
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&sign_off),
+            Some("controller/signOff")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn controller_notifications_are_experimental() {
+        let notification = ServerNotification::ControllerAuthorizationChanged(
+            v2::ControllerAuthorizationChangedNotification {
+                session_id: "controller-session-1".to_string(),
+                main_thread_id: "thread-1".to_string(),
+                reason: v2::ControllerAuthorizationChangedReason::Approved,
+                authorization_epoch: 3,
+                owner_epoch: 7,
+                session_sequence: 11,
+                session: None,
+            },
+        );
+
+        assert_eq!(notification.to_string(), "controller/authorizationChanged");
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&notification),
+            Some("controller/authorizationChanged")
+        );
+
+        let notification = ServerNotification::ControllerControlOwnershipChanged(
+            v2::ControllerControlOwnershipChangedNotification {
+                session_id: "controller-session-1".to_string(),
+                main_thread_id: "thread-1".to_string(),
+                reason: v2::ControllerControlOwnershipChangedReason::Acquired,
+                authorization_epoch: 3,
+                owner_epoch: 7,
+                session_sequence: 11,
+                active_lease: None,
+            },
+        );
+
+        assert_eq!(
+            notification.to_string(),
+            "controller/controlOwnershipChanged"
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&notification),
+            Some("controller/controlOwnershipChanged")
+        );
     }
 
     #[test]

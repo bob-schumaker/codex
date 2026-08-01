@@ -174,6 +174,8 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::RemoteControlStatusChanged(_)
         | ServerNotification::ExternalAgentConfigImportProgress(_)
         | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::ControllerAuthorizationChanged(_)
+        | ServerNotification::ControllerControlOwnershipChanged(_)
         | ServerNotification::DeprecationNotice(_)
         | ServerNotification::ConfigWarning(_)
         | ServerNotification::FuzzyFileSearchSessionUpdated(_)
@@ -202,6 +204,10 @@ mod tests {
     use super::server_notification_thread_target;
     use crate::test_support::PathBufExt;
     use crate::test_support::test_path_buf;
+    use codex_app_server_protocol::ControllerAuthorizationChangedNotification;
+    use codex_app_server_protocol::ControllerAuthorizationChangedReason;
+    use codex_app_server_protocol::ControllerControlOwnershipChangedNotification;
+    use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
     use codex_app_server_protocol::GuardianWarningNotification;
     use codex_app_server_protocol::McpServerStartupState;
     use codex_app_server_protocol::McpServerStatusUpdatedNotification;
@@ -326,5 +332,41 @@ mod tests {
         let target = server_notification_thread_target(&notification);
 
         assert_eq!(target, ServerNotificationThreadTarget::Thread(thread_id));
+    }
+
+    #[test]
+    fn controller_control_plane_notifications_are_global() {
+        let thread_id = ThreadId::new();
+        let authorization_notification = ServerNotification::ControllerAuthorizationChanged(
+            ControllerAuthorizationChangedNotification {
+                session_id: "controller-session".to_string(),
+                main_thread_id: thread_id.to_string(),
+                reason: ControllerAuthorizationChangedReason::Approved,
+                authorization_epoch: 1,
+                owner_epoch: 0,
+                session_sequence: 1,
+                session: None,
+            },
+        );
+        let ownership_notification = ServerNotification::ControllerControlOwnershipChanged(
+            ControllerControlOwnershipChangedNotification {
+                session_id: "controller-session".to_string(),
+                main_thread_id: thread_id.to_string(),
+                reason: ControllerControlOwnershipChangedReason::Acquired,
+                authorization_epoch: 1,
+                owner_epoch: 2,
+                session_sequence: 2,
+                active_lease: None,
+            },
+        );
+
+        assert_eq!(
+            server_notification_thread_target(&authorization_notification),
+            ServerNotificationThreadTarget::Global
+        );
+        assert_eq!(
+            server_notification_thread_target(&ownership_notification),
+            ServerNotificationThreadTarget::Global
+        );
     }
 }

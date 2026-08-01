@@ -215,6 +215,8 @@ impl ChatWidget {
             | ServerNotification::RemoteControlStatusChanged(_)
             | ServerNotification::ExternalAgentConfigImportProgress(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::ControllerAuthorizationChanged(_)
+            | ServerNotification::ControllerControlOwnershipChanged(_)
             | ServerNotification::FsChanged(_)
             | ServerNotification::TurnModerationMetadata(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
