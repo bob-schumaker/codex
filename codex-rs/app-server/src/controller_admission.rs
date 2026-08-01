@@ -5,6 +5,13 @@
 //! existing app-server handler runs.
 #![allow(dead_code)]
 
+use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::transport::ConnectionOrigin;
+use codex_app_server_protocol::ControllerErrorCode;
+use codex_app_server_protocol::ControllerErrorData;
+use codex_app_server_protocol::ControllerRetryDisposition;
+use codex_app_server_protocol::JSONRPCErrorError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AdmissionRule {
     pub(crate) target: TargetExtraction,
@@ -269,6 +276,27 @@ pub(crate) fn client_request_rule(method: &str) -> Option<AdmissionRule> {
         .map(|entry| entry.rule)
 }
 
+pub(crate) fn admit_initialized_client_request(
+    origin: ConnectionOrigin,
+    method: &str,
+) -> Result<(), JSONRPCErrorError> {
+    let Some(_rule) = client_request_rule(method) else {
+        return Err(controller_not_allowed(
+            "controller admission is not defined for this method",
+        ));
+    };
+
+    match origin {
+        ConnectionOrigin::Stdio
+        | ConnectionOrigin::InProcess
+        | ConnectionOrigin::WebSocket
+        | ConnectionOrigin::RemoteControl => Ok(()),
+        ConnectionOrigin::ExternalController => Err(controller_not_allowed(
+            "external controller connections are not enabled yet",
+        )),
+    }
+}
+
 pub(crate) fn server_request_response_rule(method: &str) -> Option<AdmissionRule> {
     SERVER_REQUEST_RESPONSE_ADMISSION
         .iter()
@@ -282,6 +310,26 @@ pub(crate) fn continuation_rule_for(kind: ContinuationKind) -> AdmissionRule {
         .find(|entry| entry.kind == kind)
         .map(|entry| entry.rule)
         .expect("every continuation kind must have an admission rule")
+}
+
+fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
+    JSONRPCErrorError {
+        code: INVALID_REQUEST_ERROR_CODE,
+        message: message.to_string(),
+        data: Some(
+            serde_json::to_value(ControllerErrorData {
+                code: ControllerErrorCode::ControllerNotAllowed,
+                retry: ControllerRetryDisposition::DoNotRetry,
+                retry_after_ms: None,
+                launch_state: None,
+                main_thread_id: None,
+                session_id: None,
+                authorization_epoch: None,
+                owner_epoch: None,
+            })
+            .expect("controller error data should serialize"),
+        ),
+    }
 }
 
 #[cfg(test)]

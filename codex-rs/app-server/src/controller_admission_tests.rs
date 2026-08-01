@@ -5,10 +5,15 @@ use super::ContinuationKind;
 use super::RequiredAuthority;
 use super::SERVER_REQUEST_RESPONSE_ADMISSION;
 use super::TargetExtraction;
+use super::admit_initialized_client_request;
 use super::client_request_rule;
 use super::continuation_rule_for;
 use super::server_request_response_rule;
+use crate::transport::ConnectionOrigin;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ControllerErrorCode;
+use codex_app_server_protocol::ControllerErrorData;
+use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ServerRequest;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeSet;
@@ -58,6 +63,39 @@ fn unknown_methods_default_to_denied() {
         server_request_response_rule("item/unknown/requestApproval"),
         None
     );
+}
+
+#[test]
+fn non_controller_origins_keep_existing_admission() {
+    for origin in [
+        ConnectionOrigin::Stdio,
+        ConnectionOrigin::InProcess,
+        ConnectionOrigin::WebSocket,
+        ConnectionOrigin::RemoteControl,
+    ] {
+        assert_eq!(
+            admit_initialized_client_request(origin, "thread/list"),
+            Ok(()),
+            "{origin:?} should preserve existing app-server behavior"
+        );
+    }
+}
+
+#[test]
+fn external_controller_origin_is_disabled_before_session_manager_lands() {
+    let error =
+        admit_initialized_client_request(ConnectionOrigin::ExternalController, "thread/list")
+            .expect_err("external controller requests should be disabled");
+
+    assert_controller_not_allowed(error);
+}
+
+#[test]
+fn unclassified_initialized_methods_are_denied() {
+    let error = admit_initialized_client_request(ConnectionOrigin::Stdio, "thread/newMethod")
+        .expect_err("unclassified initialized methods should be denied");
+
+    assert_controller_not_allowed(error);
 }
 
 #[test]
@@ -235,6 +273,15 @@ fn assert_no_duplicates(methods: Vec<&'static str>) {
     let method_count = methods.len();
     let unique_method_count = methods.into_iter().collect::<BTreeSet<_>>().len();
     assert_eq!(method_count, unique_method_count);
+}
+
+fn assert_controller_not_allowed(error: codex_app_server_protocol::JSONRPCErrorError) {
+    assert_eq!(error.code, crate::error_code::INVALID_REQUEST_ERROR_CODE);
+    let data: ControllerErrorData =
+        serde_json::from_value(error.data.expect("controller error should include data"))
+            .expect("controller error data should deserialize");
+    assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+    assert_eq!(data.retry, ControllerRetryDisposition::DoNotRetry);
 }
 
 fn rule(target: TargetExtraction, required_authority: RequiredAuthority) -> AdmissionRule {

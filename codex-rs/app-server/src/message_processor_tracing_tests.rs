@@ -6,15 +6,20 @@ use crate::config_manager::ConfigManager;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::AppServerTransport;
+use crate::transport::ConnectionOrigin;
 use anyhow::Result;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::write_mock_responses_config_toml;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ControllerErrorCode;
+use codex_app_server_protocol::ControllerErrorData;
+use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
@@ -169,6 +174,19 @@ impl TracingHarness {
     where
         T: serde::de::DeserializeOwned,
     {
+        self.request_with_origin(request, ConnectionOrigin::Stdio, trace)
+            .await
+    }
+
+    async fn request_with_origin<T>(
+        &mut self,
+        request: ClientRequest,
+        connection_origin: ConnectionOrigin,
+        trace: Option<W3cTraceContext>,
+    ) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
         let request_id = match request.id() {
             RequestId::Integer(request_id) => *request_id,
             request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
@@ -179,12 +197,34 @@ impl TracingHarness {
         self.processor
             .process_request(
                 TEST_CONNECTION_ID,
+                connection_origin,
                 request,
                 &AppServerTransport::Stdio,
                 Arc::clone(&self.session),
             )
             .await;
         read_response(&mut self.outgoing_rx, request_id).await
+    }
+
+    async fn raw_request_error_with_origin(
+        &mut self,
+        request: JSONRPCRequest,
+        connection_origin: ConnectionOrigin,
+    ) -> JSONRPCError {
+        let request_id = match &request.id {
+            RequestId::Integer(request_id) => *request_id,
+            request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
+        };
+        self.processor
+            .process_request(
+                TEST_CONNECTION_ID,
+                connection_origin,
+                request,
+                &AppServerTransport::Stdio,
+                Arc::clone(&self.session),
+            )
+            .await;
+        read_error(&mut self.outgoing_rx, request_id).await
     }
 
     async fn start_thread(
@@ -459,6 +499,39 @@ async fn read_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn read_error(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    request_id: i64,
+) -> JSONRPCError {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for error")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        if connection_id != TEST_CONNECTION_ID {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::Error(error) = message else {
+            continue;
+        };
+        if error.id != RequestId::Integer(request_id) {
+            continue;
+        }
+        return JSONRPCError {
+            error: error.error,
+            id: error.id,
+        };
+    }
+}
+
 async fn read_thread_started_notification(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
 ) {
@@ -543,6 +616,47 @@ where
     })
     .await;
     spans.into_iter().skip(baseline_len).collect()
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "external_controller_origin_is_denied_before_initialized_dispatch",
+        async {
+            let mut harness = TracingHarness::new().await?;
+            let error = harness
+                .raw_request_error_with_origin(
+                    JSONRPCRequest {
+                        id: RequestId::Integer(30_001),
+                        method: "thread/list".to_string(),
+                        params: Some(serde_json::json!({})),
+                        trace: None,
+                    },
+                    ConnectionOrigin::ExternalController,
+                )
+                .await;
+
+            assert_eq!(
+                error.error.code,
+                crate::error_code::INVALID_REQUEST_ERROR_CODE
+            );
+            assert_eq!(
+                error.error.message,
+                "external controller connections are not enabled yet"
+            );
+            let data: ControllerErrorData = serde_json::from_value(
+                error
+                    .error
+                    .data
+                    .expect("controller error should include data"),
+            )?;
+            assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+            assert_eq!(data.retry, ControllerRetryDisposition::DoNotRetry);
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
 }
 
 #[test]

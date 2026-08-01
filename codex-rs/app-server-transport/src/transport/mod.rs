@@ -190,7 +190,10 @@ pub enum ConnectionOrigin {
     Stdio,
     InProcess,
     WebSocket,
+    /// Existing remote-control transport, distinct from local external-controller authority.
     RemoteControl,
+    /// Local external-controller transport origin. No transport currently emits this origin.
+    ExternalController,
 }
 
 static CONNECTION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
