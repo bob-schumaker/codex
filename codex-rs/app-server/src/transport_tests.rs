@@ -465,6 +465,72 @@ async fn broadcast_does_not_block_on_slow_connection() {
 }
 
 #[tokio::test]
+async fn to_connection_disconnects_slow_socket_connection_without_waiting() {
+    let connection_id = ConnectionId(14);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let disconnect_token = CancellationToken::new();
+
+    let queued_message = app_server_notification(ServerNotification::ConfigWarning(
+        ConfigWarningNotification {
+            summary: "already-buffered".to_string(),
+            details: None,
+            path: None,
+            range: None,
+        },
+    ));
+    writer_tx
+        .try_send(QueuedOutgoingMessage::new(queued_message))
+        .expect("channel should have room for initial message");
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            Some(disconnect_token.clone()),
+        ),
+    );
+
+    timeout(
+        Duration::from_millis(100),
+        route_outgoing_envelope(
+            &mut connections,
+            OutgoingEnvelope::ToConnection {
+                connection_id,
+                message: app_server_notification(ServerNotification::ConfigWarning(
+                    ConfigWarningNotification {
+                        summary: "second".to_string(),
+                        details: None,
+                        path: None,
+                        range: None,
+                    },
+                )),
+                write_complete_tx: None,
+            },
+        ),
+    )
+    .await
+    .expect("routing should not wait for a full disconnectable writer queue");
+
+    assert!(!connections.contains_key(&connection_id));
+    assert!(disconnect_token.is_cancelled());
+    let retained_message = writer_rx
+        .try_recv()
+        .expect("slow connection should retain only its original buffered message");
+    assert!(matches!(
+        retained_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "already-buffered"
+    ));
+    assert!(writer_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn to_connection_stdio_waits_instead_of_disconnecting_when_writer_queue_is_full() {
     let connection_id = ConnectionId(3);
     let (writer_tx, mut writer_rx) = mpsc::channel(1);
