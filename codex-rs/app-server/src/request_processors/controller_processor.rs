@@ -32,6 +32,10 @@ use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
 use crate::controller_enrollment::ControllerEnrollmentVerifier;
 use crate::controller_enrollment::ControllerParticipationEvidence;
+use crate::controller_native_approval::NativeControllerParticipationApprover;
+use crate::controller_native_approval::NativeControllerParticipationDecision;
+use crate::controller_native_approval::NativeControllerParticipationRequest;
+use crate::controller_session::ControllerEnrollmentGrant;
 use crate::controller_session::ControllerSessionClock;
 use crate::controller_session::ControllerSessionConfig;
 use crate::controller_session::ControllerSessionCoordinator;
@@ -44,12 +48,14 @@ use crate::transport::ConnectionId;
 use crate::transport::ConnectionOrigin;
 
 const CONTROLLER_TRANSFER_RETRY_AFTER: u64 = 50;
+const NATIVE_CONTROLLER_AUTHORIZATION_DURATION: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub(crate) struct ControllerRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     state: Arc<Mutex<ControllerProcessorState>>,
     enrollment_source: Arc<dyn ControllerEnrollmentSource>,
+    native_participation_approver: Option<NativeControllerParticipationApprover>,
     enrollment_policy: ControllerEnrollmentPolicy,
     clock: ControllerSessionClock,
     session_config: ControllerSessionConfig,
@@ -88,6 +94,7 @@ impl ControllerRequestProcessor {
     pub(crate) fn new(
         outgoing: Arc<OutgoingMessageSender>,
         enrollment_source: Arc<dyn ControllerEnrollmentSource>,
+        native_participation_approver: Option<NativeControllerParticipationApprover>,
         enrollment_policy: ControllerEnrollmentPolicy,
         clock: ControllerSessionClock,
         session_config: ControllerSessionConfig,
@@ -100,6 +107,7 @@ impl ControllerRequestProcessor {
                 launch_state: ControllerLaunchState::Starting,
             })),
             enrollment_source,
+            native_participation_approver,
             enrollment_policy,
             clock,
             session_config,
@@ -133,6 +141,36 @@ impl ControllerRequestProcessor {
         params: ControllerRequestParticipationParams,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
+
+        if credential_proof.is_none()
+            && let Some(native_participation_approver) = self.native_participation_approver.as_ref()
+        {
+            let main_thread_id = self.native_participation_main_thread_id()?;
+            let decision = native_participation_approver(NativeControllerParticipationRequest {
+                connection_id,
+                controller_name: params.controller_name,
+                description: params.description,
+                main_thread_id: main_thread_id.to_string(),
+            })
+            .await;
+
+            return match decision {
+                NativeControllerParticipationDecision::Approved => {
+                    self.approve_native_participation(connection_id, main_thread_id)
+                        .await
+                }
+                NativeControllerParticipationDecision::Rejected { reason } => {
+                    Ok(controller_participation_rejected(
+                        reason,
+                        ControllerRetryDisposition::SameConnection,
+                    ))
+                }
+                NativeControllerParticipationDecision::TuiUnavailable { reason } => {
+                    Err(tui_unavailable(reason))
+                }
+            };
+        }
+
         let verifier = ControllerEnrollmentVerifier::new(
             Arc::clone(&self.enrollment_source),
             self.enrollment_policy,
@@ -172,6 +210,56 @@ impl ControllerRequestProcessor {
                 session: Some(session),
                 denial: None,
             })
+        })?;
+
+        self.rebind_pending_prompts(rebind).await;
+        response
+    }
+
+    fn native_participation_main_thread_id(&self) -> Result<ThreadId, JSONRPCErrorError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let launch_state = state.launch_state.clone();
+        let Some(coordinator) = state.coordinator.as_ref() else {
+            return Err(main_thread_unavailable(launch_state));
+        };
+        if matches!(
+            coordinator.interactive_owner(),
+            InteractiveOwner::TuiUnavailable { .. }
+        ) {
+            return Err(tui_unavailable(
+                "TUI is unavailable for this controller launch".to_string(),
+            ));
+        }
+        coordinator.main_thread_id().ok_or_else(main_thread_closed)
+    }
+
+    async fn approve_native_participation(
+        &self,
+        connection_id: ConnectionId,
+        requested_main_thread_id: ThreadId,
+    ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
+        let (response, rebind) = self.with_main_thread_rebind(|coordinator, main_thread_id| {
+            if main_thread_id != requested_main_thread_id {
+                return Err(thread_target_error(main_thread_id.to_string()));
+            }
+            let now = self.clock.now();
+            let grant = ControllerEnrollmentGrant {
+                subject_id: format!("native-controller-connection-{}", connection_id.0),
+                main_thread_id,
+                authorization_epoch: connection_id.0,
+                authorization_expires_at: now + NATIVE_CONTROLLER_AUTHORIZATION_DURATION,
+            };
+            coordinator
+                .request_participation(connection_id, grant)
+                .map(|session| ControllerRequestParticipationResponse {
+                    status: ControllerParticipationStatus::Approved,
+                    session: Some(session),
+                    denial: None,
+                })
+                .map_err(controller_session_error)
         })?;
 
         self.rebind_pending_prompts(rebind).await;
@@ -747,6 +835,36 @@ fn enrollment_error_data(
     }
 }
 
+fn controller_participation_rejected(
+    message: String,
+    retry: ControllerRetryDisposition,
+) -> ControllerRequestParticipationResponse {
+    ControllerRequestParticipationResponse {
+        status: ControllerParticipationStatus::Rejected,
+        session: None,
+        denial: Some(ControllerParticipationDenial {
+            message,
+            data: error_data(ControllerErrorCode::EnrollmentDenied, retry),
+        }),
+    }
+}
+
+fn tui_unavailable(message: String) -> JSONRPCErrorError {
+    controller_error(
+        &message,
+        ControllerErrorData {
+            code: ControllerErrorCode::TuiUnavailable,
+            retry: ControllerRetryDisposition::DoNotRetry,
+            retry_after_ms: None,
+            launch_state: Some(ControllerLaunchState::TuiUnavailable),
+            main_thread_id: None,
+            session_id: None,
+            authorization_epoch: None,
+            owner_epoch: None,
+        },
+    )
+}
+
 fn controller_session_error(err: ControllerSessionError) -> JSONRPCErrorError {
     match err {
         ControllerSessionError::ParticipationRequired => controller_error(
@@ -781,19 +899,9 @@ fn controller_session_error(err: ControllerSessionError) -> JSONRPCErrorError {
             },
         ),
         ControllerSessionError::MainThreadClosed => main_thread_closed(),
-        ControllerSessionError::TuiUnavailable => controller_error(
-            "TUI is unavailable for this controller launch",
-            ControllerErrorData {
-                code: ControllerErrorCode::TuiUnavailable,
-                retry: ControllerRetryDisposition::DoNotRetry,
-                retry_after_ms: None,
-                launch_state: Some(ControllerLaunchState::TuiUnavailable),
-                main_thread_id: None,
-                session_id: None,
-                authorization_epoch: None,
-                owner_epoch: None,
-            },
-        ),
+        ControllerSessionError::TuiUnavailable => {
+            tui_unavailable("TUI is unavailable for this controller launch".to_string())
+        }
         ControllerSessionError::DifferentMainThread => controller_error(
             "controller enrollment targets a different main thread",
             error_data(

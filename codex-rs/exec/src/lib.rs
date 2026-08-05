@@ -20,6 +20,7 @@ use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessLocalControllerEndpointConfig;
 use codex_app_server_client::InProcessServerEvent;
+use codex_app_server_client::NativeControllerParticipationDecision;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -1077,6 +1078,20 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         };
 
         match server_event {
+            InProcessServerEvent::ControllerParticipationRequest(request) => {
+                if let Err(err) = client
+                    .respond_controller_participation(
+                        request.request_id,
+                        NativeControllerParticipationDecision::TuiUnavailable {
+                            reason: "codex exec cannot approve local controller participation"
+                                .to_string(),
+                        },
+                    )
+                    .await
+                {
+                    warn!("controller participation rejection failed: {err}");
+                }
+            }
             InProcessServerEvent::ServerRequest(request) => {
                 handle_server_request(&client, *request, &mut error_seen).await;
             }

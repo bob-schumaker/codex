@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 92
+expression: "render_bottom_popup(&chat, 100)"
+---
+  Allow codex-waveshare to control this session?
+  USB hardware controller · Main thread: thread-123
+
+› 1. Allow controller  Grant this local controller read access and current input control.
+  2. Deny controller   Leave input control with this TUI.
+
+  Press enter to confirm or esc to go back

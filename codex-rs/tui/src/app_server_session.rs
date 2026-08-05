@@ -24,6 +24,8 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::NativeControllerParticipationDecision;
+use codex_app_server_client::NativeControllerParticipationRequestId;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -1449,6 +1451,16 @@ impl AppServerSession {
         result: serde_json::Value,
     ) -> std::io::Result<()> {
         self.client.resolve_server_request(request_id, result).await
+    }
+
+    pub(crate) async fn respond_controller_participation(
+        &self,
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    ) -> std::io::Result<()> {
+        self.client
+            .respond_controller_participation(request_id, decision)
+            .await
     }
 
     pub(crate) async fn shutdown(self) -> std::io::Result<()> {

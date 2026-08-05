@@ -1,6 +1,8 @@
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::chatwidget::connectors::ConnectorsCacheState;
+use codex_app_server_client::InProcessControllerParticipationRequest;
+use codex_app_server_client::NativeControllerParticipationRequestId;
 use codex_app_server_protocol::HookErrorInfo;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::HooksListResponse;
@@ -74,6 +76,23 @@ async fn plugins_popup_loading_state_snapshot() {
         "expected /plugins to open in a loading state before the marketplace arrives, got:\n{popup}"
     );
     assert_chatwidget_snapshot!("plugins_popup_loading_state", popup);
+}
+
+#[tokio::test]
+async fn controller_participation_prompt_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_controller_participation_prompt(InProcessControllerParticipationRequest {
+        request_id: NativeControllerParticipationRequestId(7),
+        controller_name: "codex-waveshare".to_string(),
+        description: "USB hardware controller".to_string(),
+        main_thread_id: "thread-123".to_string(),
+    });
+
+    assert_chatwidget_snapshot!(
+        "controller_participation_prompt",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
 }
 
 #[tokio::test]

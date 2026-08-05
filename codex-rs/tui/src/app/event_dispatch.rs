@@ -2172,6 +2172,19 @@ impl App {
             AppEvent::OpenApprovalsPopup => {
                 self.chat_widget.open_approvals_popup();
             }
+            AppEvent::RespondControllerParticipation {
+                request_id,
+                decision,
+            } => {
+                if let Err(err) = app_server
+                    .respond_controller_participation(request_id, decision)
+                    .await
+                {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to answer controller participation request: {err}"
+                    ));
+                }
+            }
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }

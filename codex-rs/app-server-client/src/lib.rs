@@ -28,6 +28,7 @@ use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+pub use codex_app_server::in_process::InProcessControllerParticipationRequest;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointStatus;
 pub use codex_app_server::in_process::InProcessServerEvent;
@@ -35,6 +36,8 @@ use codex_app_server::in_process::InProcessStartArgs;
 pub use codex_app_server::in_process::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
 pub use codex_app_server::in_process::LocalControllerEndpointMetadata;
 use codex_app_server::in_process::LogDbLayer;
+pub use codex_app_server::in_process::NativeControllerParticipationDecision;
+pub use codex_app_server::in_process::NativeControllerParticipationRequestId;
 pub use codex_app_server::in_process::StateDbHandle;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
@@ -101,6 +104,7 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
     Lagged { skipped: usize },
+    ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
     ServerNotification(Box<ServerNotification>),
     ServerRequest(Box<ServerRequest>),
     Disconnected { message: String },
@@ -110,6 +114,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
     fn from(value: InProcessServerEvent) -> Self {
         match value {
             InProcessServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            InProcessServerEvent::ControllerParticipationRequest(request) => {
+                Self::ControllerParticipationRequest(request)
+            }
             InProcessServerEvent::ServerNotification(notification) => {
                 Self::ServerNotification(notification)
             }
@@ -127,6 +134,7 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
         InProcessServerEvent::ServerNotification(notification) => {
             server_notification_requires_delivery(notification)
         }
+        InProcessServerEvent::ControllerParticipationRequest(_) => true,
         _ => false,
     }
 }
@@ -424,6 +432,11 @@ enum ClientCommand {
         error: JSONRPCErrorError,
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    RespondControllerParticipation {
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+        response_tx: oneshot::Sender<IoResult<()>>,
+    },
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
@@ -517,6 +530,18 @@ impl InProcessAppServerClient {
                                 response_tx,
                             }) => {
                                 let send_result = request_sender.fail_server_request(request_id, error);
+                                let _ = response_tx.send(send_result);
+                            }
+                            Some(ClientCommand::RespondControllerParticipation {
+                                request_id,
+                                decision,
+                                response_tx,
+                            }) => {
+                                let send_result = request_sender
+                                    .respond_to_controller_participation_request(
+                                        request_id,
+                                        decision,
+                                    );
                                 let _ = response_tx.send(send_result);
                             }
                             Some(ClientCommand::Shutdown { response_tx }) => {
@@ -743,6 +768,34 @@ impl InProcessAppServerClient {
         })?
     }
 
+    /// Resolves a native local-controller participation prompt.
+    pub async fn respond_controller_participation(
+        &self,
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    ) -> IoResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::RespondControllerParticipation {
+                request_id,
+                decision,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process controller participation response channel is closed",
+            )
+        })?
+    }
+
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
@@ -910,6 +963,24 @@ impl AppServerClient {
         match self {
             Self::InProcess(client) => client.reject_server_request(request_id, error).await,
             Self::Remote(client) => client.reject_server_request(request_id, error).await,
+        }
+    }
+
+    pub async fn respond_controller_participation(
+        &self,
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    ) -> IoResult<()> {
+        match self {
+            Self::InProcess(client) => {
+                client
+                    .respond_controller_participation(request_id, decision)
+                    .await
+            }
+            Self::Remote(_) => Err(IoError::new(
+                ErrorKind::Unsupported,
+                "native controller participation is only supported by embedded app-server",
+            )),
         }
     }
 
@@ -2385,6 +2456,16 @@ mod tests {
                         active_lease: None,
                     }
                 )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ControllerParticipationRequest(Box::new(
+                InProcessControllerParticipationRequest {
+                    request_id: NativeControllerParticipationRequestId(1),
+                    controller_name: "codex-waveshare".to_string(),
+                    description: "test controller".to_string(),
+                    main_thread_id: "thread".to_string(),
+                }
             ))
         ));
         assert!(!event_requires_delivery(&InProcessServerEvent::Lagged {

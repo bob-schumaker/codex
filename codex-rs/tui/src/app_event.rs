@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::inline_visualization::InlineVisualizationContext;
+use codex_app_server_client::NativeControllerParticipationDecision;
+use codex_app_server_client::NativeControllerParticipationRequestId;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
@@ -1006,6 +1008,12 @@ pub(crate) enum AppEvent {
 
     /// Re-open the approval presets popup.
     OpenApprovalsPopup,
+
+    /// Resolve a native local-controller participation request surfaced by the embedded app-server.
+    RespondControllerParticipation {
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    },
 
     /// Open the skills list popup.
     OpenSkillsList,

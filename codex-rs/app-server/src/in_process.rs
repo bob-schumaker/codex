@@ -47,6 +47,7 @@ use std::io::Result as IoResult;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -55,6 +56,11 @@ use crate::config_manager::ConfigManager;
 #[cfg(test)]
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::EmptyControllerEnrollmentSource;
+pub use crate::controller_native_approval::InProcessControllerParticipationRequest;
+use crate::controller_native_approval::NativeControllerParticipationApprover;
+pub use crate::controller_native_approval::NativeControllerParticipationDecision;
+use crate::controller_native_approval::NativeControllerParticipationRequest;
+pub use crate::controller_native_approval::NativeControllerParticipationRequestId;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
@@ -100,6 +106,7 @@ use codex_login::AuthManager;
 use codex_protocol::protocol::SessionSource;
 pub use codex_rollout::StateDbHandle;
 pub use codex_state::log_db::LogDbLayer;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -222,6 +229,8 @@ pub struct InProcessStartArgs {
 /// event — it signals that the consumer fell behind and some events were dropped.
 #[derive(Debug, Clone)]
 pub enum InProcessServerEvent {
+    /// Local-controller participation request that requires owning TUI approval.
+    ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
     /// Server request that requires client response/rejection.
     ServerRequest(Box<ServerRequest>),
     /// App-server notification directed to the embedded client.
@@ -250,6 +259,10 @@ enum InProcessClientMessage {
     ServerRequestError {
         request_id: RequestId,
         error: JSONRPCErrorError,
+    },
+    ControllerParticipationResponse {
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
     },
     Shutdown {
         done_tx: oneshot::Sender<()>,
@@ -314,6 +327,17 @@ impl InProcessClientSender {
         self.try_send_client_message(InProcessClientMessage::ServerRequestError {
             request_id,
             error,
+        })
+    }
+
+    pub fn respond_to_controller_participation_request(
+        &self,
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    ) -> IoResult<()> {
+        self.try_send_client_message(InProcessClientMessage::ControllerParticipationResponse {
+            request_id,
+            decision,
         })
     }
 
@@ -385,6 +409,20 @@ impl InProcessClientHandle {
         error: JSONRPCErrorError,
     ) -> IoResult<()> {
         self.client.fail_server_request(request_id, error)
+    }
+
+    /// Resolves a pending native local-controller participation prompt.
+    ///
+    /// This should only be used with request IDs received from
+    /// [`InProcessServerEvent::ControllerParticipationRequest`] on the owning
+    /// in-process TUI connection.
+    pub fn respond_to_controller_participation_request(
+        &self,
+        request_id: NativeControllerParticipationRequestId,
+        decision: NativeControllerParticipationDecision,
+    ) -> IoResult<()> {
+        self.client
+            .respond_to_controller_participation_request(request_id, decision)
     }
 
     /// Receives the next server event from the in-process runtime.
@@ -556,6 +594,59 @@ fn initialized_connection_ids(
         .collect()
 }
 
+type PendingControllerParticipationRequests = Arc<
+    AsyncMutex<
+        HashMap<
+            NativeControllerParticipationRequestId,
+            oneshot::Sender<NativeControllerParticipationDecision>,
+        >,
+    >,
+>;
+
+fn native_controller_participation_approver(
+    event_tx: mpsc::Sender<InProcessServerEvent>,
+    pending_requests: PendingControllerParticipationRequests,
+    next_request_id: Arc<AtomicU64>,
+) -> NativeControllerParticipationApprover {
+    Arc::new(move |request: NativeControllerParticipationRequest| {
+        let event_tx = event_tx.clone();
+        let pending_requests = Arc::clone(&pending_requests);
+        let request_id =
+            NativeControllerParticipationRequestId(next_request_id.fetch_add(1, Ordering::Relaxed));
+        Box::pin(async move {
+            let (decision_tx, decision_rx) = oneshot::channel();
+            pending_requests
+                .lock()
+                .await
+                .insert(request_id, decision_tx);
+
+            let event = InProcessServerEvent::ControllerParticipationRequest(Box::new(
+                InProcessControllerParticipationRequest {
+                    request_id,
+                    controller_name: request.controller_name,
+                    description: request.description,
+                    main_thread_id: request.main_thread_id,
+                },
+            ));
+
+            if event_tx.send(event).await.is_err() {
+                pending_requests.lock().await.remove(&request_id);
+                return NativeControllerParticipationDecision::TuiUnavailable {
+                    reason: "owning TUI is not available for controller participation".to_string(),
+                };
+            }
+
+            match decision_rx.await {
+                Ok(decision) => decision,
+                Err(_) => NativeControllerParticipationDecision::TuiUnavailable {
+                    reason: "owning TUI stopped before answering controller participation"
+                        .to_string(),
+                },
+            }
+        })
+    })
+}
+
 async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
     args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
@@ -575,6 +666,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let controller_credential_proof_factory = args.controller_credential_proof_factory.clone();
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let pending_controller_participation = Arc::new(AsyncMutex::new(HashMap::new()));
+    let next_controller_participation_request_id = Arc::new(AtomicU64::new(1));
+    let native_controller_participation_approver = native_controller_participation_approver(
+        event_tx.clone(),
+        Arc::clone(&pending_controller_participation),
+        next_controller_participation_request_id,
+    );
     let (external_transport_event_tx, external_transport_event_rx) =
         mpsc::channel::<TransportEvent>(channel_capacity);
     let external_transport_shutdown_token = CancellationToken::new();
@@ -696,6 +794,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
                 controller_enrollment_source,
+                native_controller_participation_approver: Some(
+                    native_controller_participation_approver,
+                ),
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
@@ -1013,6 +1114,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 )
                                 .await;
                         }
+                        Some(InProcessClientMessage::ControllerParticipationResponse {
+                            request_id,
+                            decision,
+                        }) => {
+                            let response_tx =
+                                pending_controller_participation.lock().await.remove(&request_id);
+                            if let Some(response_tx) = response_tx {
+                                let _ = response_tx.send(decision);
+                            } else {
+                                warn!(
+                                    ?request_id,
+                                    "dropping unmatched controller participation response"
+                                );
+                            }
+                        }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
                             shutdown_ack = Some(done_tx);
                             break;
@@ -1133,6 +1249,17 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 "in-process app-server runtime is shutting down",
             )))
             .await;
+        let pending_native_participation = pending_controller_participation
+            .lock()
+            .await
+            .drain()
+            .map(|(_, response_tx)| response_tx)
+            .collect::<Vec<_>>();
+        for response_tx in pending_native_participation {
+            let _ = response_tx.send(NativeControllerParticipationDecision::TuiUnavailable {
+                reason: "in-process app-server runtime is shutting down".to_string(),
+            });
+        }
         // Detached processor work can retain outgoing senders, so channel
         // closure alone cannot be used to shut down the outbound router.
         drop(outgoing_message_sender);
@@ -1626,6 +1753,123 @@ mod tests {
             !err.to_string().is_empty(),
             "startup error should explain endpoint setup failure"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_request_participation_uses_native_tui_approval() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(10_101),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_101,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let initialize_response: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_101).await;
+        assert!(initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_102,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+
+        let native_request = timeout(Duration::from_secs(2), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("event stream should stay open")
+                {
+                    InProcessServerEvent::ControllerParticipationRequest(native_request) => {
+                        break native_request;
+                    }
+                    InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("native participation request should arrive before timeout");
+        assert_eq!(
+            *native_request,
+            InProcessControllerParticipationRequest {
+                request_id: native_request.request_id,
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+                main_thread_id: started.thread.id.clone(),
+            }
+        );
+        client
+            .respond_to_controller_participation_request(
+                native_request.request_id,
+                NativeControllerParticipationDecision::Approved,
+            )
+            .expect("native participation response should send");
+
+        let participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_102).await;
+        assert_eq!(
+            participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let session = participation.session.expect("approved session");
+        assert_eq!(session.main_thread_id, started.thread.id);
+        assert!(session.active_lease.is_some());
+        assert!(session.effective_capabilities.read_main_thread);
+        assert!(session.effective_capabilities.mutate_main_thread);
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
     }
 
     #[cfg(unix)]

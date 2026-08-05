@@ -99,6 +99,7 @@ mod connection_cleanup;
 mod connection_rpc_gate;
 mod controller_admission;
 mod controller_enrollment;
+mod controller_native_approval;
 mod controller_session;
 mod current_time;
 mod dynamic_tools;
@@ -927,6 +928,7 @@ pub async fn run_main_with_transport_options(
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle.clone()),
             controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
+            native_controller_participation_approver: None,
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
