@@ -262,11 +262,11 @@ Example with notification opt-out:
 - `remoteControl/client/list` — experimental; list controller devices granted access to an environment. Pass `environmentId` and optional `cursor`, `limit`, and `order`; returns picker-oriented client metadata plus `nextCursor`. This signed-in account-management operation works while the local relay is disabled or unenrolled.
 - `remoteControl/client/revoke` — experimental; revoke one controller device's grant for an environment. Pass `environmentId` and `clientId`; returns an empty object. This signed-in account-management operation works while the local relay is disabled or unenrolled.
 - `remoteControl/status/changed` — notification emitted when the remote-control status or client-visible environment id changes. `status` is one of `disabled`, `connecting`, `connected`, or `errored`; `serverName` is the local machine name used by this app-server process; `environmentId` is a string when the app-server has a current enrollment and `null` when that enrollment is cleared, invalidated, or remote control is disabled. Newly initialized app-server clients always receive the current status snapshot.
-- `controller/requestParticipation` — experimental and under development; schema-only until the runtime controller session manager lands. Local external controllers will use this connection-bound pre-participation request to activate a `ControllerSession` for the embedded TUI launch's main thread. Takes `{ controllerName, description }` display claims and returns `ControllerRequestParticipationResponse { status, session, denial }`. These display claims are not authorization credentials.
-- `controller/acquireControl` — experimental and under development; schema-only until the runtime controller session manager lands. Will ask the server to issue an active `interactive-control` lease for the approved controller session when the main thread is available and no other controller owns it. Returns `ControllerAcquireControlResponse { session }`.
-- `controller/releaseControl` — experimental and under development; schema-only until the runtime controller session manager lands. Will cede input ownership back to the TUI while preserving the controller's standing read/subscription session. Returns `ControllerReleaseControlResponse { session }` and is idempotent for a live session that already has `activeLease: null`.
-- `controller/signOff` — experimental and under development; schema-only until the runtime controller session manager lands. Will terminate the controller session, revoke its connection-bound lease if any, and return `{}` before the controller connection closes.
-- `controller/authorizationChanged` and `controller/controlOwnershipChanged` — experimental controller control-plane notifications; schema-only until the runtime controller session manager lands. They will report session authorization and active input-owner changes to controller clients; the TUI receives corresponding typed in-process ownership-status events.
+- `controller/requestParticipation` — experimental; local external controllers use this connection-bound pre-participation request to ask the owning embedded TUI for native approval. Approval activates a per-launch `ControllerSession` for that TUI launch's main thread. Takes `{ controllerName, description }` display claims and returns `ControllerRequestParticipationResponse { status, session, denial }`. These display claims are not authorization credentials.
+- `controller/acquireControl` — experimental; asks the server to issue an active `interactive-control` lease for the approved controller session when the main thread is available and no other controller owns it. Returns `ControllerAcquireControlResponse { session }`.
+- `controller/releaseControl` — experimental; cedes input ownership back to the TUI while preserving the controller's standing read/subscription session. Returns `ControllerReleaseControlResponse { session }` and is idempotent for a live session that already has `activeLease: null`.
+- `controller/signOff` — experimental; terminates the controller session, revokes its connection-bound lease if any, and returns `{}` before the controller connection closes.
+- `controller/authorizationChanged` and `controller/controlOwnershipChanged` — experimental controller control-plane notifications. They report session authorization and active input-owner changes to controller clients.
 - `skills/config/write` — write user-level skill config by name or absolute path.
 - `plugin/install` — install a plugin from a discovered marketplace entry, rejecting marketplace entries marked unavailable for install, install MCPs if any, and return the effective plugin auth policy plus any apps that still need auth. For remote installs, clients may include an optional `installAttemptId`; app-server forwards it unchanged as `install_attempt_id` in the backend POST body, while omission preserves the legacy empty-body request (**under development; do not call from production clients yet**).
 - `plugin/uninstall` — uninstall a local plugin by `pluginId` in `<plugin>@<marketplace>` form by removing its cached files and clearing its user-level config entry, or uninstall a remote ChatGPT plugin by backend `pluginId` by forwarding the uninstall to the ChatGPT plugin backend and removing any downloaded remote-plugin cache (**under development; do not call from production clients yet**).
@@ -1509,11 +1509,10 @@ They are not part of the existing remote-control service and are not a network
 API. Do not call them from production clients yet. They require
 `initialize.params.capabilities.experimentalApi: true`.
 
-The current implementation exposes the v2 schema and TypeScript bindings only;
-the runtime controller session manager is not wired yet, so these methods still
-return JSON-RPC `method_not_found`. Once the runtime lands, an external
-controller first opens the local controller endpoint, initializes the JSON-RPC
-connection, and calls `controller/requestParticipation`:
+The embedded TUI local-controller endpoint exposes the normal app-server v2
+JSON-RPC surface after native participation approval. An external controller
+first opens the local controller endpoint, initializes the JSON-RPC connection,
+and calls `controller/requestParticipation`:
 
 ```json
 {
@@ -1527,8 +1526,12 @@ connection, and calls `controller/requestParticipation`:
 ```
 
 `controllerName` and `description` are untrusted display claims only. They do not
-prove identity or grant authorization. Authorization is connection-bound and is
-validated by the runtime's controller enrollment policy.
+prove identity or grant authorization. For the embedded TUI local-controller
+endpoint, the app-server surfaces these claims in the owning TUI and waits for
+the TUI user to approve or reject the request. Approval creates a per-launch,
+connection-bound controller session for that live socket and the owning TUI's
+main thread. No reusable bearer token, durable controller registry, or client
+credential is required for this native local flow.
 
 An approved response returns a `ControllerSession`:
 
