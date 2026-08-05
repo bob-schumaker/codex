@@ -1050,7 +1050,7 @@ impl MessageProcessor {
                         app_server_client_name,
                         client_version,
                         client_mcp_extensions,
-                    )
+                    })
                     .await;
                 if let Err(error) = result {
                     processor.outgoing.send_error(error_request_id, error).await;
