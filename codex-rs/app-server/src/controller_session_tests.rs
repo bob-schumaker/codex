@@ -134,6 +134,39 @@ fn ownership_lifecycle_preserves_standing_authorization() {
 }
 
 #[test]
+fn active_owner_authority_rejects_controllers_without_control() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+    let observer = connection_id(11);
+    let mut coordinator = new_coordinator(main_thread_id, &clock);
+
+    coordinator
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("first controller should get the initial lease");
+    coordinator
+        .request_participation(observer, grant(&clock, main_thread_id, /*epoch*/ 4))
+        .expect("second controller should get standing read access only");
+
+    assert_eq!(
+        coordinator.require_active_owner(controller),
+        Ok(main_thread_id)
+    );
+    assert_eq!(
+        coordinator.require_active_owner(observer),
+        Err(ControllerSessionError::OwnershipConflict)
+    );
+
+    coordinator
+        .release_control(controller)
+        .expect("release should preserve standing authorization without control");
+    assert_eq!(
+        coordinator.require_active_owner(controller),
+        Err(ControllerSessionError::StaleOwnership)
+    );
+}
+
+#[test]
 fn transfer_pending_and_deadlines_are_deterministic() {
     let clock = ManualClock::new();
     let main_thread_id = thread_id(1);

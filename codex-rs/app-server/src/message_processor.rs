@@ -1766,6 +1766,9 @@ fn controller_request_target(
             ClientRequest::ThreadRead { params, .. } => Ok(ControllerRequestTarget::ExactThread(
                 params.thread_id.clone(),
             )),
+            ClientRequest::ThreadResume { params, .. } => Ok(ControllerRequestTarget::ExactThread(
+                params.thread_id.clone(),
+            )),
             ClientRequest::ThreadTurnsList { params, .. } => Ok(
                 ControllerRequestTarget::ExactThread(params.thread_id.clone()),
             ),
@@ -1811,6 +1814,10 @@ fn primary_input_reclaim_thread_id(
         | None => None,
     }
 }
+
+#[cfg(test)]
+#[path = "message_processor_controller_target_tests.rs"]
+mod message_processor_controller_target_tests;
 
 #[cfg(test)]
 #[path = "message_processor_tracing_tests.rs"]
