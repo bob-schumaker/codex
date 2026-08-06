@@ -181,13 +181,19 @@ fn normal_main_thread_interface_is_split_by_authority() {
             RequiredAuthority::ActiveOwner
         ))
     );
+    assert_eq!(
+        client_request_rule("thread/resume"),
+        Some(rule(
+            TargetExtraction::ExactThread,
+            RequiredAuthority::ActiveOwner
+        ))
+    );
 }
 
 #[test]
 fn context_changing_surfaces_remain_tui_only() {
     for method in [
         "thread/start",
-        "thread/resume",
         "thread/fork",
         "thread/goal/set",
         "thread/goal/clear",

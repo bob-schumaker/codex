@@ -142,10 +142,10 @@ pub(crate) const CLIENT_REQUEST_ADMISSION: &[MethodAdmission] = &[
     method_rule!("thread/realtime/stop", ExactThread, ActiveOwner),
     method_rule!("review/start", ExactThread, ActiveOwner),
     method_rule!("mcpServer/tool/call", ExactThread, ActiveOwner),
-    // Thread creation/resume/fork and model-context/history-changing surfaces
+    // Thread creation/fork and model-context/history-changing surfaces
     // stay TUI-only until a separate bounded context-safety review opens them.
     method_rule!("thread/start", None, TuiOnly),
-    method_rule!("thread/resume", ExactThread, TuiOnly),
+    method_rule!("thread/resume", ExactThread, ActiveOwner),
     method_rule!("thread/fork", ExactThread, TuiOnly),
     method_rule!("thread/goal/set", ExactThread, TuiOnly),
     method_rule!("thread/goal/clear", ExactThread, TuiOnly),
