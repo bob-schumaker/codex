@@ -33,7 +33,15 @@ file-search *args:
 
 # Run the standalone code-mode host from source.
 code-mode-host *args:
-    cargo run --bin codex-code-mode-host -- {args}
+    {{ python }} ../scripts/cargo_with_codex_v8.py run --bin codex-code-mode-host -- {args}
+
+# Build the standalone code-mode host from source.
+build-code-mode-host:
+    {{ python }} ../scripts/cargo_with_codex_v8.py build -p codex-code-mode-host
+
+# Build the standalone code-mode host and force the v8 crate source-build path.
+build-code-mode-host-from-source-v8:
+    V8_FROM_SOURCE=1 cargo build -p codex-code-mode-host
 
 # Build the CLI and run the app-server test client
 app-server-test-client *args:

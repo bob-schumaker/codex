@@ -68,6 +68,19 @@ build. Windows targets keep Cargo's release-build MSVC artifact path. Explicit
 overrides remain authoritative when both variables are already set. Set
 `V8_FROM_SOURCE=1` to leave the build with the `v8` crate source-build path.
 
+Direct local Cargo builds that need the same Codex-built V8 artifacts can use
+`scripts/cargo_with_codex_v8.py`, for example:
+
+```sh
+cd codex-rs
+python3 ../scripts/cargo_with_codex_v8.py build -p codex-code-mode-host
+```
+
+The `just build-code-mode-host` and `just code-mode-host` recipes use this
+wrapper so debug host builds do not fall back to missing upstream rusty_v8
+prebuilt archives. Use `just build-code-mode-host-from-source-v8` when the
+intent is to build V8 locally from source instead of using Codex-built artifacts.
+
 `rg` is not built from this repository, so the builder fetches it from the
 DotSlash manifest at `scripts/codex_package/rg`. Downloaded archives are cached
 under `$TMPDIR/codex-package/<target>-rg` and are reused only after the recorded

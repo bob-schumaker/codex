@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -171,9 +172,31 @@ def download_file(url: str, dest: Path) -> None:
     temp_path = dest.with_suffix(f"{dest.suffix}.tmp")
     temp_path.unlink(missing_ok=True)
     try:
-        with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
-            with temp_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
+        try:
+            download_file_with_python(url, temp_path)
+        except Exception:
+            download_file_with_curl(url, temp_path)
         temp_path.replace(dest)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def download_file_with_python(url: str, temp_path: Path) -> None:
+    with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
+        with temp_path.open("wb") as output:
+            shutil.copyfileobj(response, output)
+
+
+def download_file_with_curl(url: str, temp_path: Path) -> None:
+    subprocess.run(
+        [
+            "curl",
+            "-L",
+            "-f",
+            "-s",
+            "-o",
+            str(temp_path),
+            url,
+        ],
+        check=True,
+    )
