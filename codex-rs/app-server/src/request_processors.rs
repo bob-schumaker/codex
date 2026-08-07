@@ -559,7 +559,6 @@ pub(crate) use apps_processor::AppsRequestProcessor;
 pub(crate) use catalog_processor::CatalogRequestProcessor;
 pub(crate) use command_exec_processor::CommandExecRequestProcessor;
 pub(crate) use config_processor::ConfigRequestProcessor;
-pub(crate) use controller_processor::ControllerNormalAuthorization;
 pub(crate) use controller_processor::ControllerRequestProcessor;
 pub(crate) use controller_processor::ControllerRequestTarget;
 pub(crate) use diagnostics::read_server_diagnostics;

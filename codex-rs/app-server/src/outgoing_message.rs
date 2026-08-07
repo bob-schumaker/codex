@@ -487,6 +487,7 @@ impl OutgoingMessageSender {
                         .external_delivery_fallback_connection_id,
                     thread_id,
                     request: request.clone(),
+                    _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
             );
         }
