@@ -1,7 +1,8 @@
 # Active Context
 
-- Current focus: external-controller normal-interface parity in Codex and
-  downstream controller discovery/display follow-up.
+- Current focus: finish the remaining external-controller normal-interface
+  parity checks in Codex while downstream controller discovery/display consumes
+  the published local-controller metadata contract.
 
 ## Current Status
 
@@ -45,6 +46,8 @@
     in isolation, so that fixture remains unhealthy independently of this
     controller change.
 - In progress:
+  - Selecting the next small Codex-side parity slice around server-bound
+    continuations, subscriptions, and prompt/egress transactionality.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:

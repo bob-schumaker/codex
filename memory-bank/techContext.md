@@ -24,3 +24,10 @@ repo's app-server documentation exception.
 - Use app-server protocol schema generation when API shapes change.
 - Markdown-only spec and memory-bank updates generally use review plus
   `git diff --check`; there is no Sphinx/docs build in this checkout.
+
+## Current local validation caveat
+
+- Focused `codex-app-server` controller tests are the useful guardrail for the
+  current external-controller slices.
+- The broader local `just test -p codex-app-server` run currently has unrelated
+  zsh-fork timeout failures that also reproduce in isolation.

@@ -20,6 +20,9 @@
   and dispatch for `thread/list`, `thread/search`, `thread/loaded/list`, and
   `threadSection/list`; controller collection reads are scoped to the immutable
   main thread instead of rejecting or exposing broad runtime state.
+- The current branch head includes coherent Codex-side commits through
+  `e0a50da` for launch metadata publication, native approval coverage, exact
+  target extraction, TUI reclaim, and collection-filtered reads.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -27,11 +30,17 @@
 
 ## In Flight
 
+- Codex-side review for the next normal-interface parity slice: continuation
+  binding, subscription binding, resume-token binding, and prompt/egress
+  transactionality.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
 ## Remaining
 
+- Codex app-server should explicitly validate server-side binding for cursors,
+  subscriptions, resume tokens, implicit targets, and prompt responses across
+  ownership changes.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -57,3 +66,5 @@
   additional normal app-server methods to approved controllers.
 - Continue validating collection continuation behavior: cursors and
   subscriptions still need explicit connection/main-thread binding coverage.
+- Treat the current zsh-fork timeout failures as a separate fixture health issue
+  unless a future controller change newly affects that cluster.
