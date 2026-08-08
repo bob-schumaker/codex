@@ -55,6 +55,12 @@
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
   - Added backpressure coverage so a full outbound writer queue does not drop
     the final sign-off response before disconnecting.
+  - Added sign-off ingress fencing: after successful `controller/signOff`
+    starts final-response teardown, new external-controller requests on that
+    connection receive typed `transport-closing` instead of re-entering normal
+    admission while the socket is closing.
+  - Validated the sign-off ingress fence with
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
     continuations, subscriptions, resume tokens, and remaining prompt/egress

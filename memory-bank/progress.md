@@ -23,10 +23,13 @@
 - Successful `controller/signOff` now revokes the controller session, rebinds
   prompts to the TUI, waits for the sign-off response to queue and write, and
   then disconnects the controller socket.
+- After `controller/signOff` starts final-response teardown, subsequent
+  external-controller ingress on that same connection is rejected with typed
+  `transport-closing` while the final response flushes and the socket closes.
 - The current branch head includes coherent Codex-side commits through
-  `e724f85` for launch metadata publication, native approval coverage, exact
+  `a499e34` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
-  aware sign-off teardown.
+  aware sign-off teardown with ingress fencing.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
