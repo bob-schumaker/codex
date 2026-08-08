@@ -305,7 +305,7 @@ impl ServerRequestRecipients {
         }
     }
 
-    fn connection_ids(&self) -> &[ConnectionId] {
+    pub(crate) fn connection_ids(&self) -> &[ConnectionId] {
         &self.connection_ids
     }
 

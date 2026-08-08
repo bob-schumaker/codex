@@ -337,6 +337,16 @@ impl MessageProcessor {
             ),
         );
         let goal_service = Arc::new(GoalService::new());
+        let controller_processor = ControllerRequestProcessor::new(
+            outgoing.clone(),
+            controller_enrollment_source,
+            native_controller_participation_approver,
+            ControllerEnrollmentPolicy::BestEffort,
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(5 * 60),
+            },
+        );
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             let manager = ThreadManager::new(
                 config.as_ref(),
@@ -378,6 +388,7 @@ impl MessageProcessor {
                 Some(app_server_time_provider(
                     outgoing.clone(),
                     thread_state_manager.clone(),
+                    controller_processor.clone(),
                 )),
             );
             match code_mode_session_provider {
@@ -491,16 +502,6 @@ impl MessageProcessor {
             on_effective_plugins_changed,
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
-        let controller_processor = ControllerRequestProcessor::new(
-            outgoing.clone(),
-            controller_enrollment_source,
-            native_controller_participation_approver,
-            ControllerEnrollmentPolicy::BestEffort,
-            ControllerSessionClock::from_fn(std::time::Instant::now),
-            ControllerSessionConfig {
-                lease_duration: Duration::from_secs(5 * 60),
-            },
-        );
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
             Arc::clone(&thread_manager),

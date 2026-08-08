@@ -7,6 +7,7 @@ use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentRecord;
 use crate::controller_enrollment::ControllerEnrollmentSource;
 use crate::controller_enrollment::EmptyControllerEnrollmentSource;
+use crate::current_time::current_time_request_recipients;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
@@ -28,6 +29,8 @@ use codex_app_server_protocol::ControllerRequestParticipationParams;
 use codex_app_server_protocol::ControllerRequestParticipationResponse;
 use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ControllerSignOffResponse;
+use codex_app_server_protocol::CurrentTimeReadParams;
+use codex_app_server_protocol::CurrentTimeReadResponse;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
@@ -951,6 +954,12 @@ fn command_execution_approval_payload(thread_id: impl Into<String>) -> ServerReq
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         available_decisions: None,
+    })
+}
+
+fn current_time_read_payload(thread_id: impl Into<String>) -> ServerRequestPayload {
+    ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+        thread_id: thread_id.into(),
     })
 }
 
@@ -1937,6 +1946,188 @@ fn controller_prompt_response_is_bound_to_owner_epoch() -> Result<()> {
                     .outgoing
                     .cancel_request(&prompt_request_id)
                     .await
+            );
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_current_time_request_is_bound_to_owner_epoch() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_current_time_request_is_bound_to_owner_epoch",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 43_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let started = harness
+                .start_thread(/*request_id*/ 43_002, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 43_003),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let stale_request_recipients = current_time_request_recipients(
+                &harness.processor.controller_processor,
+                main_thread_id,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+            )?;
+            assert_eq!(
+                stale_request_recipients.connection_ids(),
+                &[EXTERNAL_CONNECTION_ID]
+            );
+            let stale_thread_outgoing =
+                ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                    Arc::clone(&harness.processor.outgoing),
+                    stale_request_recipients,
+                    vec![EXTERNAL_CONNECTION_ID],
+                    main_thread_id,
+                );
+            let (stale_request_id, mut wait_for_stale_time) = stale_thread_outgoing
+                .send_request(current_time_read_payload(started.thread.id.clone()))
+                .await;
+            let stale_request = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &stale_request_id,
+            )
+            .await;
+            let ServerRequest::CurrentTimeRead { params, .. } = stale_request else {
+                panic!("expected CurrentTimeRead request");
+            };
+            assert_eq!(params.thread_id, started.thread.id);
+
+            let released: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 43_004,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            assert_eq!(released.session.active_lease, None);
+            let reacquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 43_005,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(reacquired.session.active_lease.is_some());
+
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: stale_request_id.clone(),
+                        result: serde_json::to_value(CurrentTimeReadResponse {
+                            current_time_at: 1_781_717_655,
+                        })?,
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_stale_time)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                harness
+                    .processor
+                    .outgoing
+                    .cancel_request(&stale_request_id)
+                    .await
+            );
+
+            let active_request_recipients = current_time_request_recipients(
+                &harness.processor.controller_processor,
+                main_thread_id,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+            )?;
+            assert_eq!(
+                active_request_recipients.connection_ids(),
+                &[EXTERNAL_CONNECTION_ID]
+            );
+            let active_thread_outgoing =
+                ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                    Arc::clone(&harness.processor.outgoing),
+                    active_request_recipients,
+                    vec![EXTERNAL_CONNECTION_ID],
+                    main_thread_id,
+                );
+            let (active_request_id, wait_for_active_time) = active_thread_outgoing
+                .send_request(current_time_read_payload(started.thread.id))
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &active_request_id,
+            )
+            .await;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: active_request_id,
+                        result: serde_json::to_value(CurrentTimeReadResponse {
+                            current_time_at: 1_781_717_656,
+                        })?,
+                    },
+                )
+                .await;
+            let active_result = tokio::time::timeout(Duration::from_secs(1), wait_for_active_time)
+                .await
+                .expect("current-time response should not time out")
+                .expect("current-time waiter should receive response")
+                .expect("active controller response should resolve successfully");
+            assert_eq!(
+                active_result,
+                serde_json::json!({ "currentTimeAt": 1_781_717_656 })
             );
 
             harness.shutdown().await;

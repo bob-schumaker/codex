@@ -20,6 +20,9 @@ use tokio::time::timeout_at;
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::outgoing_message::ServerRequestRecipients;
+use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::request_processors::ControllerRequestProcessor;
 use crate::thread_state::ThreadStateManager;
 
 const CURRENT_TIME_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -28,40 +31,55 @@ const CURRENT_TIME_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) fn app_server_time_provider(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
 ) -> Arc<dyn TimeProvider> {
     Arc::new(AppServerTimeProvider {
         outgoing: Arc::downgrade(&outgoing),
         thread_state_manager,
+        controller_processor,
     })
 }
 
 struct AppServerTimeProvider {
     outgoing: Weak<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
 }
 
 impl TimeProvider for AppServerTimeProvider {
     fn current_time(&self, thread_id: ThreadId) -> TimeFuture<'_> {
         let outgoing = self.outgoing.clone();
         let thread_state_manager = self.thread_state_manager.clone();
+        let controller_processor = self.controller_processor.clone();
         Box::pin(async move {
             let outgoing = outgoing
                 .upgrade()
                 .context("app-server current-time provider is unavailable")?;
-            request_current_time(outgoing, thread_state_manager, thread_id).await
+            request_current_time(
+                outgoing,
+                thread_state_manager,
+                controller_processor,
+                thread_id,
+            )
+            .await
         })
     }
 
     fn sleep(&self, thread_id: ThreadId, duration: Duration) -> SleepFuture<'_> {
         let outgoing = self.outgoing.clone();
         let thread_state_manager = self.thread_state_manager.clone();
+        let controller_processor = self.controller_processor.clone();
         Box::pin(async move {
             let outgoing = outgoing
                 .upgrade()
                 .context("app-server current-time provider is unavailable")?;
-            let started_at =
-                request_current_time(outgoing.clone(), thread_state_manager.clone(), thread_id)
-                    .await?;
+            let started_at = request_current_time(
+                outgoing.clone(),
+                thread_state_manager.clone(),
+                controller_processor.clone(),
+                thread_id,
+            )
+            .await?;
             let wake_at = started_at
                 .checked_add_signed(
                     chrono::Duration::from_std(duration)
@@ -71,8 +89,13 @@ impl TimeProvider for AppServerTimeProvider {
 
             loop {
                 tokio::time::sleep(CURRENT_TIME_POLL_INTERVAL).await;
-                if request_current_time(outgoing.clone(), thread_state_manager.clone(), thread_id)
-                    .await?
+                if request_current_time(
+                    outgoing.clone(),
+                    thread_state_manager.clone(),
+                    controller_processor.clone(),
+                    thread_id,
+                )
+                .await?
                     >= wake_at
                 {
                     return Ok(());
@@ -85,6 +108,7 @@ impl TimeProvider for AppServerTimeProvider {
 async fn request_current_time(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
     thread_id: ThreadId,
 ) -> Result<DateTime<Utc>> {
     let deadline = Instant::now() + CURRENT_TIME_REQUEST_TIMEOUT;
@@ -102,16 +126,21 @@ async fn request_current_time(
     let connection_ids = thread_state_manager
         .subscribed_connection_ids(thread_id)
         .await;
-    let connection_id = require_single_current_time_connection(&connection_ids)?;
-    let connection_ids = [connection_id];
-    let (request_id, rx) = outgoing
-        .send_request_to_connections(
-            Some(&connection_ids),
-            ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+    let request_recipients =
+        current_time_request_recipients(&controller_processor, thread_id, connection_ids)?;
+    let notification_connection_ids = request_recipients.connection_ids().to_vec();
+    let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+        outgoing.clone(),
+        request_recipients,
+        notification_connection_ids,
+        thread_id,
+    );
+    let (request_id, rx) = thread_outgoing
+        .send_request(ServerRequestPayload::CurrentTimeRead(
+            CurrentTimeReadParams {
                 thread_id: thread_id.to_string(),
-            }),
-            /*thread_id*/ None,
-        )
+            },
+        ))
         .await;
 
     let result = match timeout_at(deadline, rx).await {
@@ -148,6 +177,17 @@ fn require_single_current_time_connection(connection_ids: &[ConnectionId]) -> Re
             connection_ids.len()
         ),
     }
+}
+
+pub(crate) fn current_time_request_recipients(
+    controller_processor: &ControllerRequestProcessor,
+    thread_id: ThreadId,
+    subscribed_connection_ids: Vec<ConnectionId>,
+) -> Result<ServerRequestRecipients> {
+    let request_recipients =
+        controller_processor.prompt_request_recipients(thread_id, subscribed_connection_ids);
+    require_single_current_time_connection(request_recipients.connection_ids())?;
+    Ok(request_recipients)
 }
 
 #[cfg(test)]
