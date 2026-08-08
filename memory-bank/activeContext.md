@@ -1,8 +1,8 @@
 # Active Context
 
-- Current focus: finish the remaining external-controller normal-interface
-  parity checks in Codex while downstream controller discovery/display consumes
-  the published local-controller metadata contract.
+- Current focus: finish the current-time/direct server-request owner-routing
+  parity gap for external controllers, while downstream controller
+  discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -110,10 +110,11 @@
     `just test -p codex-app-server controller_prompt_response_is_bound_to_owner_epoch controller_control_plane_round_trips_after_enrollment`
     and `just test -p codex-app-server controller` passing 48/48 tests.
 - In progress:
-  - Selecting the next small Codex-side parity slice around remaining
-    implicit targets, current-time/direct server requests, remaining egress
-    transactionality, and any server-bound subscription edges not covered by
-    sign-off or authorization-expiry cleanup.
+  - Next Codex-side parity slice is selected: `currentTime/read` is admitted as
+    `ExactThread + ActiveOwner`, but `current_time.rs` still sends direct server
+    requests to subscribed connections without using the controller
+    owner-aware recipient path or recording the owner epoch on the pending
+    server request.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -122,11 +123,13 @@
 
 ## Next Steps
 
-- Keep tightening app-server normal-interface parity around implicit targets,
-  current-time/direct server requests, remaining egress transactionality, and
-  any subscription edges beyond the committed cursor-binding, sign-off cleanup,
-  authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
-  and resume-override gates.
+- Route `currentTime/read` through the controller owner-aware recipient path so
+  an active external controller receives the same direct server request the TUI
+  would receive, with owner-epoch binding on the pending reply.
+- Keep tightening app-server normal-interface parity around any remaining
+  implicit targets, egress transactionality, and subscription edges beyond the
+  committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
+  idempotent acquire, prompt owner-epoch binding, and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

@@ -65,22 +65,22 @@
 
 ## In Flight
 
-- Codex-side review for the next normal-interface parity slice: remaining
-  continuation binding, implicit targets, current-time/direct server-request
-  paths, remaining egress transactionality, and any subscription edges not
-  covered by sign-off or authorization-expiry cleanup.
+- Codex-side implementation for the selected current-time/direct
+  server-request parity slice: `currentTime/read` is already classified as
+  `ExactThread + ActiveOwner`, but `current_time.rs` still bypasses the
+  controller owner-aware recipient path and therefore does not route to the
+  active external controller or bind the pending response to the owner epoch.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
 ## Remaining
 
-- Codex app-server should explicitly validate remaining server-side binding for
-  long-lived subscriptions, implicit targets, direct server-request paths such
-  as current-time, and prompt responses across ownership changes. Exact-thread
-  pagination cursors are now connection-bound for controllers, controller-origin
-  `thread/resume` override fields now have a pre-dispatch gate, owner-aware
-  prompt replies are owner-epoch-bound, and sign-off plus authorization expiry
-  now clean up the controller's main-thread subscription.
+- Codex app-server should route and validate remaining server-side binding for
+  long-lived subscriptions, implicit targets, and direct server-request paths.
+  Exact-thread pagination cursors are now connection-bound for controllers,
+  controller-origin `thread/resume` override fields now have a pre-dispatch
+  gate, owner-aware prompt replies are owner-epoch-bound, and sign-off plus
+  authorization expiry now clean up the controller's main-thread subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
