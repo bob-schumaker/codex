@@ -1,8 +1,8 @@
 # Active Context
 
-- Current focus: finish the current-time/direct server-request owner-routing
-  parity gap for external controllers, while downstream controller
-  discovery/display consumes the published local-controller metadata contract.
+- Current focus: continue remaining external-controller normal-interface parity
+  checks while downstream controller discovery/display consumes the published
+  local-controller metadata contract.
 
 ## Current Status
 
@@ -109,12 +109,20 @@
   - Validated the prompt owner-epoch binding with
     `just test -p codex-app-server controller_prompt_response_is_bound_to_owner_epoch controller_control_plane_round_trips_after_enrollment`
     and `just test -p codex-app-server controller` passing 48/48 tests.
+  - Routed `currentTime/read` through the controller owner-aware recipient path
+    so an active external controller receives the same current-time server
+    request the TUI would receive, with the pending reply bound to the
+    interactive owner epoch.
+  - Validated the current-time owner-routing slice with
+    `just test -p codex-app-server controller_current_time_request_is_bound_to_owner_epoch`,
+    `just test -p codex-app-server current_time`, and
+    `just test -p codex-app-server controller` passing 49/49 controller tests.
+  - Rebuilt the debug CLI binary with `cargo build -p codex-cli`.
 - In progress:
-  - Next Codex-side parity slice is selected: `currentTime/read` is admitted as
-    `ExactThread + ActiveOwner`, but `current_time.rs` still sends direct server
-    requests to subscribed connections without using the controller
-    owner-aware recipient path or recording the owner epoch on the pending
-    server request.
+  - Selecting the next Codex-side parity slice around any remaining implicit
+    targets, egress transactionality, and long-lived subscription edges not
+    covered by sign-off, authorization-expiry cleanup, cursor binding, prompt
+    owner-epoch binding, or current-time owner routing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -123,13 +131,11 @@
 
 ## Next Steps
 
-- Route `currentTime/read` through the controller owner-aware recipient path so
-  an active external controller receives the same direct server request the TUI
-  would receive, with owner-epoch binding on the pending reply.
 - Keep tightening app-server normal-interface parity around any remaining
   implicit targets, egress transactionality, and subscription edges beyond the
   committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
-  idempotent acquire, prompt owner-epoch binding, and resume-override gates.
+  idempotent acquire, prompt owner-epoch binding, current-time owner routing,
+  and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

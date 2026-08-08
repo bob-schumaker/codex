@@ -51,36 +51,38 @@
   owner-aware recipient path are now bound to the interactive owner epoch that
   delivered the prompt; the same controller cannot resolve an old prompt after
   release/reacquire under a newer lease.
+- `currentTime/read` now uses the same owner-aware recipient path as other
+  thread-scoped interactive server requests. Active external controllers receive
+  the current-time request for the TUI main thread, and replies are bound to the
+  owner epoch captured when the request was delivered.
 - The latest Codex-side implementation commit is
-  `e1463ef` for launch metadata publication, native approval coverage, exact
-  target extraction, TUI reclaim, collection-filtered reads, and backpressure-
-  aware sign-off teardown with ingress fencing, resume-override gating, and
-  sign-off subscription cleanup plus exact-thread cursor binding and
-  authorization-expiry subscription cleanup plus idempotent active-owner
-  acquire plus prompt owner-epoch reply binding.
-- Focused app-server controller tests pass. The full app-server suite still
-  shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
-  even when sampled individually, so that fixture is currently unhealthy outside
-  the controller slice.
+  `9145ca9` for launch metadata publication, native approval coverage, exact
+  target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
+  and cleanup, resume-override gating, cursor binding, authorization-expiry
+  cleanup, idempotent active-owner acquire, prompt owner-epoch reply binding,
+  and current-time owner routing.
+- Focused app-server controller/current-time tests pass. The latest full
+  `just test -p codex-app-server` run ended 1181 passed, 1 flaky passed on
+  retry, 4 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
+  remains a separate fixture health issue outside the controller slice.
 
 ## In Flight
 
-- Codex-side implementation for the selected current-time/direct
-  server-request parity slice: `currentTime/read` is already classified as
-  `ExactThread + ActiveOwner`, but `current_time.rs` still bypasses the
-  controller owner-aware recipient path and therefore does not route to the
-  active external controller or bind the pending response to the owner epoch.
+- Codex-side review for the next normal-interface parity slice: remaining
+  implicit targets, egress transactionality, and long-lived subscription edges
+  not covered by the committed cleanup and owner-binding work.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
 ## Remaining
 
-- Codex app-server should route and validate remaining server-side binding for
-  long-lived subscriptions, implicit targets, and direct server-request paths.
+- Codex app-server should route and validate any remaining server-side binding
+  for long-lived subscriptions, implicit targets, and egress transactionality.
   Exact-thread pagination cursors are now connection-bound for controllers,
   controller-origin `thread/resume` override fields now have a pre-dispatch
-  gate, owner-aware prompt replies are owner-epoch-bound, and sign-off plus
-  authorization expiry now clean up the controller's main-thread subscription.
+  gate, owner-aware prompt/current-time replies are owner-epoch-bound, and
+  sign-off plus authorization expiry now clean up the controller's main-thread
+  subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
