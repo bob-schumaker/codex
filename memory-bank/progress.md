@@ -79,20 +79,25 @@
   sessions and rebinds pre-externalDelivery prompts before waiting for
   in-flight connection RPCs to drain, so prompt ownership returns to the TUI
   promptly on unexpected disconnect.
+- External-controller disconnect now also removes that controller's main-thread
+  subscription before RPC drain, and only for connections that actually held a
+  controller session.
 - The latest Codex-side implementation commit is
-  `ada4176` for launch metadata publication, native approval coverage, exact
+  `dc3d3a5` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
   prompt owner-epoch reply binding, current-time owner routing, and controller
   turn override gating, internal `thread/resume` response cursor binding, plus
   terminal native TUI-unavailable launch handling, main-thread egress fencing,
-  and early controller disconnect revocation.
+  early controller disconnect revocation, and early disconnect subscription
+  cleanup.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
-  `just test -p codex-app-server` run ended 1192 passed, 1 flaky passed on
-  retry, 2 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
-  remains a separate fixture health issue outside the controller slice.
-- The latest focused validation for commit `ada4176` is
+  `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
+  retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
+  zsh-fork cluster remains a separate fixture health issue outside the
+  controller slice.
+- The latest focused validation for commit `dc3d3a5` is
   `just test -p codex-app-server controller_disconnect_rebinds_prompts_before_rpc_drain`,
   passing 1/1 focused test, `just test -p codex-app-server controller`, passing
   58/58 controller tests, and `cargo build -p codex-cli -j 4` rebuilding
@@ -121,7 +126,8 @@
   sign-off plus authorization expiry now clean up the controller's main-thread
   subscription. Native TUI-unavailable launch state is now terminal for the
   launch and fences main-thread egress. Unexpected controller disconnect now
-  revokes ownership and rebinds pre-delivery prompts before RPC drain.
+  revokes ownership, rebinds pre-delivery prompts, and removes the controller's
+  main-thread subscription before RPC drain.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -150,9 +156,10 @@
   connection/main-thread binding coverage, including internal `thread/resume`
   response sends, while terminal TUI-unavailable now suppresses main-thread
   notifications for existing subscribers, and unexpected disconnect now
-  performs early revocation before RPC drain. Any remaining subscription work is
-  outside the committed sign-off, authorization-expiry cleanup,
-  terminal TUI-unavailable, and disconnect-revocation paths.
+  performs early revocation and subscription removal before RPC drain. Any
+  remaining subscription work is outside the committed sign-off,
+  authorization-expiry cleanup, terminal TUI-unavailable,
+  disconnect-revocation, and disconnect-subscription-cleanup paths.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
