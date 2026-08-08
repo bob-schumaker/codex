@@ -1356,8 +1356,12 @@ mod tests {
     use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadListResponse;
+    use codex_app_server_protocol::ThreadLoadedListParams;
+    use codex_app_server_protocol::ThreadLoadedListResponse;
     use codex_app_server_protocol::ThreadReadParams;
     use codex_app_server_protocol::ThreadReadResponse;
+    use codex_app_server_protocol::ThreadSearchParams;
+    use codex_app_server_protocol::ThreadSearchResponse;
     use codex_app_server_protocol::ThreadSetNameParams;
     use codex_app_server_protocol::ThreadSetNameResponse;
     use codex_app_server_protocol::ThreadStartParams;
@@ -1823,6 +1827,45 @@ mod tests {
                 .expect("thread/start should succeed"),
         )
         .expect("thread/start response should parse");
+        let other_started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(10_004),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("second thread/start transport should work")
+                .expect("second thread/start should succeed"),
+        )
+        .expect("second thread/start response should parse");
+        let _: ThreadSetNameResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadSetName {
+                    request_id: RequestId::Integer(10_005),
+                    params: ThreadSetNameParams {
+                        thread_id: started.thread.id.clone(),
+                        name: "main-controller-filter-needle".to_string(),
+                    },
+                })
+                .await
+                .expect("main thread/name/set transport should work")
+                .expect("main thread/name/set should succeed"),
+        )
+        .expect("main thread/name/set response should parse");
+        let _: ThreadSetNameResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadSetName {
+                    request_id: RequestId::Integer(10_006),
+                    params: ThreadSetNameParams {
+                        thread_id: other_started.thread.id.clone(),
+                        name: "other-controller-filter-needle".to_string(),
+                    },
+                })
+                .await
+                .expect("other thread/name/set transport should work")
+                .expect("other thread/name/set should succeed"),
+        )
+        .expect("other thread/name/set response should parse");
 
         let metadata = client
             .local_controller_endpoint()
@@ -1985,6 +2028,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![started.thread.id.clone()]
         );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_009,
+            "thread/loaded/list",
+            &ThreadLoadedListParams {
+                cursor: None,
+                limit: Some(100),
+            },
+        )
+        .await;
+        let loaded: ThreadLoadedListResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_009).await;
+        assert_eq!(loaded.data, vec![started.thread.id.clone()]);
+        assert_eq!(loaded.next_cursor, None);
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_010,
+            "thread/search",
+            &ThreadSearchParams {
+                cursor: None,
+                limit: Some(10),
+                sort_key: None,
+                sort_direction: None,
+                source_kinds: None,
+                archived: None,
+                search_term: "controller-filter-needle".to_string(),
+            },
+        )
+        .await;
+        let searched: ThreadSearchResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_010).await;
+        assert_eq!(searched.data, Vec::new());
+        assert_eq!(searched.next_cursor, None);
+        assert_eq!(searched.backwards_cursor, None);
 
         send_websocket_typed_request(
             &mut websocket,

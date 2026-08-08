@@ -16,9 +16,14 @@
   and concurrent read methods.
 - Thread-scoped TUI-only mutations now reclaim primary input ownership from an
   active controller lease before dispatch.
+- Collection-filtered controller reads now align admission, target extraction,
+  and dispatch for `thread/list`, `thread/search`, `thread/loaded/list`, and
+  `threadSection/list`; controller collection reads are scoped to the immutable
+  main thread instead of rejecting or exposing broad runtime state.
 - Focused app-server controller tests pass. The full app-server suite still
-  shows intermittent zsh-fork timeout failures under full-suite load; the
-  affected tests pass when rerun individually.
+  shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
+  even when sampled individually, so that fixture is currently unhealthy outside
+  the controller slice.
 
 ## In Flight
 
@@ -50,3 +55,5 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
+- Continue validating collection continuation behavior: cursors and
+  subscriptions still need explicit connection/main-thread binding coverage.

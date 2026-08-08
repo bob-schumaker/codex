@@ -33,6 +33,17 @@
     `just test -p codex-app-server`; the full run reached 1172/1174 passing
     with two zsh-fork timeout failures that both passed when rerun
     individually.
+  - Aligned controller collection-filter admission with dispatch so
+    `thread/list`, `thread/search`, `thread/loaded/list`, and
+    `threadSection/list` all pass target extraction and are scoped to the
+    immutable main thread.
+  - Validated the controller slice with
+    `just test -p codex-app-server controller` passing 41/41 tests.
+  - Reran `just test -p codex-app-server`; the local-controller and collection
+    filtering coverage passed, while the run ended 1171/1175 passing with the
+    current zsh-fork timeout cluster failing. Sampled zsh-fork tests also failed
+    in isolation, so that fixture remains unhealthy independently of this
+    controller change.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
@@ -42,6 +53,8 @@
 
 ## Next Steps
 
+- Keep tightening app-server normal-interface parity around cursors,
+  subscriptions, and prompt/egress transactionality.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

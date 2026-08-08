@@ -1,5 +1,6 @@
 use super::thread_processor::THREAD_LIST_DEFAULT_LIMIT;
 use super::thread_processor::THREAD_LIST_MAX_LIMIT;
+use super::thread_processor::ThreadListScope;
 use super::thread_processor::ThreadRequestProcessor;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
@@ -30,9 +31,35 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_section_list(
         &self,
         params: ThreadSectionListParams,
+        scope: ThreadListScope,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         const OPERATION: &str = "threadSection/list";
         self.ensure_thread_sections_supported(OPERATION)?;
+        if let ThreadListScope::SingleThread(thread_id) = scope {
+            if params.cursor.is_some() {
+                return Ok(Some(
+                    ThreadSectionListResponse {
+                        data: Vec::new(),
+                        next_cursor: None,
+                    }
+                    .into(),
+                ));
+            }
+            let thread = self
+                .thread_read_response_inner(codex_app_server_protocol::ThreadReadParams {
+                    thread_id,
+                    include_turns: false,
+                })
+                .await?
+                .thread;
+            return Ok(Some(
+                ThreadSectionListResponse {
+                    data: thread.section.into_iter().collect(),
+                    next_cursor: None,
+                }
+                .into(),
+            ));
+        }
         let limit = params
             .limit
             .map(|value| value as usize)

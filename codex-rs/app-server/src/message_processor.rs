@@ -36,6 +36,7 @@ use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
+use crate::request_processors::ControllerNormalAuthorization;
 use crate::request_processors::ControllerRequestProcessor;
 use crate::request_processors::ControllerRequestTarget;
 use crate::request_processors::EnvironmentRequestProcessor;
@@ -1365,7 +1366,9 @@ impl MessageProcessor {
                 self.thread_processor.thread_section_move(params).await
             }
             ClientRequest::ThreadSectionList { params, .. } => {
-                self.thread_processor.thread_section_list(params).await
+                self.thread_processor
+                    .thread_section_list(params, thread_collection_scope(&controller_authorization))
+                    .await
             }
             ClientRequest::ThreadSectionCreate { params, .. } => {
                 self.thread_processor.thread_section_create(params).await
@@ -1416,17 +1419,14 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadList { params, .. } => {
-                let scope = controller_authorization
-                    .as_ref()
-                    .filter(|authorization| authorization.filter_collection_to_main_thread)
-                    .map(|authorization| {
-                        ThreadListScope::SingleThread(authorization.main_thread_id.clone())
-                    })
-                    .unwrap_or(ThreadListScope::All);
-                self.thread_processor.thread_list(params, scope).await
+                self.thread_processor
+                    .thread_list(params, thread_collection_scope(&controller_authorization))
+                    .await
             }
             ClientRequest::ThreadSearch { params, .. } => {
-                self.thread_processor.thread_search(params).await
+                self.thread_processor
+                    .thread_search(params, thread_collection_scope(&controller_authorization))
+                    .await
             }
             ClientRequest::ThreadSearchOccurrences { params, .. } => {
                 self.thread_processor
@@ -1434,7 +1434,9 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadLoadedList { params, .. } => {
-                self.thread_processor.thread_loaded_list(params).await
+                self.thread_processor
+                    .thread_loaded_list(params, thread_collection_scope(&controller_authorization))
+                    .await
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
@@ -1757,7 +1759,12 @@ fn controller_request_target(
             Ok(ControllerRequestTarget::None)
         }
         TargetExtraction::CollectionFiltered => match request {
-            ClientRequest::ThreadList { .. } => Ok(ControllerRequestTarget::CollectionFiltered),
+            ClientRequest::ThreadList { .. }
+            | ClientRequest::ThreadSectionList { .. }
+            | ClientRequest::ThreadSearch { .. }
+            | ClientRequest::ThreadLoadedList { .. } => {
+                Ok(ControllerRequestTarget::CollectionFiltered)
+            }
             _ => Err(controller_not_allowed(
                 "external controller collection filtering is not enabled for this method",
             )),
@@ -1797,6 +1804,16 @@ fn controller_request_target(
             }
         }
     }
+}
+
+fn thread_collection_scope(
+    controller_authorization: &Option<ControllerNormalAuthorization>,
+) -> ThreadListScope {
+    controller_authorization
+        .as_ref()
+        .filter(|authorization| authorization.filter_collection_to_main_thread)
+        .map(|authorization| ThreadListScope::SingleThread(authorization.main_thread_id.clone()))
+        .unwrap_or(ThreadListScope::All)
 }
 
 fn primary_input_reclaim_thread_id(

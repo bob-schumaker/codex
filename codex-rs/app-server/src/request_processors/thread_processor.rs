@@ -791,8 +791,9 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_search(
         &self,
         params: ThreadSearchParams,
+        scope: ThreadListScope,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_search_response_inner(params)
+        self.thread_search_response_inner(params, scope)
             .await
             .map(|response| Some(response.into()))
     }
@@ -809,8 +810,9 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_loaded_list(
         &self,
         params: ThreadLoadedListParams,
+        scope: ThreadListScope,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_loaded_list_response_inner(params)
+        self.thread_loaded_list_response_inner(params, scope)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2173,6 +2175,7 @@ impl ThreadRequestProcessor {
     async fn thread_search_response_inner(
         &self,
         params: ThreadSearchParams,
+        scope: ThreadListScope,
     ) -> Result<ThreadSearchResponse, JSONRPCErrorError> {
         let ThreadSearchParams {
             cursor,
@@ -2198,6 +2201,10 @@ impl ThreadRequestProcessor {
         };
         let store_sort_direction = sort_direction.unwrap_or(SortDirection::Desc);
         let (allowed_sources, source_kind_filter) = compute_source_filters(source_kinds);
+        let scoped_thread_id = match scope {
+            ThreadListScope::All => None,
+            ThreadListScope::SingleThread(thread_id) => Some(thread_id),
+        };
         let mut cursor_obj = cursor;
         let mut last_cursor = cursor_obj.clone();
         let mut remaining = requested_page_size;
@@ -2231,6 +2238,9 @@ impl ThreadRequestProcessor {
                 if source_kind_filter
                     .as_ref()
                     .is_none_or(|filter| source_kind_matches(&source, filter))
+                    && scoped_thread_id
+                        .as_ref()
+                        .is_none_or(|thread_id| result.thread.thread_id.to_string() == *thread_id)
                 {
                     search_results.push(result);
                     if search_results.len() >= requested_page_size {
@@ -2287,14 +2297,18 @@ impl ThreadRequestProcessor {
 
         Ok(ThreadSearchResponse {
             data,
-            next_cursor,
-            backwards_cursor,
+            next_cursor: scoped_thread_id.is_none().then_some(next_cursor).flatten(),
+            backwards_cursor: scoped_thread_id
+                .is_none()
+                .then_some(backwards_cursor)
+                .flatten(),
         })
     }
 
     async fn thread_loaded_list_response_inner(
         &self,
         params: ThreadLoadedListParams,
+        scope: ThreadListScope,
     ) -> Result<ThreadLoadedListResponse, JSONRPCErrorError> {
         let ThreadLoadedListParams { cursor, limit } = params;
         let mut data: Vec<String> = self
@@ -2313,6 +2327,22 @@ impl ThreadRequestProcessor {
         }
 
         data.sort();
+        if let ThreadListScope::SingleThread(thread_id) = scope {
+            let cursor = cursor
+                .map(|cursor| {
+                    ThreadId::from_string(&cursor)
+                        .map(|id| id.to_string())
+                        .map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))
+                })
+                .transpose()?;
+            let include_thread = data.binary_search(&thread_id).is_ok()
+                && cursor.as_ref().is_none_or(|cursor| thread_id > *cursor);
+            return Ok(ThreadLoadedListResponse {
+                data: include_thread.then_some(thread_id).into_iter().collect(),
+                next_cursor: None,
+            });
+        }
+
         let total = data.len();
         let start = match cursor {
             Some(cursor) => {
@@ -2339,7 +2369,7 @@ impl ThreadRequestProcessor {
         })
     }
 
-    async fn thread_read_response_inner(
+    pub(super) async fn thread_read_response_inner(
         &self,
         params: ThreadReadParams,
     ) -> Result<ThreadReadResponse, JSONRPCErrorError> {

@@ -4,8 +4,12 @@ use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
+use codex_app_server_protocol::ThreadSearchParams;
+use codex_app_server_protocol::ThreadSectionListParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use pretty_assertions::assert_eq;
@@ -103,11 +107,71 @@ fn exact_controller_thread_target_handles_concurrent_read_methods() {
 }
 
 #[test]
+fn collection_filtered_controller_targets_cover_admitted_collections() {
+    assert_collection_filtered_target(
+        ClientRequest::ThreadList {
+            request_id: RequestId::Integer(6),
+            params: ThreadListParams {
+                cursor: None,
+                limit: None,
+                sort_key: None,
+                sort_direction: None,
+                model_providers: None,
+                source_kinds: None,
+                archived: None,
+                section_id: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            },
+        },
+        "thread/list",
+    );
+    assert_collection_filtered_target(
+        ClientRequest::ThreadSectionList {
+            request_id: RequestId::Integer(7),
+            params: ThreadSectionListParams {
+                cursor: None,
+                limit: None,
+            },
+        },
+        "threadSection/list",
+    );
+    assert_collection_filtered_target(
+        ClientRequest::ThreadSearch {
+            request_id: RequestId::Integer(8),
+            params: ThreadSearchParams {
+                cursor: None,
+                limit: None,
+                sort_key: None,
+                sort_direction: None,
+                source_kinds: None,
+                archived: None,
+                search_term: "needle".to_string(),
+            },
+        },
+        "thread/search",
+    );
+    assert_collection_filtered_target(
+        ClientRequest::ThreadLoadedList {
+            request_id: RequestId::Integer(9),
+            params: ThreadLoadedListParams {
+                cursor: None,
+                limit: None,
+            },
+        },
+        "thread/loaded/list",
+    );
+}
+
+#[test]
 fn optional_exact_controller_thread_target_must_be_present() {
     let rule = client_request_rule("mcpServer/resource/read")
         .expect("mcpServer/resource/read should be admitted");
     let request = ClientRequest::McpResourceRead {
-        request_id: RequestId::Integer(6),
+        request_id: RequestId::Integer(10),
         params: McpResourceReadParams {
             thread_id: None,
             server: "server".to_string(),
@@ -175,6 +239,18 @@ fn assert_exact_thread_target(request: ClientRequest, method: &str, expected_thr
         ControllerRequestTarget::ExactThread(actual) => assert_eq!(actual, expected_thread_id),
         ControllerRequestTarget::None | ControllerRequestTarget::CollectionFiltered => {
             panic!("{method} should extract an exact thread target")
+        }
+    }
+}
+
+fn assert_collection_filtered_target(request: ClientRequest, method: &str) {
+    let rule = client_request_rule(method).expect("method should be admitted");
+    let target = controller_request_target(&request, rule).expect("target extraction should pass");
+
+    match target {
+        ControllerRequestTarget::CollectionFiltered => {}
+        ControllerRequestTarget::None | ControllerRequestTarget::ExactThread(_) => {
+            panic!("{method} should extract a collection-filtered target")
         }
     }
 }
