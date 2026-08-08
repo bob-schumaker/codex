@@ -4,7 +4,8 @@
   binding collection-filtered controller cursors, gating controller-origin turn
   input shapes, binding internally-sent controller `thread/resume` response
   cursors, making native TUI-unavailable launch state terminal, and fencing
-  terminal TUI-unavailable main-thread egress;
+  terminal TUI-unavailable main-thread egress, and rebinding controller-owned
+  prompts before disconnect RPC drain;
   remaining Codex-side review is centered on implicit targets, egress
   transactionality, and subscription edges while downstream discovery/display
   consumes the published local-controller metadata contract.
@@ -176,6 +177,19 @@
   - Rebuilt the debug CLI binary again with `cargo build -p codex-cli -j 4`
     after removing generated debug build intermediates while preserving the
     existing top-level debug binaries.
+  - Moved external-controller disconnect revocation before RPC-gate drain so
+    connection-bound leases are invalidated and pre-externalDelivery prompts
+    are rebound to the TUI immediately, even while an already-running RPC is
+    still draining.
+  - Validated the disconnect revocation slice with
+    `just test -p codex-app-server controller_disconnect_rebinds_prompts_before_rpc_drain`
+    passing 1/1 focused test and
+    `just test -p codex-app-server controller` passing 58/58 controller tests.
+  - Reran `just test -p codex-app-server`; the full app-server run ended 1192
+    passed, 1 flaky passed on retry, 2 zsh-fork failures after retry, and 1
+    skipped. The failing zsh-fork fixture cluster remains separate from the
+    controller disconnect revocation slice.
+  - Rebuilt the debug CLI binary again with `cargo build -p codex-cli -j 4`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -198,7 +212,7 @@
   current-time owner routing, resume/turn override gates, and internally-sent
   resume cursor binding, plus terminal TUI-unavailable launch handling.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `048870c`.
+  commit `ada4176`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
