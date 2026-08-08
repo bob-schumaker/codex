@@ -2047,6 +2047,19 @@ fn controller_disconnect_rebinds_prompts_before_rpc_drain() -> Result<()> {
                 request_recipients.connection_ids(),
                 &[EXTERNAL_CONNECTION_ID]
             );
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(main_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
             let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
                 Arc::clone(&harness.processor.outgoing),
                 request_recipients,
@@ -2109,6 +2122,14 @@ fn controller_disconnect_rebinds_prompts_before_rpc_drain() -> Result<()> {
             tokio::time::timeout(Duration::from_millis(/*millis*/ 50), &mut close_task)
                 .await
                 .expect_err("connection close should still wait for the running RPC");
+            assert!(
+                !harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
 
             let rebound_prompt = read_server_request_for_connection(
                 &mut harness.outgoing_rx,

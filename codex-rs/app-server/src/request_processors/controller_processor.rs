@@ -519,17 +519,21 @@ impl ControllerRequestProcessor {
         .await
     }
 
-    pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
+    pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) -> Option<ThreadId> {
         let Ok((result, rebind)) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            let removed_main_thread_id = coordinator
+                .session_for(connection_id)
+                .map(|session| session.main_thread_id);
             coordinator.revoke_session(connection_id);
-            Ok(())
+            Ok(removed_main_thread_id)
         }) else {
-            return;
+            return None;
         };
         if result.is_err() {
-            return;
+            return None;
         }
         self.rebind_pending_prompts(rebind).await;
+        result.ok().flatten()
     }
 
     async fn mark_tui_unavailable(&self, reason: String) {
