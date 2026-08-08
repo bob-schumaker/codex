@@ -61,10 +61,17 @@
     admission while the socket is closing.
   - Validated the sign-off ingress fence with
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
+  - Restricted external-controller `thread/resume` to the authorized main-thread
+    rejoin/read-hydration shape. History, path, configuration, instruction,
+    approval, sandbox, permission, and personality overrides now fail with typed
+    `controller-not-allowed`.
+  - Validated the controller resume override gate with
+    `just test -p codex-app-server controller_thread_resume_allows_read_shape_params_only`
+    and
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
-    continuations, subscriptions, resume tokens, and remaining prompt/egress
-    transactionality.
+    continuations, subscriptions, and remaining prompt/egress transactionality.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -74,8 +81,8 @@
 ## Next Steps
 
 - Keep tightening app-server normal-interface parity around cursors,
-  subscriptions, resume tokens, and prompt/egress transactionality beyond the
-  committed sign-off close path.
+  subscriptions, implicit targets, and prompt/egress transactionality beyond the
+  committed sign-off close path and resume-override gate.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

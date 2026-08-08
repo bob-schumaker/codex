@@ -26,10 +26,14 @@
 - After `controller/signOff` starts final-response teardown, subsequent
   external-controller ingress on that same connection is rejected with typed
   `transport-closing` while the final response flushes and the socket closes.
+- External-controller `thread/resume` now remains `ExactThread + ActiveOwner`
+  for main-thread rejoin, but controller-origin history, path, configuration,
+  instruction, approval, sandbox, permission, and personality overrides are
+  rejected before handler dispatch.
 - The current branch head includes coherent Codex-side commits through
-  `a499e34` for launch metadata publication, native approval coverage, exact
+  `d417542` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
-  aware sign-off teardown with ingress fencing.
+  aware sign-off teardown with ingress fencing and resume-override gating.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -37,17 +41,18 @@
 
 ## In Flight
 
-- Codex-side review for the next normal-interface parity slice: continuation
-  binding, subscription binding, resume-token binding, and prompt/egress
-  transactionality beyond the sign-off close path.
+- Codex-side review for the next normal-interface parity slice: remaining
+  continuation binding, subscription binding, implicit targets, and
+  prompt/egress transactionality beyond the sign-off close path.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
 ## Remaining
 
-- Codex app-server should explicitly validate server-side binding for cursors,
-  subscriptions, resume tokens, implicit targets, and prompt responses across
-  ownership changes.
+- Codex app-server should explicitly validate remaining server-side binding for
+  cursors, subscriptions, implicit targets, and prompt responses across
+  ownership changes. Controller-origin `thread/resume` override fields now have
+  a pre-dispatch gate.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
