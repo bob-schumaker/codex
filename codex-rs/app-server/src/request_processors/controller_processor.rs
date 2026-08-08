@@ -72,6 +72,7 @@ struct PromptRebind {
     connection_id: ConnectionId,
     delivery: PromptRebindDelivery,
     fallback_connection_id: Option<ConnectionId>,
+    owner_epoch: Option<u64>,
 }
 
 enum PromptRebindDelivery {
@@ -396,12 +397,15 @@ impl ControllerRequestProcessor {
         }
 
         match coordinator.interactive_owner() {
-            InteractiveOwner::ControllerOwned { connection_id, .. } => {
-                ServerRequestRecipients::external_controller_with_fallback(
-                    *connection_id,
-                    state.tui_connection_id,
-                )
-            }
+            InteractiveOwner::ControllerOwned {
+                connection_id,
+                owner_epoch,
+                ..
+            } => ServerRequestRecipients::external_controller_with_fallback(
+                *connection_id,
+                state.tui_connection_id,
+                *owner_epoch,
+            ),
             InteractiveOwner::TuiOwned { .. } => {
                 if let Some(tui_connection_id) = state.tui_connection_id {
                     ServerRequestRecipients::normal(vec![tui_connection_id])
@@ -455,11 +459,17 @@ impl ControllerRequestProcessor {
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
+        expected_owner_epoch: Option<u64>,
         response: &ServerResponse,
     ) -> Result<(), JSONRPCErrorError> {
         let method = response.method();
-        self.authorize_server_request_resolution(connection_id, thread_id, &method)
-            .await?;
+        self.authorize_server_request_resolution(
+            connection_id,
+            thread_id,
+            expected_owner_epoch,
+            &method,
+        )
+        .await?;
         reject_controller_session_scoped_response(response)?;
         Ok(())
     }
@@ -468,11 +478,13 @@ impl ControllerRequestProcessor {
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
+        expected_owner_epoch: Option<u64>,
         request: &ServerRequest,
     ) -> Result<(), JSONRPCErrorError> {
         self.authorize_server_request_resolution(
             connection_id,
             thread_id,
+            expected_owner_epoch,
             server_request_method(request),
         )
         .await
@@ -495,6 +507,7 @@ impl ControllerRequestProcessor {
         &self,
         connection_id: ConnectionId,
         thread_id: Option<ThreadId>,
+        expected_owner_epoch: Option<u64>,
         method: &str,
     ) -> Result<(), JSONRPCErrorError> {
         let Some(rule) = server_request_response_rule(method) else {
@@ -521,9 +534,16 @@ impl ControllerRequestProcessor {
                 let (result, rebind) =
                     self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                         coordinator
-                            .require_active_owner(connection_id)
+                            .require_active_owner_with_epoch(connection_id)
                             .map_err(controller_session_error)
-                            .and_then(|main_thread_id| {
+                            .and_then(|(main_thread_id, owner_epoch)| {
+                                if expected_owner_epoch.is_some_and(|expected_owner_epoch| {
+                                    expected_owner_epoch != owner_epoch
+                                }) {
+                                    return Err(controller_session_error(
+                                        ControllerSessionError::StaleOwnership,
+                                    ));
+                                }
                                 authorize_target(
                                     rule.target,
                                     ControllerRequestTarget::ExactThread(thread_id.to_string()),
@@ -590,6 +610,7 @@ impl ControllerRequestProcessor {
             connection_id,
             delivery,
             fallback_connection_id,
+            owner_epoch,
         }) = rebind
         {
             match delivery {
@@ -599,11 +620,18 @@ impl ControllerRequestProcessor {
                         .await;
                 }
                 PromptRebindDelivery::ExternalController => {
+                    let Some(owner_epoch) = owner_epoch else {
+                        tracing::warn!(
+                            "skipping external-controller prompt rebind without owner epoch"
+                        );
+                        return;
+                    };
                     self.outgoing
                         .rebind_requests_for_thread_to_external_controller_connection(
                             thread_id,
                             connection_id,
                             fallback_connection_id,
+                            owner_epoch,
                         )
                         .await;
                 }
@@ -623,12 +651,17 @@ fn prompt_rebind_after_transition(
     }
 
     let connection_id = match owner_after {
-        InteractiveOwner::ControllerOwned { connection_id, .. } => {
+        InteractiveOwner::ControllerOwned {
+            connection_id,
+            owner_epoch,
+            ..
+        } => {
             return Some(PromptRebind {
                 thread_id,
                 connection_id: *connection_id,
                 delivery: PromptRebindDelivery::ExternalController,
                 fallback_connection_id: tui_connection_id,
+                owner_epoch: Some(*owner_epoch),
             });
         }
         InteractiveOwner::TuiOwned { .. } => tui_connection_id?,
@@ -641,6 +674,7 @@ fn prompt_rebind_after_transition(
         connection_id,
         delivery: PromptRebindDelivery::Normal,
         fallback_connection_id: None,
+        owner_epoch: None,
     })
 }
 

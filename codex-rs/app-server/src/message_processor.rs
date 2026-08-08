@@ -920,7 +920,12 @@ impl MessageProcessor {
         };
         if let Err(err) = self
             .controller_processor
-            .authorize_server_response(connection_id, pending_request.thread_id, &response)
+            .authorize_server_response(
+                connection_id,
+                pending_request.thread_id,
+                pending_request.external_controller_owner_epoch,
+                &response,
+            )
             .await
         {
             tracing::warn!(
@@ -953,6 +958,7 @@ impl MessageProcessor {
             .authorize_server_request_error(
                 connection_id,
                 pending_request.thread_id,
+                pending_request.external_controller_owner_epoch,
                 &pending_request.request,
             )
             .await

@@ -410,6 +410,14 @@ impl ControllerSessionCoordinator {
         &mut self,
         connection_id: ConnectionId,
     ) -> Result<ThreadId, ControllerSessionError> {
+        self.require_active_owner_with_epoch(connection_id)
+            .map(|(main_thread_id, _owner_epoch)| main_thread_id)
+    }
+
+    pub(crate) fn require_active_owner_with_epoch(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Result<(ThreadId, u64), ControllerSessionError> {
         let now = self.clock.now();
         let authorization_expired = self.connection_authorization_expired(connection_id, now);
         self.expire_deadlines_at(now);
@@ -423,7 +431,10 @@ impl ControllerSessionCoordinator {
             return Err(ControllerSessionError::ParticipationRequired);
         };
         if session.current_active_lease(&self.owner, now).is_some() {
-            return Ok(self.main_thread_id);
+            let InteractiveOwner::ControllerOwned { owner_epoch, .. } = &self.owner else {
+                return Err(ControllerSessionError::StaleOwnership);
+            };
+            return Ok((self.main_thread_id, *owner_epoch));
         }
 
         match &self.owner {

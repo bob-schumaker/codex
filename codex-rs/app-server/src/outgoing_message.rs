@@ -129,6 +129,7 @@ struct PendingCallbackEntry {
     recipient_connection_ids: Option<Vec<ConnectionId>>,
     external_delivery_connection_ids: Vec<ConnectionId>,
     external_delivery_fallback_connection_id: Option<ConnectionId>,
+    external_controller_owner_epoch: Option<u64>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
@@ -139,12 +140,14 @@ pub(crate) struct ServerRequestRecipients {
     connection_ids: Vec<ConnectionId>,
     external_controller_connection_ids: Vec<ConnectionId>,
     external_delivery_fallback_connection_id: Option<ConnectionId>,
+    external_controller_owner_epoch: Option<u64>,
 }
 
 #[derive(Clone)]
 pub(crate) struct PendingServerRequest {
     pub(crate) thread_id: Option<ThreadId>,
     pub(crate) request: ServerRequest,
+    pub(crate) external_controller_owner_epoch: Option<u64>,
 }
 
 enum TakeRequestCallbackResult {
@@ -285,17 +288,20 @@ impl ServerRequestRecipients {
             connection_ids,
             external_controller_connection_ids: Vec::new(),
             external_delivery_fallback_connection_id: None,
+            external_controller_owner_epoch: None,
         }
     }
 
     pub(crate) fn external_controller_with_fallback(
         controller_connection_id: ConnectionId,
         fallback_connection_id: Option<ConnectionId>,
+        owner_epoch: u64,
     ) -> Self {
         Self {
             connection_ids: vec![controller_connection_id],
             external_controller_connection_ids: vec![controller_connection_id],
             external_delivery_fallback_connection_id: fallback_connection_id,
+            external_controller_owner_epoch: Some(owner_epoch),
         }
     }
 
@@ -418,6 +424,7 @@ impl OutgoingMessageSender {
                     recipient_connection_ids: connection_ids.map(<[ConnectionId]>::to_vec),
                     external_delivery_connection_ids: Vec::new(),
                     external_delivery_fallback_connection_id: None,
+                    external_controller_owner_epoch: None,
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -489,6 +496,7 @@ impl OutgoingMessageSender {
                     external_delivery_connection_ids: Vec::new(),
                     external_delivery_fallback_connection_id: recipients
                         .external_delivery_fallback_connection_id,
+                    external_controller_owner_epoch: recipients.external_controller_owner_epoch,
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -562,6 +570,7 @@ impl OutgoingMessageSender {
                 };
                 entry.recipient_connection_ids = Some(vec![fallback_connection_id]);
                 entry.external_delivery_fallback_connection_id = None;
+                entry.external_controller_owner_epoch = None;
                 (fallback_connection_id, entry.request.clone())
             };
 
@@ -604,6 +613,8 @@ impl OutgoingMessageSender {
                 .filter_map(|entry| {
                     if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
+                        entry.external_delivery_fallback_connection_id = None;
+                        entry.external_controller_owner_epoch = None;
                         Some(entry.request.clone())
                     } else {
                         None
@@ -622,6 +633,7 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
         connection_id: ConnectionId,
         fallback_connection_id: Option<ConnectionId>,
+        owner_epoch: u64,
     ) {
         let requests = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
@@ -631,6 +643,7 @@ impl OutgoingMessageSender {
                     if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         entry.external_delivery_fallback_connection_id = fallback_connection_id;
+                        entry.external_controller_owner_epoch = Some(owner_epoch);
                         Some(entry.request.clone())
                     } else {
                         None
@@ -654,6 +667,7 @@ impl OutgoingMessageSender {
             .map(|entry| PendingServerRequest {
                 thread_id: entry.thread_id,
                 request: entry.request.clone(),
+                external_controller_owner_epoch: entry.external_controller_owner_epoch,
             })
     }
 
@@ -864,7 +878,7 @@ impl OutgoingMessageSender {
     }
 
     #[cfg(test)]
-    async fn request_has_external_delivery(
+    pub(crate) async fn request_has_external_delivery(
         &self,
         id: &RequestId,
         connection_id: ConnectionId,
@@ -1905,7 +1919,11 @@ mod tests {
         let thread_id = ThreadId::new();
         let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
             outgoing.clone(),
-            ServerRequestRecipients::external_controller_with_fallback(ConnectionId(2), None),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                None,
+                /*owner_epoch*/ 1,
+            ),
             vec![ConnectionId(1), ConnectionId(2)],
             thread_id,
         );
@@ -1982,6 +2000,7 @@ mod tests {
             ServerRequestRecipients::external_controller_with_fallback(
                 ConnectionId(2),
                 Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
             ),
             vec![ConnectionId(1), ConnectionId(2)],
             thread_id,
@@ -2056,7 +2075,11 @@ mod tests {
         let thread_id = ThreadId::new();
         let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
             outgoing.clone(),
-            ServerRequestRecipients::external_controller_with_fallback(ConnectionId(2), None),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                None,
+                /*owner_epoch*/ 1,
+            ),
             vec![ConnectionId(1), ConnectionId(2)],
             thread_id,
         );
