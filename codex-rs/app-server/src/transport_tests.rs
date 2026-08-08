@@ -594,6 +594,107 @@ async fn to_connection_then_disconnect_waits_for_final_write() {
 }
 
 #[tokio::test]
+async fn to_connection_then_disconnect_waits_for_slow_queue_space() {
+    let connection_id = ConnectionId(16);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let disconnect_token = CancellationToken::new();
+
+    writer_tx
+        .send(QueuedOutgoingMessage::new(app_server_notification(
+            ServerNotification::ConfigWarning(ConfigWarningNotification {
+                summary: "already-buffered".to_string(),
+                details: None,
+                path: None,
+                range: None,
+            }),
+        )))
+        .await
+        .expect("writer queue should accept the initial message");
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            Some(disconnect_token.clone()),
+        ),
+    );
+
+    let route_task = tokio::spawn(async move {
+        route_outgoing_envelope(
+            &mut connections,
+            OutgoingEnvelope::ToConnectionThenDisconnect {
+                connection_id,
+                message: app_server_notification(ServerNotification::ConfigWarning(
+                    ConfigWarningNotification {
+                        summary: "final".to_string(),
+                        details: None,
+                        path: None,
+                        range: None,
+                    },
+                )),
+            },
+        )
+        .await;
+        connections.contains_key(&connection_id)
+    });
+
+    assert!(
+        timeout(Duration::from_millis(100), async {
+            loop {
+                if disconnect_token.is_cancelled() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err(),
+        "connection should stay open while waiting to queue the final message"
+    );
+
+    let buffered = writer_rx
+        .recv()
+        .await
+        .expect("initial buffered message should be readable");
+    assert!(matches!(
+        buffered.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "already-buffered"
+    ));
+
+    let final_message = timeout(Duration::from_secs(1), writer_rx.recv())
+        .await
+        .expect("final message should be queued after space is available")
+        .expect("final message should exist");
+    assert!(!disconnect_token.is_cancelled());
+    assert!(matches!(
+        final_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "final"
+    ));
+    final_message
+        .write_complete_tx
+        .expect("final message should track write completion")
+        .send(())
+        .expect("route should wait for write completion");
+
+    let still_connected = timeout(Duration::from_secs(1), route_task)
+        .await
+        .expect("routing should finish after write completion")
+        .expect("routing task should succeed");
+    assert!(!still_connected);
+    assert!(disconnect_token.is_cancelled());
+}
+
+#[tokio::test]
 async fn to_connection_stdio_waits_instead_of_disconnecting_when_writer_queue_is_full() {
     let connection_id = ConnectionId(3);
     let (writer_tx, mut writer_rx) = mpsc::channel(1);

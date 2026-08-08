@@ -177,6 +177,50 @@ async fn send_message_to_connection(
     }
 }
 
+async fn send_message_to_connection_then_disconnect(
+    connections: &mut HashMap<ConnectionId, OutboundConnectionState>,
+    connection_id: ConnectionId,
+    message: OutgoingMessage,
+) {
+    let Some(connection_state) = connections.get(&connection_id) else {
+        warn!("dropping final message for disconnected connection: {connection_id:?}");
+        return;
+    };
+    let message = filter_outgoing_message_for_connection(connection_state, message);
+    if should_skip_notification_for_connection(connection_state, &message) {
+        disconnect_connection(connections, connection_id);
+        return;
+    }
+
+    let writer = connection_state.writer.clone();
+    let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
+    let queued_message = QueuedOutgoingMessage {
+        message,
+        write_complete_tx: Some(write_complete_tx),
+    };
+    match timeout(DISCONNECT_AFTER_WRITE_TIMEOUT, writer.send(queued_message)).await {
+        Ok(Ok(())) => {
+            if timeout(DISCONNECT_AFTER_WRITE_TIMEOUT, write_complete_rx)
+                .await
+                .is_err()
+            {
+                warn!(
+                    "disconnecting connection after timed out waiting for final write: {connection_id:?}"
+                );
+            }
+        }
+        Ok(Err(_)) => {
+            warn!("disconnecting connection after final message writer closed: {connection_id:?}");
+        }
+        Err(_) => {
+            warn!(
+                "disconnecting connection after timed out queueing final message: {connection_id:?}"
+            );
+        }
+    }
+    disconnect_connection(connections, connection_id);
+}
+
 fn filter_outgoing_message_for_connection(
     connection_state: &OutboundConnectionState,
     message: OutgoingMessage,
@@ -219,24 +263,7 @@ pub(crate) async fn route_outgoing_envelope(
             connection_id,
             message,
         } => {
-            let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
-            let disconnected = send_message_to_connection(
-                connections,
-                connection_id,
-                message,
-                Some(write_complete_tx),
-            )
-            .await;
-            if !disconnected
-                && timeout(DISCONNECT_AFTER_WRITE_TIMEOUT, write_complete_rx)
-                    .await
-                    .is_err()
-            {
-                warn!(
-                    "disconnecting connection after timed out waiting for final write: {connection_id:?}"
-                );
-            }
-            disconnect_connection(connections, connection_id);
+            send_message_to_connection_then_disconnect(connections, connection_id, message).await;
         }
         OutgoingEnvelope::Broadcast { message } => {
             let target_connections: Vec<ConnectionId> = connections
