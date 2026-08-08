@@ -1762,29 +1762,40 @@ fn controller_request_target(
                 "external controller collection filtering is not enabled for this method",
             )),
         },
-        TargetExtraction::ExactThread => match request {
-            ClientRequest::ThreadRead { params, .. } => Ok(ControllerRequestTarget::ExactThread(
-                params.thread_id.clone(),
-            )),
-            ClientRequest::ThreadResume { params, .. } => Ok(ControllerRequestTarget::ExactThread(
-                params.thread_id.clone(),
-            )),
-            ClientRequest::ThreadTurnsList { params, .. } => Ok(
-                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
-            ),
-            ClientRequest::ThreadItemsList { params, .. } => Ok(
-                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
-            ),
-            ClientRequest::ThreadSetName { params, .. } => Ok(
-                ControllerRequestTarget::ExactThread(params.thread_id.clone()),
-            ),
-            ClientRequest::TurnStart { params, .. } => Ok(ControllerRequestTarget::ExactThread(
-                params.thread_id.clone(),
-            )),
-            _ => Err(controller_not_allowed(
-                "external controller target extraction is not enabled for this method",
-            )),
-        },
+        TargetExtraction::ExactThread => {
+            if let Some(ClientRequestSerializationScope::Thread { thread_id }) =
+                request.serialization_scope()
+            {
+                return Ok(ControllerRequestTarget::ExactThread(thread_id));
+            }
+
+            match request {
+                ClientRequest::ThreadResume { params, .. } => Ok(
+                    ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+                ),
+                ClientRequest::ThreadTurnsList { params, .. } => Ok(
+                    ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+                ),
+                ClientRequest::ThreadItemsList { params, .. } => Ok(
+                    ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+                ),
+                ClientRequest::ThreadSearchOccurrences { params, .. } => Ok(
+                    ControllerRequestTarget::ExactThread(params.thread_id.clone()),
+                ),
+                ClientRequest::McpResourceRead { params, .. } => params
+                    .thread_id
+                    .clone()
+                    .map(ControllerRequestTarget::ExactThread)
+                    .ok_or_else(|| {
+                        controller_not_allowed(
+                            "external controller exact thread target is required for this method",
+                        )
+                    }),
+                _ => Err(controller_not_allowed(
+                    "external controller target extraction is not enabled for this method",
+                )),
+            }
+        }
     }
 }
 
@@ -1794,7 +1805,10 @@ fn primary_input_reclaim_thread_id(
     serialization_scope: Option<&ClientRequestSerializationScope>,
 ) -> Option<&str> {
     if matches!(origin, ConnectionOrigin::ExternalController)
-        || !matches!(rule.required_authority, RequiredAuthority::ActiveOwner)
+        || !matches!(
+            rule.required_authority,
+            RequiredAuthority::ActiveOwner | RequiredAuthority::TuiOnly
+        )
     {
         return None;
     }

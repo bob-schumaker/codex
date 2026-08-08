@@ -1,7 +1,7 @@
 # Active Context
 
-- Current focus: native local-controller approval parity in Codex and downstream
-  controller discovery/display follow-up.
+- Current focus: external-controller normal-interface parity in Codex and
+  downstream controller discovery/display follow-up.
 
 ## Current Status
 
@@ -22,6 +22,17 @@
     the local endpoint/RPC path is unwired.
   - Validated the focused app-server local-controller tests with
     `just test -p codex-app-server local_controller`.
+  - Expanded external-controller exact-thread target extraction so admitted
+    normal-interface methods can reach their handlers instead of failing at the
+    pre-dispatch gate.
+  - Changed primary input reclaim so thread-scoped TUI-only mutations also
+    cancel an active controller lease.
+  - Validated the app-server controller gate with
+    `just test -p codex-app-server controller`.
+  - Built the `test_stdio_server` helper and reran
+    `just test -p codex-app-server`; the full run reached 1172/1174 passing
+    with two zsh-fork timeout failures that both passed when rerun
+    individually.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.

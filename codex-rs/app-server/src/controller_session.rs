@@ -1,9 +1,8 @@
 //! Controller session and input-ownership domain state.
 //!
-//! This module is intentionally not wired to the transport yet. It gives the
-//! controller request processor and admission gate one coordinator-owned source
-//! of truth for standing authorization, active leases, owner epochs, and
-//! terminal launch states.
+//! This module gives the controller request processor and admission gate one
+//! coordinator-owned source of truth for standing authorization, active leases,
+//! owner epochs, and terminal launch states.
 #![allow(dead_code)]
 
 use std::collections::HashMap;

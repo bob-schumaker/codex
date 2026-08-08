@@ -11,6 +11,14 @@
   `$CODEX_HOME/local-controllers`, not generic Codex hooks or Herdr metadata.
 - In-process local-controller socket coverage now exercises the native TUI
   approval path rather than durable enrollment test credentials.
+- External-controller admission now extracts exact main-thread targets from the
+  admitted normal app-server interface, including serialized thread mutations
+  and concurrent read methods.
+- Thread-scoped TUI-only mutations now reclaim primary input ownership from an
+  active controller lease before dispatch.
+- Focused app-server controller tests pass. The full app-server suite still
+  shows intermittent zsh-fork timeout failures under full-suite load; the
+  affected tests pass when rerun individually.
 
 ## In Flight
 
@@ -40,3 +48,5 @@
   decision.
 - Keep Codex native local-controller tests on the TUI approval path so stale
   credential-enrollment assumptions do not mask launch behavior regressions.
+- Keep controller admission and target-extraction tables aligned when opening
+  additional normal app-server methods to approved controllers.
