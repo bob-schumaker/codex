@@ -95,6 +95,13 @@
   - Validated the authorization-expiry cleanup with
     `just test -p codex-app-server controller_authorization_expiry_removes_main_thread_subscription`
     and `just test -p codex-app-server controller` passing 47/47 tests.
+  - Made `controller/acquireControl` idempotent for the controller that already
+    holds the active lease, matching its advertised `acquireControl`
+    capability without weakening the single-owner conflict rule for other
+    controllers.
+  - Validated the idempotent-acquire slice with
+    `just test -p codex-app-server ownership_lifecycle_preserves_standing_authorization controller_control_plane_round_trips_after_enrollment`
+    and `just test -p codex-app-server controller` passing 47/47 tests.
 - In progress:
   - Selecting the next small Codex-side parity slice around remaining
     implicit targets, prompt/egress transactionality, and any server-bound
@@ -110,7 +117,7 @@
 - Keep tightening app-server normal-interface parity around implicit targets,
   prompt/egress transactionality, and any remaining subscription edges beyond
   the committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
-  and resume-override gates.
+  idempotent acquire, and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

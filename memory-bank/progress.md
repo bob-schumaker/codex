@@ -44,12 +44,16 @@
   typed `authorization-expired` error and removes the external-controller
   connection from the live TUI main-thread subscription without closing the
   socket.
+- `controller/acquireControl` is now idempotent for the controller that already
+  owns the active lease; a second controller still receives the existing
+  ownership-conflict behavior.
 - The latest Codex-side implementation commit is
-  `cf5cd7c` for launch metadata publication, native approval coverage, exact
+  `84d2e0c` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
   aware sign-off teardown with ingress fencing, resume-override gating, and
   sign-off subscription cleanup plus exact-thread cursor binding and
-  authorization-expiry subscription cleanup.
+  authorization-expiry subscription cleanup plus idempotent active-owner
+  acquire.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
