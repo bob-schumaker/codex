@@ -21,6 +21,10 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
+use codex_app_server_protocol::ControllerAuthorizationChangedNotification;
+use codex_app_server_protocol::ControllerAuthorizationChangedReason;
+use codex_app_server_protocol::ControllerControlOwnershipChangedNotification;
+use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::ControllerParticipationStatus;
@@ -38,6 +42,7 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadListParams;
@@ -726,6 +731,65 @@ async fn read_thread_started_notification(
     }
 }
 
+async fn read_controller_notification_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+) -> ServerNotification {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for controller notification")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = envelope
+        else {
+            continue;
+        };
+        acknowledge_write(write_complete_tx);
+        if connection_id != expected_connection_id {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
+        else {
+            continue;
+        };
+        if matches!(
+            notification.notification,
+            ServerNotification::ControllerAuthorizationChanged(_)
+                | ServerNotification::ControllerControlOwnershipChanged(_)
+        ) {
+            return notification.notification;
+        }
+    }
+}
+
+async fn read_controller_authorization_changed_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+) -> ControllerAuthorizationChangedNotification {
+    let ServerNotification::ControllerAuthorizationChanged(notification) =
+        read_controller_notification_for_connection(outgoing_rx, expected_connection_id).await
+    else {
+        panic!("expected controller authorization notification");
+    };
+    notification
+}
+
+async fn read_controller_ownership_changed_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+) -> ControllerControlOwnershipChangedNotification {
+    let ServerNotification::ControllerControlOwnershipChanged(notification) =
+        read_controller_notification_for_connection(outgoing_rx, expected_connection_id).await
+    else {
+        panic!("expected controller ownership notification");
+    };
+    notification
+}
+
 async fn read_server_request_for_connection(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     expected_connection_id: ConnectionId,
@@ -1037,6 +1101,162 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
             )?;
             assert_eq!(data.code, ControllerErrorCode::MainThreadUnavailable);
             assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_control_notifications_are_emitted_for_session_transitions() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_control_notifications_are_emitted_for_session_transitions",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_101),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 40_102, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation_request_id = harness
+                .submit_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_103),
+                )
+                .await;
+            let authorization_notification = read_controller_authorization_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                authorization_notification.reason,
+                ControllerAuthorizationChangedReason::Approved
+            );
+            assert_eq!(authorization_notification.main_thread_id, started.thread.id);
+            assert_eq!(
+                authorization_notification
+                    .session
+                    .as_ref()
+                    .map(|session| session.active_lease.is_some()),
+                Some(false)
+            );
+
+            let ownership_notification = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                ownership_notification.reason,
+                ControllerControlOwnershipChangedReason::InitialLeaseGranted
+            );
+            assert_eq!(ownership_notification.main_thread_id, started.thread.id);
+            let initial_lease = ownership_notification
+                .active_lease
+                .clone()
+                .expect("initial ownership notification should include lease");
+
+            let participation: ControllerRequestParticipationResponse =
+                read_response_for_connection(
+                    &mut harness.outgoing_rx,
+                    EXTERNAL_CONNECTION_ID,
+                    participation_request_id,
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert_eq!(
+                participation
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.active_lease.clone()),
+                Some(initial_lease)
+            );
+
+            let release_request_id = harness
+                .submit_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_104,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            let release_notification = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                release_notification.reason,
+                ControllerControlOwnershipChangedReason::Released
+            );
+            assert_eq!(release_notification.active_lease, None);
+            let released: ControllerReleaseControlResponse = read_response_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                release_request_id,
+            )
+            .await;
+            assert_eq!(released.session.active_lease, None);
+
+            let acquire_request_id = harness
+                .submit_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_105,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            let acquired_notification = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                acquired_notification.reason,
+                ControllerControlOwnershipChangedReason::Acquired
+            );
+            assert_eq!(acquired_notification.main_thread_id, started.thread.id);
+            let acquired_lease = acquired_notification
+                .active_lease
+                .clone()
+                .expect("acquire notification should include lease");
+            let acquired: ControllerAcquireControlResponse = read_response_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                acquire_request_id,
+            )
+            .await;
+            assert_eq!(acquired.session.active_lease, Some(acquired_lease));
+
             harness.shutdown().await;
             Ok(())
         },

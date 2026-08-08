@@ -1,4 +1,6 @@
 use super::*;
+use codex_app_server_protocol::ControllerAuthorizationChangedReason;
+use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
 use codex_app_server_protocol::ControllerLease as ProtocolControllerLease;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -280,6 +282,122 @@ fn transfer_pending_and_deadlines_are_deterministic() {
 }
 
 #[test]
+fn notifications_track_authorization_and_ownership_transitions() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+    let mut coordinator = new_coordinator(main_thread_id, &clock);
+
+    let approved = coordinator
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("participation should grant initial lease");
+    let notifications = coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 2);
+    assert_authorization_notification(
+        &notifications[0],
+        controller,
+        ControllerAuthorizationChangedReason::Approved,
+        Some(/*active_lease*/ false),
+    );
+    assert_control_notification(
+        &notifications[1],
+        controller,
+        ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        Some(approved.active_lease.expect("initial lease")),
+    );
+
+    coordinator
+        .release_control(controller)
+        .expect("release should preserve standing session");
+    let notifications = coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 1);
+    assert_control_notification(
+        &notifications[0],
+        controller,
+        ControllerControlOwnershipChangedReason::Released,
+        None,
+    );
+
+    let reacquired = coordinator
+        .acquire_control(controller)
+        .expect("standing session should reacquire");
+    let notifications = coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 1);
+    assert_control_notification(
+        &notifications[0],
+        controller,
+        ControllerControlOwnershipChangedReason::Acquired,
+        Some(reacquired.active_lease.expect("reacquired lease")),
+    );
+
+    coordinator
+        .reclaim_for_tui()
+        .expect("TUI input should reclaim ownership");
+    let notifications = coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 1);
+    assert_control_notification(
+        &notifications[0],
+        controller,
+        ControllerControlOwnershipChangedReason::ReclaimedByTui,
+        None,
+    );
+}
+
+#[test]
+fn notifications_track_deadline_and_terminal_revocation() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+
+    let mut lease_coordinator = new_coordinator(main_thread_id, &clock);
+    lease_coordinator
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("participation should grant initial lease");
+    lease_coordinator.drain_notifications();
+    clock.advance(LEASE_DURATION + Duration::from_millis(1));
+    lease_coordinator.expire_deadlines();
+    let notifications = lease_coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 1);
+    assert_control_notification(
+        &notifications[0],
+        controller,
+        ControllerControlOwnershipChangedReason::LeaseExpired,
+        None,
+    );
+
+    let auth_clock = ManualClock::new();
+    let mut auth_coordinator = new_coordinator(main_thread_id, &auth_clock);
+    auth_coordinator
+        .request_participation(
+            controller,
+            grant_with_duration(
+                &auth_clock,
+                main_thread_id,
+                /*epoch*/ 4,
+                Duration::from_millis(1_000),
+            ),
+        )
+        .expect("participation should grant initial lease");
+    auth_coordinator.drain_notifications();
+    auth_clock.advance(Duration::from_millis(1_001));
+    auth_coordinator.expire_deadlines();
+    let notifications = auth_coordinator.drain_notifications();
+    assert_eq!(notifications.len(), 2);
+    assert_control_notification(
+        &notifications[0],
+        controller,
+        ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+        None,
+    );
+    assert_authorization_notification(
+        &notifications[1],
+        controller,
+        ControllerAuthorizationChangedReason::Expired,
+        None,
+    );
+}
+
+#[test]
 fn tui_unavailable_and_closed_are_terminal_states() {
     let clock = ManualClock::new();
     let main_thread_id = thread_id(1);
@@ -400,6 +518,50 @@ fn active_lease(session: &ProtocolControllerSession) -> ProtocolControllerLease 
         .active_lease
         .clone()
         .expect("session should include active lease")
+}
+
+fn assert_authorization_notification(
+    notification: &ControllerSessionNotification,
+    connection_id: ConnectionId,
+    reason: ControllerAuthorizationChangedReason,
+    expected_session_active_lease: Option<bool>,
+) {
+    let ControllerSessionNotification::AuthorizationChanged {
+        connection_id: actual_connection_id,
+        notification,
+    } = notification
+    else {
+        panic!("expected authorization notification");
+    };
+    assert_eq!(*actual_connection_id, connection_id);
+    assert_eq!(notification.reason, reason);
+    assert_eq!(notification.main_thread_id, thread_id(1).to_string());
+    assert_eq!(
+        notification
+            .session
+            .as_ref()
+            .map(|session| session.active_lease.is_some()),
+        expected_session_active_lease
+    );
+}
+
+fn assert_control_notification(
+    notification: &ControllerSessionNotification,
+    connection_id: ConnectionId,
+    reason: ControllerControlOwnershipChangedReason,
+    expected_active_lease: Option<ProtocolControllerLease>,
+) {
+    let ControllerSessionNotification::ControlOwnershipChanged {
+        connection_id: actual_connection_id,
+        notification,
+    } = notification
+    else {
+        panic!("expected ownership notification");
+    };
+    assert_eq!(*actual_connection_id, connection_id);
+    assert_eq!(notification.reason, reason);
+    assert_eq!(notification.main_thread_id, thread_id(1).to_string());
+    assert_eq!(notification.active_lease, expected_active_lease);
 }
 
 fn connection_id(id: u64) -> ConnectionId {

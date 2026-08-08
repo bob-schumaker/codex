@@ -10,6 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_app_server_protocol::ControllerAuthorizationChangedNotification;
+use codex_app_server_protocol::ControllerAuthorizationChangedReason;
+use codex_app_server_protocol::ControllerControlOwnershipChangedNotification;
+use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
 use codex_app_server_protocol::ControllerEffectiveCapabilities;
 use codex_app_server_protocol::ControllerLease as ProtocolControllerLease;
 use codex_app_server_protocol::ControllerSession as ProtocolControllerSession;
@@ -199,6 +203,18 @@ pub(crate) enum ControllerSessionError {
     StaleOwnership,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ControllerSessionNotification {
+    AuthorizationChanged {
+        connection_id: ConnectionId,
+        notification: ControllerAuthorizationChangedNotification,
+    },
+    ControlOwnershipChanged {
+        connection_id: ConnectionId,
+        notification: ControllerControlOwnershipChangedNotification,
+    },
+}
+
 pub(crate) struct ControllerSessionCoordinator {
     main_thread_id: ThreadId,
     clock: ControllerSessionClock,
@@ -206,6 +222,7 @@ pub(crate) struct ControllerSessionCoordinator {
     owner: InteractiveOwner,
     sessions: HashMap<ConnectionId, ControllerSession>,
     next_session_sequence: u64,
+    notifications: Vec<ControllerSessionNotification>,
 }
 
 impl ControllerSessionCoordinator {
@@ -221,6 +238,7 @@ impl ControllerSessionCoordinator {
             owner: InteractiveOwner::TuiOwned { owner_epoch: 0 },
             sessions: HashMap::new(),
             next_session_sequence: 1,
+            notifications: Vec::new(),
         }
     }
 
@@ -246,6 +264,10 @@ impl ControllerSessionCoordinator {
             .map(|session| session.to_protocol(&self.owner, now))
     }
 
+    pub(crate) fn drain_notifications(&mut self) -> Vec<ControllerSessionNotification> {
+        std::mem::take(&mut self.notifications)
+    }
+
     pub(crate) fn request_participation(
         &mut self,
         connection_id: ConnectionId,
@@ -260,10 +282,18 @@ impl ControllerSessionCoordinator {
         }
 
         self.upsert_session(connection_id, grant);
+        self.push_authorization_changed_for_connection(
+            connection_id,
+            ControllerAuthorizationChangedReason::Approved,
+            AuthorizationNotificationSession::Current,
+        );
         match self.owner.clone() {
             InteractiveOwner::TuiOwned { .. } => {
                 let transfer = self.begin_transfer_to_controller(connection_id)?;
-                self.complete_transfer_to_controller(transfer)
+                self.complete_transfer_to_controller_with_reason(
+                    transfer,
+                    Some(ControllerControlOwnershipChangedReason::InitialLeaseGranted),
+                )
             }
             InteractiveOwner::ControllerOwned { .. } | InteractiveOwner::TransferPending { .. } => {
                 self.protocol_session(connection_id)
@@ -298,7 +328,10 @@ impl ControllerSessionCoordinator {
         }
 
         let transfer = self.begin_transfer_to_controller(connection_id)?;
-        self.complete_transfer_to_controller(transfer)
+        self.complete_transfer_to_controller_with_reason(
+            transfer,
+            Some(ControllerControlOwnershipChangedReason::Acquired),
+        )
     }
 
     pub(crate) fn begin_transfer_to_controller(
@@ -336,9 +369,17 @@ impl ControllerSessionCoordinator {
         &mut self,
         transfer: PendingControllerTransfer,
     ) -> Result<ProtocolControllerSession, ControllerSessionError> {
+        self.complete_transfer_to_controller_with_reason(transfer, None)
+    }
+
+    fn complete_transfer_to_controller_with_reason(
+        &mut self,
+        transfer: PendingControllerTransfer,
+        reason: Option<ControllerControlOwnershipChangedReason>,
+    ) -> Result<ProtocolControllerSession, ControllerSessionError> {
         let now = self.clock.now();
         self.require_live_session(transfer.connection_id, now)?;
-        match &self.owner {
+        let result = match &self.owner {
             InteractiveOwner::TransferPending { owner_epoch }
                 if *owner_epoch == transfer.owner_epoch =>
             {
@@ -353,7 +394,13 @@ impl ControllerSessionCoordinator {
             InteractiveOwner::Closed => Err(ControllerSessionError::MainThreadClosed),
             InteractiveOwner::TuiUnavailable { .. } => Err(ControllerSessionError::TuiUnavailable),
             _ => Err(ControllerSessionError::StaleOwnership),
+        };
+        if result.is_ok()
+            && let Some(reason) = reason
+        {
+            self.push_control_ownership_changed_for_all_sessions(reason);
         }
+        result
     }
 
     pub(crate) fn release_control(
@@ -376,6 +423,9 @@ impl ControllerSessionCoordinator {
             } if owner_connection_id == connection_id => {
                 self.clear_active_lease(connection_id);
                 self.transfer_to_tui_owned_after(owner_epoch);
+                self.push_control_ownership_changed_for_all_sessions(
+                    ControllerControlOwnershipChangedReason::Released,
+                );
             }
             InteractiveOwner::TransferPending { .. } => {
                 return Err(ControllerSessionError::TransferPending);
@@ -466,6 +516,9 @@ impl ControllerSessionCoordinator {
             } => {
                 self.clear_active_lease(connection_id);
                 self.transfer_to_tui_owned_after(owner_epoch);
+                self.push_control_ownership_changed_for_all_sessions(
+                    ControllerControlOwnershipChangedReason::ReclaimedByTui,
+                );
                 Ok(())
             }
             InteractiveOwner::TuiOwned { .. } => Ok(()),
@@ -479,17 +532,30 @@ impl ControllerSessionCoordinator {
     }
 
     pub(crate) fn revoke_session(&mut self, connection_id: ConnectionId) {
-        self.sessions.remove(&connection_id);
-        if matches!(
-            &self.owner,
-            InteractiveOwner::ControllerOwned {
-                connection_id: owner_connection_id,
-                ..
-            } if *owner_connection_id == connection_id
-        ) && let InteractiveOwner::ControllerOwned { owner_epoch, .. } = self.owner.clone()
-        {
-            self.transfer_to_tui_owned_after(owner_epoch);
-        }
+        self.revoke_session_with_reason(
+            connection_id,
+            ControllerAuthorizationChangedReason::Revoked,
+            ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+            NotifyRevokedConnection::Yes,
+        );
+    }
+
+    pub(crate) fn sign_off_session(&mut self, connection_id: ConnectionId) {
+        self.revoke_session_with_reason(
+            connection_id,
+            ControllerAuthorizationChangedReason::SignOff,
+            ControllerControlOwnershipChangedReason::SignOff,
+            NotifyRevokedConnection::No,
+        );
+    }
+
+    pub(crate) fn disconnect_session(&mut self, connection_id: ConnectionId) {
+        self.revoke_session_with_reason(
+            connection_id,
+            ControllerAuthorizationChangedReason::Disconnected,
+            ControllerControlOwnershipChangedReason::ControllerDisconnected,
+            NotifyRevokedConnection::No,
+        );
     }
 
     pub(crate) fn expire_deadlines(&mut self) {
@@ -504,11 +570,25 @@ impl ControllerSessionCoordinator {
         self.clear_all_active_leases();
         let owner_epoch = self.next_owner_epoch();
         self.owner = InteractiveOwner::TuiUnavailable { owner_epoch };
+        self.push_control_ownership_changed_for_all_sessions(
+            ControllerControlOwnershipChangedReason::TuiUnavailable,
+        );
+        self.push_authorization_changed_for_all_sessions(
+            ControllerAuthorizationChangedReason::TuiUnavailable,
+            AuthorizationNotificationSession::None,
+        );
         Ok(())
     }
 
     pub(crate) fn close_main_thread(&mut self) {
         self.clear_all_active_leases();
+        self.push_control_ownership_changed_for_all_sessions(
+            ControllerControlOwnershipChangedReason::MainThreadClosed,
+        );
+        self.push_authorization_changed_for_all_sessions(
+            ControllerAuthorizationChangedReason::MainThreadClosed,
+            AuthorizationNotificationSession::None,
+        );
         self.sessions.clear();
         self.owner = InteractiveOwner::Closed;
     }
@@ -617,7 +697,12 @@ impl ControllerSessionCoordinator {
             })
             .collect::<Vec<_>>();
         for connection_id in expired_connections {
-            self.revoke_session(connection_id);
+            self.revoke_session_with_reason(
+                connection_id,
+                ControllerAuthorizationChangedReason::Expired,
+                ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+                NotifyRevokedConnection::Yes,
+            );
         }
     }
 
@@ -638,6 +723,9 @@ impl ControllerSessionCoordinator {
         if lease_expired {
             self.clear_active_lease(connection_id);
             self.transfer_to_tui_owned_after(owner_epoch);
+            self.push_control_ownership_changed_for_all_sessions(
+                ControllerControlOwnershipChangedReason::LeaseExpired,
+            );
         }
     }
 
@@ -671,6 +759,161 @@ impl ControllerSessionCoordinator {
     fn next_owner_epoch(&self) -> u64 {
         self.owner.owner_epoch().unwrap_or(0) + 1
     }
+
+    fn revoke_session_with_reason(
+        &mut self,
+        connection_id: ConnectionId,
+        authorization_reason: ControllerAuthorizationChangedReason,
+        ownership_reason: ControllerControlOwnershipChangedReason,
+        notify_revoked_connection: NotifyRevokedConnection,
+    ) {
+        let Some(mut revoked_session) = self.sessions.remove(&connection_id) else {
+            return;
+        };
+        revoked_session.session_sequence = self.next_session_sequence();
+        let revoked_was_owner = matches!(
+            &self.owner,
+            InteractiveOwner::ControllerOwned {
+                connection_id: owner_connection_id,
+                ..
+            } if *owner_connection_id == connection_id
+        );
+        if revoked_was_owner
+            && let InteractiveOwner::ControllerOwned { owner_epoch, .. } = self.owner.clone()
+        {
+            self.transfer_to_tui_owned_after(owner_epoch);
+            if matches!(notify_revoked_connection, NotifyRevokedConnection::Yes) {
+                self.push_control_ownership_changed_for_session(
+                    &revoked_session,
+                    ownership_reason.clone(),
+                    ControlNotificationLease::None,
+                );
+            }
+            self.push_control_ownership_changed_for_all_sessions(ownership_reason);
+        }
+        if matches!(notify_revoked_connection, NotifyRevokedConnection::Yes) {
+            self.push_authorization_changed_for_session(
+                &revoked_session,
+                authorization_reason,
+                AuthorizationNotificationSession::None,
+            );
+        }
+    }
+
+    fn push_authorization_changed_for_all_sessions(
+        &mut self,
+        reason: ControllerAuthorizationChangedReason,
+        session_state: AuthorizationNotificationSession,
+    ) {
+        let sessions = self.sessions.values().cloned().collect::<Vec<_>>();
+        for session in sessions {
+            self.push_authorization_changed_for_session(&session, reason.clone(), session_state);
+        }
+    }
+
+    fn push_authorization_changed_for_connection(
+        &mut self,
+        connection_id: ConnectionId,
+        reason: ControllerAuthorizationChangedReason,
+        session_state: AuthorizationNotificationSession,
+    ) {
+        let Some(session) = self.sessions.get(&connection_id).cloned() else {
+            return;
+        };
+        self.push_authorization_changed_for_session(&session, reason, session_state);
+    }
+
+    fn push_authorization_changed_for_session(
+        &mut self,
+        session: &ControllerSession,
+        reason: ControllerAuthorizationChangedReason,
+        session_state: AuthorizationNotificationSession,
+    ) {
+        let now = self.clock.now();
+        let protocol_session = match session_state {
+            AuthorizationNotificationSession::Current => {
+                Some(session.to_protocol(&self.owner, now))
+            }
+            AuthorizationNotificationSession::None => None,
+        };
+        self.notifications
+            .push(ControllerSessionNotification::AuthorizationChanged {
+                connection_id: session.connection_id,
+                notification: ControllerAuthorizationChangedNotification {
+                    session_id: session.session_id.clone(),
+                    main_thread_id: session.main_thread_id.to_string(),
+                    reason,
+                    authorization_epoch: session.authorization_epoch,
+                    owner_epoch: self.owner_epoch_for_notification(),
+                    session_sequence: session.session_sequence,
+                    session: protocol_session,
+                },
+            });
+    }
+
+    fn push_control_ownership_changed_for_all_sessions(
+        &mut self,
+        reason: ControllerControlOwnershipChangedReason,
+    ) {
+        let sessions = self.sessions.values().cloned().collect::<Vec<_>>();
+        for session in sessions {
+            self.push_control_ownership_changed_for_session(
+                &session,
+                reason.clone(),
+                ControlNotificationLease::Current,
+            );
+        }
+    }
+
+    fn push_control_ownership_changed_for_session(
+        &mut self,
+        session: &ControllerSession,
+        reason: ControllerControlOwnershipChangedReason,
+        lease_state: ControlNotificationLease,
+    ) {
+        let now = self.clock.now();
+        let active_lease = match lease_state {
+            ControlNotificationLease::Current => session.to_protocol(&self.owner, now).active_lease,
+            ControlNotificationLease::None => None,
+        };
+        self.notifications
+            .push(ControllerSessionNotification::ControlOwnershipChanged {
+                connection_id: session.connection_id,
+                notification: ControllerControlOwnershipChangedNotification {
+                    session_id: session.session_id.clone(),
+                    main_thread_id: session.main_thread_id.to_string(),
+                    reason,
+                    authorization_epoch: session.authorization_epoch,
+                    owner_epoch: self.owner_epoch_for_notification(),
+                    session_sequence: session.session_sequence,
+                    active_lease,
+                },
+            });
+    }
+
+    fn owner_epoch_for_notification(&self) -> u64 {
+        self.owner
+            .owner_epoch()
+            .unwrap_or_else(|| self.next_owner_epoch().saturating_sub(1))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthorizationNotificationSession {
+    Current,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlNotificationLease {
+    Current,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NotifyRevokedConnection {
+    Yes,
+    No,
 }
 
 fn deadline_remaining_ms(deadline: Instant, now: Instant) -> u64 {
