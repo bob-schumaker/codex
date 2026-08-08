@@ -1,9 +1,10 @@
 # Active Context
 
-- Current focus: hand off the current external-controller checkpoint cleanly:
-  the Codex-side tree is between implementation slices, with remaining review
-  centered on normal-interface parity edges and downstream discovery/display
-  consuming the published local-controller metadata contract.
+- Current focus: continue external-controller normal-interface parity after
+  binding collection-filtered controller cursors; remaining Codex-side review
+  is centered on implicit targets, egress transactionality, and subscription
+  edges while downstream discovery/display consumes the published
+  local-controller metadata contract.
 
 ## Current Status
 
@@ -119,12 +120,24 @@
     `just test -p codex-app-server current_time`, and
     `just test -p codex-app-server controller` passing 49/49 controller tests.
   - Rebuilt the debug CLI binary with `cargo build -p codex-cli`.
+  - Bound collection-filtered controller pagination cursors for
+    `thread/list`, `thread/search`, `thread/loaded/list`, and
+    `threadSection/list`; replay now requires the same controller connection
+    and authorized main thread, matching exact-thread cursor behavior.
+  - Validated collection cursor binding with
+    `just test -p codex-app-server controller_cursor` passing 8/8 tests and
+    `just test -p codex-app-server controller` passing 53/53 tests.
+  - Reran `just test -p codex-app-server`; the full app-server run ended 1185
+    passed, 1 flaky passed on retry, 4 zsh-fork failures after retry, and 1
+    skipped. The failing zsh-fork fixture cluster remains separate from the
+    controller cursor slice.
+  - Rebuilt the debug CLI binary again with `cargo build -p codex-cli`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
-    covered by sign-off, authorization-expiry cleanup, cursor binding, prompt
-    owner-epoch binding, current-time owner routing, resume-override gating, or
-    idempotent acquire.
+    covered by sign-off, authorization-expiry cleanup, exact-thread and
+    collection-filtered cursor binding, prompt owner-epoch binding,
+    current-time owner routing, resume-override gating, or idempotent acquire.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -135,11 +148,11 @@
 
 - Keep tightening app-server normal-interface parity around any remaining
   implicit targets, egress transactionality, and subscription edges beyond the
-  committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
-  idempotent acquire, prompt owner-epoch binding, current-time owner routing,
-  and resume-override gates.
-- Treat the source tree as ready for the next narrow implementation slice; do
-  not assume an in-progress code diff exists.
+  committed exact-thread/collection cursor binding, sign-off cleanup,
+  authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
+  current-time owner routing, and resume-override gates.
+- Treat the source tree as ready for the next narrow implementation slice after
+  commit `500afdd`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

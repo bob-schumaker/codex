@@ -38,6 +38,10 @@
   connection-bound and main-thread-bound before reuse. The binding covers
   `thread/resume` cursor fields, `thread/turns/list`, `thread/items/list`,
   `thread/searchOccurrences`, and `thread/backgroundTerminals/list`.
+- Collection-filtered pagination cursors returned to an approved controller are
+  now also connection-bound and main-thread-bound before reuse. The binding
+  covers `thread/list`, `thread/search`, `thread/loaded/list`, and
+  `threadSection/list`.
 - `controller/signOff` now preserves the expected external-origin error for
   non-controller callers before any main-thread admission check.
 - Authorization expiry now revokes the controller's standing session with a
@@ -56,13 +60,13 @@
   the current-time request for the TUI main thread, and replies are bound to the
   owner epoch captured when the request was delivered.
 - The latest Codex-side implementation commit is
-  `9145ca9` for launch metadata publication, native approval coverage, exact
+  `500afdd` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
-  and cleanup, resume-override gating, cursor binding, authorization-expiry
-  cleanup, idempotent active-owner acquire, prompt owner-epoch reply binding,
-  and current-time owner routing.
-- Focused app-server controller/current-time tests pass. The latest full
-  `just test -p codex-app-server` run ended 1181 passed, 1 flaky passed on
+  and cleanup, resume-override gating, exact-thread and collection-filtered
+  cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
+  prompt owner-epoch reply binding, and current-time owner routing.
+- Focused app-server controller/current-time/cursor tests pass. The latest full
+  `just test -p codex-app-server` run ended 1185 passed, 1 flaky passed on
   retry, 4 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
   remains a separate fixture health issue outside the controller slice.
 
@@ -80,11 +84,11 @@
 
 - Codex app-server should route and validate any remaining server-side binding
   for long-lived subscriptions, implicit targets, and egress transactionality.
-  Exact-thread pagination cursors are now connection-bound for controllers,
-  controller-origin `thread/resume` override fields now have a pre-dispatch
-  gate, owner-aware prompt/current-time replies are owner-epoch-bound, and
-  sign-off plus authorization expiry now clean up the controller's main-thread
-  subscription.
+  Exact-thread and collection-filtered pagination cursors are now
+  connection-bound for controllers, controller-origin `thread/resume` override
+  fields now have a pre-dispatch gate, owner-aware prompt/current-time replies
+  are owner-epoch-bound, and sign-off plus authorization expiry now clean up the
+  controller's main-thread subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -108,10 +112,10 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
-- Continue validating long-lived subscription behavior; exact-thread
-  pagination cursors now have explicit connection/main-thread binding coverage,
-  while any remaining subscription work is outside the committed sign-off and
-  authorization-expiry cleanup paths.
+- Continue validating long-lived subscription behavior; exact-thread and
+  collection-filtered pagination cursors now have explicit
+  connection/main-thread binding coverage, while any remaining subscription work
+  is outside the committed sign-off and authorization-expiry cleanup paths.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
