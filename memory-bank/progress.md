@@ -82,8 +82,16 @@
 - External-controller disconnect now also removes that controller's main-thread
   subscription before RPC drain, and only for connections that actually held a
   controller session.
+- App-server now emits controller authorization and control-ownership
+  notifications from the `ControllerSessionCoordinator` transition boundary.
+  `controller/authorizationChanged` and
+  `controller/controlOwnershipChanged` cover participation approval, initial
+  lease grant, acquire/release, TUI reclaim, deadline expiry, terminal
+  TUI-unavailable/main-thread-close, explicit revocation, sign-off, and
+  disconnect paths with coordinator-owned reason, owner epoch, session sequence,
+  and session/lease snapshots.
 - The latest Codex-side implementation commit is
-  `dc3d3a5` for launch metadata publication, native approval coverage, exact
+  `c267e17` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -91,16 +99,19 @@
   turn override gating, internal `thread/resume` response cursor binding, plus
   terminal native TUI-unavailable launch handling, main-thread egress fencing,
   early controller disconnect revocation, and early disconnect subscription
-  cleanup.
+  cleanup, plus controller authorization/control-ownership notification
+  emission.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
   zsh-fork cluster remains a separate fixture health issue outside the
   controller slice.
-- The latest focused validation for commit `dc3d3a5` is
-  `just test -p codex-app-server controller_disconnect_rebinds_prompts_before_rpc_drain`,
-  passing 1/1 focused test, `just test -p codex-app-server controller`, passing
-  58/58 controller tests, and `cargo build -p codex-cli -j 4` rebuilding
+- The latest focused validation for commit `c267e17` is
+  `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
+  passing 3/3 focused tests, `just test -p codex-app-server controller`,
+  passing 61/61 controller tests, `just fix -p codex-app-server` passing for
+  the source slice after reverting known unrelated fixer hunks, and
+  `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
 
 ## In Flight
@@ -108,14 +119,9 @@
 - Codex-side selection of the next normal-interface parity slice: remaining
   implicit targets, egress transactionality, and long-lived subscription edges
   not covered by the committed cleanup, resume/turn override gating,
-  cursor-binding, internally-sent resume cursor binding, and owner-binding
-  work. There is no known uncommitted Codex-side source diff in this
-  checkpoint.
-- Source inspection identified a concrete remaining Codex-side gap: protocol
-  DTOs and docs exist for `controller/authorizationChanged` and
-  `controller/controlOwnershipChanged`, but app-server does not currently emit
-  those notifications on participation, acquire/release, TUI reclaim, expiry,
-  sign-off, disconnect, main-thread close, or TUI-unavailable transitions.
+  cursor-binding, internally-sent resume cursor binding, owner-binding, and
+  controller notification work. There is no known uncommitted Codex-side source
+  diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -132,11 +138,8 @@
   subscription. Native TUI-unavailable launch state is now terminal for the
   launch and fences main-thread egress. Unexpected controller disconnect now
   revokes ownership, rebinds pre-delivery prompts, and removes the controller's
-  main-thread subscription before RPC drain.
-- Codex app-server should implement ordered controller authorization and
-  ownership notifications from the session transition boundary rather than
-  ad-hoc handler emission, so reason, session snapshot, owner epoch, and session
-  sequence stay coherent.
+  main-thread subscription before RPC drain. Controller authorization and
+  ownership notifications now emit from the coordinator transition boundary.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

@@ -5,10 +5,11 @@
   input shapes, binding internally-sent controller `thread/resume` response
   cursors, making native TUI-unavailable launch state terminal, and fencing
   terminal TUI-unavailable main-thread egress, and rebinding controller-owned
-  prompts plus subscriptions before disconnect RPC drain;
-  remaining Codex-side review is centered on implicit targets, egress
-  transactionality, and subscription edges while downstream discovery/display
-  consumes the published local-controller metadata contract.
+  prompts plus subscriptions before disconnect RPC drain, plus publishing
+  controller authorization/control-ownership notifications from the session
+  transition boundary; remaining Codex-side review is centered on implicit
+  targets, egress transactionality, and subscription edges while downstream
+  discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -210,6 +211,18 @@
     `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks, which were
     reviewed and reverted to keep the source commit scoped.
   - Rebuilt the debug CLI binary again with `cargo build -p codex-cli -j 4`.
+  - Implemented controller authorization and control-ownership notifications
+    from the `ControllerSessionCoordinator` transition boundary. The app-server
+    now emits `controller/authorizationChanged` and
+    `controller/controlOwnershipChanged` for participation approval, initial
+    lease grant, acquire/release, TUI reclaim, deadline expiry, terminal
+    TUI-unavailable/main-thread-close state, explicit revocation, sign-off, and
+    disconnect paths while preserving prompt rebind/cancel ordering.
+  - Validated the notification slice with focused transition tests,
+    `just test -p codex-app-server controller` passing 61/61 controller tests,
+    `just fix -p codex-app-server` passing for this slice after reverting
+    known unrelated fixer hunks, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -217,11 +230,6 @@
     collection-filtered cursor binding, prompt owner-epoch binding,
     current-time owner routing, resume/turn override gating, internally-sent
     resume cursor binding, or idempotent acquire.
-  - Source inspection found the next concrete gap: the protocol defines
-    experimental `controller/authorizationChanged` and
-    `controller/controlOwnershipChanged` notifications, and the spec requires
-    ownership/status notifications, but app-server currently has no emission
-    sites for those notifications.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -235,12 +243,10 @@
   committed exact-thread/collection cursor binding, sign-off cleanup,
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
   current-time owner routing, resume/turn override gates, and internally-sent
-  resume cursor binding, plus terminal TUI-unavailable launch handling.
-- Implement controller authorization/ownership control-plane notifications from
-  the controller-session transition boundary, including correct reason,
-  session snapshot, owner epoch, session sequence, and ordered emission.
+  resume cursor binding, plus terminal TUI-unavailable launch handling and
+  controller authorization/ownership notification emission.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `dc3d3a5`.
+  commit `c267e17`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
