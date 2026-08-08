@@ -3,6 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::attestation::app_server_attestation_provider;
 use crate::config_manager::ConfigManager;
@@ -12,6 +13,7 @@ use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
 use crate::controller_admission::admit_initialized_client_request;
 use crate::controller_admission::controller_not_allowed;
+use crate::controller_admission::controller_transport_closing;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
@@ -151,6 +153,7 @@ pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
     initialized: OnceLock<InitializedConnectionSessionState>,
     controller_credential_proof: std::sync::Mutex<Option<ControllerCredentialProof>>,
+    controller_transport_closing: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -175,6 +178,7 @@ impl ConnectionSessionState {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             initialized: OnceLock::new(),
             controller_credential_proof: std::sync::Mutex::new(None),
+            controller_transport_closing: AtomicBool::new(false),
         }
     }
 
@@ -236,6 +240,15 @@ impl ConnectionSessionState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    pub(crate) fn begin_controller_transport_closing(&self) {
+        self.controller_transport_closing
+            .store(/*val*/ true, Ordering::Release);
+    }
+
+    pub(crate) fn controller_transport_closing(&self) -> bool {
+        self.controller_transport_closing.load(Ordering::Acquire)
     }
 }
 
@@ -631,6 +644,15 @@ impl MessageProcessor {
             Arc::clone(&self.outgoing),
             request_context.clone(),
             async {
+                if matches!(connection_origin, ConnectionOrigin::ExternalController)
+                    && session.controller_transport_closing()
+                {
+                    self.outgoing
+                        .send_error(request_id.clone(), controller_transport_closing())
+                        .await;
+                    return;
+                }
+
                 let codex_request = deserialize_client_request(request);
                 let result = match codex_request {
                     Ok(codex_request) => {
@@ -957,6 +979,12 @@ impl MessageProcessor {
         outbound_initialized: Option<&AtomicBool>,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
+        if matches!(connection_origin, ConnectionOrigin::ExternalController)
+            && session.controller_transport_closing()
+        {
+            return Err(controller_transport_closing());
+        }
+
         let connection_id = connection_request_id.connection_id;
         if let ClientRequest::Initialize { request_id, params } = codex_request {
             let connection_initialized = self
@@ -1736,6 +1764,7 @@ impl MessageProcessor {
         match result {
             Ok(Some(response)) => {
                 if disconnect_after_response {
+                    session.begin_controller_transport_closing();
                     self.outgoing
                         .send_response_as_then_disconnect(request_id.clone(), response)
                         .await;

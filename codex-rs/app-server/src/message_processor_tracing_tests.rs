@@ -1629,7 +1629,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 serde_json::from_value(after_signoff.error.data.expect("typed controller error"))?;
             assert_eq!(
                 after_signoff_data.code,
-                ControllerErrorCode::ParticipationRequired
+                ControllerErrorCode::TransportClosing
             );
 
             harness.shutdown().await;
