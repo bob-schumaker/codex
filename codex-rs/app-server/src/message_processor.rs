@@ -1128,10 +1128,18 @@ impl MessageProcessor {
                 && !codex_request.method_name().starts_with("controller/")
             {
                 let target = controller_request_target(&codex_request, admission_rule)?;
-                let authorization = self
+                let authorization = match self
                     .controller_processor
                     .authorize_normal_request(connection_id, admission_rule, target)
-                    .await?;
+                    .await
+                {
+                    Ok(authorization) => authorization,
+                    Err(error) => {
+                        self.unsubscribe_controller_if_session_missing(connection_id)
+                            .await;
+                        return Err(error);
+                    }
+                };
                 reject_controller_tui_only_params(&codex_request)?;
                 unbind_controller_request_cursors(
                     &mut codex_request,
@@ -1242,13 +1250,21 @@ impl MessageProcessor {
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerAcquireControl { .. } => self
-                .controller_processor
-                .acquire_control(connection_id, connection_origin)
+                .unsubscribe_controller_on_missing_session_error(
+                    connection_id,
+                    self.controller_processor
+                        .acquire_control(connection_id, connection_origin)
+                        .await,
+                )
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerReleaseControl { .. } => self
-                .controller_processor
-                .release_control(connection_id, connection_origin)
+                .unsubscribe_controller_on_missing_session_error(
+                    connection_id,
+                    self.controller_processor
+                        .release_control(connection_id, connection_origin)
+                        .await,
+                )
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerSignOff { .. } => {
@@ -1823,6 +1839,34 @@ impl MessageProcessor {
             }
         }
         Ok(())
+    }
+}
+
+impl MessageProcessor {
+    async fn unsubscribe_controller_if_session_missing(&self, connection_id: ConnectionId) {
+        if let Some(main_thread_id) = self
+            .controller_processor
+            .main_thread_for_missing_session(connection_id)
+        {
+            self.thread_processor
+                .unsubscribe_connection_from_thread(main_thread_id, connection_id)
+                .await;
+        }
+    }
+
+    async fn unsubscribe_controller_on_missing_session_error<T>(
+        &self,
+        connection_id: ConnectionId,
+        result: Result<T, JSONRPCErrorError>,
+    ) -> Result<T, JSONRPCErrorError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.unsubscribe_controller_if_session_missing(connection_id)
+                    .await;
+                Err(error)
+            }
+        }
     }
 }
 

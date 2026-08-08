@@ -962,13 +962,20 @@ fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
 }
 
 fn controller_record(main_thread_id: ThreadId) -> ControllerEnrollmentRecord {
+    controller_record_with_duration(main_thread_id, Duration::from_secs(60))
+}
+
+fn controller_record_with_duration(
+    main_thread_id: ThreadId,
+    authorization_duration: Duration,
+) -> ControllerEnrollmentRecord {
     ControllerEnrollmentRecord {
         subject_id: "controller-subject".to_string(),
         credential_fingerprint: "credential-fingerprint".to_string(),
         main_thread_id,
         authorization_epoch: 7,
         revocation_epoch: 6,
-        expires_at: std::time::Instant::now() + Duration::from_secs(60),
+        expires_at: std::time::Instant::now() + authorization_duration,
     }
 }
 
@@ -1767,6 +1774,89 @@ fn controller_participation_rejects_unproven_display_claims() -> Result<()> {
             let denial = rejected.denial.expect("rejection should include denial");
             assert_eq!(denial.data.code, ControllerErrorCode::EnrollmentDenied);
             assert_eq!(denial.data.main_thread_id, Some(started.thread.id));
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_authorization_expiry_removes_main_thread_subscription() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_authorization_expiry_removes_main_thread_subscription",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 42_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let started = harness
+                .start_thread(/*request_id*/ 42_002, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record_with_duration(
+                main_thread_id,
+                Duration::from_millis(200),
+            ));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 42_003),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(main_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let expired = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_read_request(/*request_id*/ 42_004, started.thread.id),
+                )
+                .await;
+            let expired_data: ControllerErrorData =
+                serde_json::from_value(expired.error.data.expect("typed controller error"))?;
+            assert_eq!(expired_data.code, ControllerErrorCode::AuthorizationExpired);
+            assert!(
+                !harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
             harness.shutdown().await;
             Ok(())
         },

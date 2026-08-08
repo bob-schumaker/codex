@@ -287,7 +287,11 @@ impl ControllerSessionCoordinator {
         connection_id: ConnectionId,
     ) -> Result<PendingControllerTransfer, ControllerSessionError> {
         let now = self.clock.now();
-        self.expire_active_lease_at(now);
+        let authorization_expired = self.connection_authorization_expired(connection_id, now);
+        self.expire_deadlines_at(now);
+        if authorization_expired {
+            return Err(ControllerSessionError::AuthorizationExpired);
+        }
         self.require_live_session(connection_id, now)?;
         match self.owner.clone() {
             InteractiveOwner::TuiOwned { owner_epoch } => {
@@ -338,7 +342,11 @@ impl ControllerSessionCoordinator {
         connection_id: ConnectionId,
     ) -> Result<ProtocolControllerSession, ControllerSessionError> {
         let now = self.clock.now();
-        self.expire_active_lease_at(now);
+        let authorization_expired = self.connection_authorization_expired(connection_id, now);
+        self.expire_deadlines_at(now);
+        if authorization_expired {
+            return Err(ControllerSessionError::AuthorizationExpired);
+        }
         self.require_live_session(connection_id, now)?;
 
         match self.owner.clone() {
@@ -369,7 +377,11 @@ impl ControllerSessionCoordinator {
         connection_id: ConnectionId,
     ) -> Result<ThreadId, ControllerSessionError> {
         let now = self.clock.now();
+        let authorization_expired = self.connection_authorization_expired(connection_id, now);
         self.expire_deadlines_at(now);
+        if authorization_expired {
+            return Err(ControllerSessionError::AuthorizationExpired);
+        }
         self.ensure_not_terminal()?;
         self.require_live_session(connection_id, now)?;
         Ok(self.main_thread_id)
@@ -380,7 +392,11 @@ impl ControllerSessionCoordinator {
         connection_id: ConnectionId,
     ) -> Result<ThreadId, ControllerSessionError> {
         let now = self.clock.now();
+        let authorization_expired = self.connection_authorization_expired(connection_id, now);
         self.expire_deadlines_at(now);
+        if authorization_expired {
+            return Err(ControllerSessionError::AuthorizationExpired);
+        }
         self.ensure_not_terminal()?;
         self.require_live_session(connection_id, now)?;
 
@@ -532,6 +548,12 @@ impl ControllerSessionCoordinator {
             return Err(ControllerSessionError::AuthorizationExpired);
         }
         Ok(())
+    }
+
+    fn connection_authorization_expired(&self, connection_id: ConnectionId, now: Instant) -> bool {
+        self.sessions
+            .get(&connection_id)
+            .is_some_and(|session| now >= session.authorization_expires_at)
     }
 
     fn ensure_main_thread(&self, main_thread_id: ThreadId) -> Result<(), ControllerSessionError> {

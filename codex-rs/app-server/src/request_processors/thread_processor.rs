@@ -3112,6 +3112,16 @@ impl ThreadRequestProcessor {
         }
     }
 
+    pub(crate) async fn unsubscribe_connection_from_thread(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        self.thread_state_manager
+            .unsubscribe_connection_from_thread(thread_id, connection_id)
+            .await
+    }
+
     #[cfg(test)]
     pub(crate) async fn subscribed_connection_ids_for_thread(
         &self,
