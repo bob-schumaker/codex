@@ -1106,6 +1106,8 @@ impl MessageProcessor {
             } else {
                 None
             };
+        let disconnect_after_response =
+            matches!(codex_request, ClientRequest::ControllerSignOff { .. });
 
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
@@ -1733,9 +1735,15 @@ impl MessageProcessor {
 
         match result {
             Ok(Some(response)) => {
-                self.outgoing
-                    .send_response_as(request_id.clone(), response)
-                    .await;
+                if disconnect_after_response {
+                    self.outgoing
+                        .send_response_as_then_disconnect(request_id.clone(), response)
+                        .await;
+                } else {
+                    self.outgoing
+                        .send_response_as(request_id.clone(), response)
+                        .await;
+                }
             }
             Ok(None) => {}
             Err(error) => {

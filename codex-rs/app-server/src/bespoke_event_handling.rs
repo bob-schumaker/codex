@@ -2176,7 +2176,8 @@ mod tests {
             .ok_or_else(|| anyhow!("should send one message"))?;
         match envelope {
             OutgoingEnvelope::Broadcast { message } => Ok(message),
-            OutgoingEnvelope::ToConnection { message, .. } => Ok(message),
+            OutgoingEnvelope::ToConnection { message, .. }
+            | OutgoingEnvelope::ToConnectionThenDisconnect { message, .. } => Ok(message),
         }
     }
 

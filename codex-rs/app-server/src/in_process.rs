@@ -1351,6 +1351,7 @@ mod tests {
     use codex_app_server_protocol::ControllerParticipationStatus;
     use codex_app_server_protocol::ControllerRequestParticipationParams;
     use codex_app_server_protocol::ControllerRequestParticipationResponse;
+    use codex_app_server_protocol::ControllerSignOffResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
@@ -1641,6 +1642,28 @@ mod tests {
                 Message::Close(_) => panic!("unexpected close frame"),
             }
         }
+    }
+
+    #[cfg(unix)]
+    async fn expect_websocket_closed<S>(websocket: &mut tokio_tungstenite::WebSocketStream<S>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        timeout(Duration::from_secs(2), async {
+            loop {
+                match websocket.next().await {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(Message::Ping(_)))
+                    | Some(Ok(Message::Pong(_)))
+                    | Some(Ok(Message::Frame(_))) => continue,
+                    Some(Ok(message)) => {
+                        panic!("expected websocket close, got: {message:?}");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("websocket should close after controller/signOff");
     }
 
     #[cfg(unix)]
@@ -2173,6 +2196,17 @@ mod tests {
             final_read.thread.name,
             Some("controller-reacquired".to_string())
         );
+
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_011,
+            "controller/signOff",
+            None,
+        )
+        .await;
+        let _: ControllerSignOffResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_011).await;
+        expect_websocket_closed(&mut websocket).await;
 
         client
             .shutdown()

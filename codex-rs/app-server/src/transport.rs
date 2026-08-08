@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -35,6 +37,8 @@ pub(crate) use codex_app_server_transport::start_remote_control;
 pub(crate) use codex_app_server_transport::start_stdio_connection;
 pub(crate) use codex_app_server_transport::start_websocket_acceptor;
 pub use codex_app_server_transport::take_remote_control_disabled_env;
+
+const DISCONNECT_AFTER_WRITE_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 
 pub(crate) struct ConnectionState {
     pub(crate) origin: ConnectionOrigin,
@@ -210,6 +214,29 @@ pub(crate) async fn route_outgoing_envelope(
             let _ =
                 send_message_to_connection(connections, connection_id, message, write_complete_tx)
                     .await;
+        }
+        OutgoingEnvelope::ToConnectionThenDisconnect {
+            connection_id,
+            message,
+        } => {
+            let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
+            let disconnected = send_message_to_connection(
+                connections,
+                connection_id,
+                message,
+                Some(write_complete_tx),
+            )
+            .await;
+            if !disconnected
+                && timeout(DISCONNECT_AFTER_WRITE_TIMEOUT, write_complete_rx)
+                    .await
+                    .is_err()
+            {
+                warn!(
+                    "disconnecting connection after timed out waiting for final write: {connection_id:?}"
+                );
+            }
+            disconnect_connection(connections, connection_id);
         }
         OutgoingEnvelope::Broadcast { message } => {
             let target_connections: Vec<ConnectionId> = connections

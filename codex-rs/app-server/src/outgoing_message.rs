@@ -95,6 +95,10 @@ pub(crate) enum OutgoingEnvelope {
         message: OutgoingMessage,
         write_complete_tx: Option<oneshot::Sender<()>>,
     },
+    ToConnectionThenDisconnect {
+        connection_id: ConnectionId,
+        message: OutgoingMessage,
+    },
     Broadcast {
         message: OutgoingMessage,
     },
@@ -912,8 +916,13 @@ impl OutgoingMessageSender {
     where
         T: Into<ClientResponsePayload>,
     {
-        self.send_response_as_inner(request_id, response.into(), /*thread_originator*/ None)
-            .await;
+        self.send_response_as_inner(
+            request_id,
+            response.into(),
+            /*thread_originator*/ None,
+            /*disconnect_after_write*/ false,
+        )
+        .await;
     }
 
     pub(crate) async fn send_response_with_thread_originator<T>(
@@ -924,8 +933,13 @@ impl OutgoingMessageSender {
     ) where
         T: Into<ClientResponsePayload>,
     {
-        self.send_response_as_inner(request_id, response.into(), Some(thread_originator))
-            .await;
+        self.send_response_as_inner(
+            request_id,
+            response.into(),
+            Some(thread_originator),
+            /*disconnect_after_write*/ false,
+        )
+        .await;
     }
 
     pub(crate) async fn send_response_as(
@@ -933,8 +947,23 @@ impl OutgoingMessageSender {
         request_id: ConnectionRequestId,
         response: ClientResponsePayload,
     ) {
-        self.send_response_as_inner(request_id, response, /*thread_originator*/ None)
-            .await;
+        self.send_response_as_inner(
+            request_id, response, /*thread_originator*/ None,
+            /*disconnect_after_write*/ false,
+        )
+        .await;
+    }
+
+    pub(crate) async fn send_response_as_then_disconnect(
+        &self,
+        request_id: ConnectionRequestId,
+        response: ClientResponsePayload,
+    ) {
+        self.send_response_as_inner(
+            request_id, response, /*thread_originator*/ None,
+            /*disconnect_after_write*/ true,
+        )
+        .await;
     }
 
     async fn send_response_as_inner(
@@ -942,6 +971,7 @@ impl OutgoingMessageSender {
         request_id: ConnectionRequestId,
         response: ClientResponsePayload,
         thread_originator: Option<String>,
+        disconnect_after_write: bool,
     ) {
         let connection_id = request_id.connection_id;
         let request_id_for_analytics = request_id.request_id.clone();
@@ -969,13 +999,23 @@ impl OutgoingMessageSender {
             id: request_id.request_id,
             result: response,
         });
-        self.send_outgoing_message_to_connection(
-            request_context,
-            connection_id,
-            outgoing_message,
-            "response",
-        )
-        .await;
+        if disconnect_after_write {
+            self.send_outgoing_message_to_connection_then_disconnect(
+                request_context,
+                connection_id,
+                outgoing_message,
+                "response",
+            )
+            .await;
+        } else {
+            self.send_outgoing_message_to_connection(
+                request_context,
+                connection_id,
+                outgoing_message,
+                "response",
+            )
+            .await;
+        }
     }
 
     pub(crate) async fn send_server_notification(&self, notification: ServerNotification) {
@@ -1106,6 +1146,30 @@ impl OutgoingMessageSender {
             message,
             write_complete_tx: None,
         });
+        let send_result = if let Some(request_context) = request_context {
+            send_fut.instrument(request_context.span()).await
+        } else {
+            send_fut.await
+        };
+
+        if let Err(err) = send_result {
+            warn!("failed to send {message_kind} to client: {err:?}");
+        }
+    }
+
+    async fn send_outgoing_message_to_connection_then_disconnect(
+        &self,
+        request_context: Option<RequestContext>,
+        connection_id: ConnectionId,
+        message: OutgoingMessage,
+        message_kind: &'static str,
+    ) {
+        let send_fut = self
+            .sender
+            .send(OutgoingEnvelope::ToConnectionThenDisconnect {
+                connection_id,
+                message,
+            });
         let send_result = if let Some(request_context) = request_context {
             send_fut.instrument(request_context.span()).await
         } else {

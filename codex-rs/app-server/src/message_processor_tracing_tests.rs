@@ -597,15 +597,21 @@ async fn read_response_for_connection<T: serde::de::DeserializeOwned>(
             .await
             .expect("timed out waiting for response")
             .expect("outgoing channel closed");
-        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
-            connection_id,
-            message,
-            write_complete_tx,
-        } = envelope
-        else {
-            continue;
+        let (connection_id, message) = match envelope {
+            crate::outgoing_message::OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx,
+            } => {
+                acknowledge_write(write_complete_tx);
+                (connection_id, message)
+            }
+            crate::outgoing_message::OutgoingEnvelope::ToConnectionThenDisconnect {
+                connection_id,
+                message,
+            } => (connection_id, message),
+            crate::outgoing_message::OutgoingEnvelope::Broadcast { .. } => continue,
         };
-        acknowledge_write(write_complete_tx);
         if connection_id != expected_connection_id {
             continue;
         }
@@ -677,6 +683,10 @@ async fn read_thread_started_notification(
                 connection_id,
                 message,
                 ..
+            }
+            | crate::outgoing_message::OutgoingEnvelope::ToConnectionThenDisconnect {
+                connection_id,
+                message,
             } => {
                 if connection_id != TEST_CONNECTION_ID {
                     continue;
