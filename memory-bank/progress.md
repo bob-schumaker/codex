@@ -66,21 +66,28 @@
   thread-scoped interactive server requests. Active external controllers receive
   the current-time request for the TUI main thread, and replies are bound to the
   owner epoch captured when the request was delivered.
+- Native approval `TuiUnavailable` is now terminal for a local-controller
+  launch. Once the owning TUI reports unavailable, app-server marks the
+  launch/coordinator `TuiUnavailable`, does not re-prompt on later
+  participation attempts, and rejects normal-interface reads with typed
+  `tui-unavailable`.
 - The latest Codex-side implementation commit is
-  `4ba7fa3` for launch metadata publication, native approval coverage, exact
+  `b07f485` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
   prompt owner-epoch reply binding, current-time owner routing, and controller
-  turn override gating, plus internal `thread/resume` response cursor binding.
+  turn override gating, internal `thread/resume` response cursor binding, plus
+  terminal native TUI-unavailable launch handling.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
-  `just test -p codex-app-server` run ended 1185 passed, 1 flaky passed on
+  `just test -p codex-app-server` run ended 1189 passed, 1 flaky passed on
   retry, 4 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
   remains a separate fixture health issue outside the controller slice.
-- The latest focused validation for commit `4ba7fa3` is
-  `just test -p codex-app-server controller_cursor`, passing 9/9 tests,
-  `just test -p codex-app-server controller`, passing 56/56 tests, and
-  `cargo build -p codex-cli` to rebuild `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `b07f485` is
+  `just test -p codex-app-server native_tui_unavailable_marks_controller_launch_terminal`,
+  passing 1/1 focused test, `just test -p codex-app-server controller`, passing
+  57/57 controller tests, and `cargo build -p codex-cli` to rebuild
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -103,7 +110,8 @@
   controller-origin turn context/configuration overrides now have pre-dispatch
   gates, owner-aware prompt/current-time replies are owner-epoch-bound, and
   sign-off plus authorization expiry now clean up the controller's main-thread
-  subscription.
+  subscription. Native TUI-unavailable launch state is now terminal for the
+  launch.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -136,3 +144,6 @@
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
+- Do not expect a local-controller launch to become available again after a
+  native `TuiUnavailable` decision; a fresh Codex launch should publish fresh
+  metadata and require a new controller participation request.

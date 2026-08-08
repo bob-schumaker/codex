@@ -3,9 +3,10 @@
 - Current focus: continue external-controller normal-interface parity after
   binding collection-filtered controller cursors, gating controller-origin turn
   input shapes, and binding internally-sent controller `thread/resume`
-  response cursors; remaining Codex-side review is centered on implicit
-  targets, egress transactionality, and subscription edges while downstream
-  discovery/display consumes the published local-controller metadata contract.
+  response cursors, and making native TUI-unavailable launch state terminal;
+  remaining Codex-side review is centered on implicit targets, egress
+  transactionality, and subscription edges while downstream discovery/display
+  consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -154,6 +155,20 @@
     the remaining zsh-fork fixture lint warning stays outside the controller
     slice.
   - Rebuilt the debug CLI binary again with `cargo build -p codex-cli`.
+  - Made native approval `TuiUnavailable` terminal for the local-controller
+    launch. When the TUI approval bridge reports the owning TUI unavailable,
+    app-server now marks the launch/coordinator `TuiUnavailable`, rejects later
+    participation without re-prompting, and rejects normal-interface reads with
+    typed `tui-unavailable`.
+  - Validated the terminal TUI-unavailable slice with
+    `just test -p codex-app-server native_tui_unavailable_marks_controller_launch_terminal`
+    passing 1/1 focused test and
+    `just test -p codex-app-server controller` passing 57/57 controller tests.
+  - Reran `just test -p codex-app-server`; the full app-server run ended 1189
+    passed, 1 flaky passed on retry, 4 zsh-fork failures after retry, and 1
+    skipped. The failing zsh-fork fixture cluster remains separate from the
+    controller TUI-unavailable slice.
+  - Rebuilt the debug CLI binary again with `cargo build -p codex-cli`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -174,9 +189,9 @@
   committed exact-thread/collection cursor binding, sign-off cleanup,
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
   current-time owner routing, resume/turn override gates, and internally-sent
-  resume cursor binding.
+  resume cursor binding, plus terminal TUI-unavailable launch handling.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `4ba7fa3`.
+  commit `b07f485`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
