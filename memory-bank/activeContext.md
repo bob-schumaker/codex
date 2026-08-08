@@ -88,10 +88,17 @@
     `just test -p codex-app-server controller_cursor`,
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`,
     and `just test -p codex-app-server controller` passing 46/46 tests.
+  - Cleaned up controller main-thread subscriptions when a live controller
+    loses standing authorization on expiry; the normal-interface and
+    acquire/release paths preserve typed `authorization-expired` while removing
+    the stale external-controller subscription from the TUI main thread.
+  - Validated the authorization-expiry cleanup with
+    `just test -p codex-app-server controller_authorization_expiry_removes_main_thread_subscription`
+    and `just test -p codex-app-server controller` passing 47/47 tests.
 - In progress:
-  - Selecting the next small Codex-side parity slice around server-bound
-    long-lived subscription binding, implicit targets, and remaining
-    prompt/egress transactionality.
+  - Selecting the next small Codex-side parity slice around remaining
+    implicit targets, prompt/egress transactionality, and any server-bound
+    subscription edges not covered by sign-off or authorization-expiry cleanup.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -100,9 +107,10 @@
 
 ## Next Steps
 
-- Keep tightening app-server normal-interface parity around long-lived
-  subscriptions, implicit targets, and prompt/egress transactionality beyond the
-  committed cursor-binding, sign-off cleanup, and resume-override gates.
+- Keep tightening app-server normal-interface parity around implicit targets,
+  prompt/egress transactionality, and any remaining subscription edges beyond
+  the committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
+  and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

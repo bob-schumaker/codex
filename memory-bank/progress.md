@@ -40,11 +40,16 @@
   `thread/searchOccurrences`, and `thread/backgroundTerminals/list`.
 - `controller/signOff` now preserves the expected external-origin error for
   non-controller callers before any main-thread admission check.
-- The current branch head includes coherent Codex-side commits through
-  `697d6c2` for launch metadata publication, native approval coverage, exact
+- Authorization expiry now revokes the controller's standing session with a
+  typed `authorization-expired` error and removes the external-controller
+  connection from the live TUI main-thread subscription without closing the
+  socket.
+- The latest Codex-side implementation commit is
+  `cf5cd7c` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
   aware sign-off teardown with ingress fencing, resume-override gating, and
-  sign-off subscription cleanup plus exact-thread cursor binding.
+  sign-off subscription cleanup plus exact-thread cursor binding and
+  authorization-expiry subscription cleanup.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -53,8 +58,8 @@
 ## In Flight
 
 - Codex-side review for the next normal-interface parity slice: remaining
-  continuation binding, subscription binding, implicit targets, and
-  prompt/egress transactionality beyond the sign-off close path.
+  continuation binding, implicit targets, prompt/egress transactionality, and
+  any subscription edges not covered by sign-off or authorization-expiry cleanup.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -64,8 +69,8 @@
   long-lived subscriptions, implicit targets, and prompt responses across
   ownership changes. Exact-thread pagination cursors are now connection-bound
   for controllers, controller-origin `thread/resume` override fields now have a
-  pre-dispatch gate, and sign-off now cleans up the controller's main-thread
-  subscription.
+  pre-dispatch gate, and sign-off plus authorization expiry now clean up the
+  controller's main-thread subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -91,6 +96,7 @@
   additional normal app-server methods to approved controllers.
 - Continue validating long-lived subscription behavior; exact-thread
   pagination cursors now have explicit connection/main-thread binding coverage,
-  while subscriptions still need coverage beyond committed sign-off cleanup.
+  while any remaining subscription work is outside the committed sign-off and
+  authorization-expiry cleanup paths.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
