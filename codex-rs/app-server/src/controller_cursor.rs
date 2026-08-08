@@ -9,6 +9,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 const CONTROLLER_CURSOR_VERSION: u8 = 1;
+const CURSOR_PURPOSE_THREAD_LIST: &str = "thread/list";
+const CURSOR_PURPOSE_THREAD_SEARCH: &str = "thread/search";
+const CURSOR_PURPOSE_THREAD_LOADED_LIST: &str = "thread/loaded/list";
+const CURSOR_PURPOSE_THREAD_SECTION_LIST: &str = "threadSection/list";
 const CURSOR_PURPOSE_THREAD_TURNS: &str = "thread/turns/list";
 const CURSOR_PURPOSE_THREAD_ITEMS: &str = "thread/items/list";
 const CURSOR_PURPOSE_THREAD_SEARCH_OCCURRENCES: &str = "thread/searchOccurrences";
@@ -30,6 +34,30 @@ pub(crate) fn unbind_controller_request_cursors(
     authorization: &ControllerNormalAuthorization,
 ) -> Result<(), JSONRPCErrorError> {
     match request {
+        ClientRequest::ThreadList { params, .. } => unbind_controller_cursor(
+            &mut params.cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_LIST,
+        ),
+        ClientRequest::ThreadSearch { params, .. } => unbind_controller_cursor(
+            &mut params.cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_SEARCH,
+        ),
+        ClientRequest::ThreadLoadedList { params, .. } => unbind_controller_cursor(
+            &mut params.cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_LOADED_LIST,
+        ),
+        ClientRequest::ThreadSectionList { params, .. } => unbind_controller_cursor(
+            &mut params.cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_SECTION_LIST,
+        ),
         ClientRequest::ThreadBackgroundTerminalsList { params, .. } => unbind_controller_cursor(
             &mut params.cursor,
             connection_id,
@@ -64,6 +92,46 @@ pub(crate) fn bind_controller_response_cursors(
     authorization: &ControllerNormalAuthorization,
 ) -> Result<(), JSONRPCErrorError> {
     match response {
+        ClientResponsePayload::ThreadList(response) => {
+            bind_controller_cursor(
+                &mut response.next_cursor,
+                connection_id,
+                authorization,
+                CURSOR_PURPOSE_THREAD_LIST,
+            )?;
+            bind_controller_cursor(
+                &mut response.backwards_cursor,
+                connection_id,
+                authorization,
+                CURSOR_PURPOSE_THREAD_LIST,
+            )
+        }
+        ClientResponsePayload::ThreadSearch(response) => {
+            bind_controller_cursor(
+                &mut response.next_cursor,
+                connection_id,
+                authorization,
+                CURSOR_PURPOSE_THREAD_SEARCH,
+            )?;
+            bind_controller_cursor(
+                &mut response.backwards_cursor,
+                connection_id,
+                authorization,
+                CURSOR_PURPOSE_THREAD_SEARCH,
+            )
+        }
+        ClientResponsePayload::ThreadLoadedList(response) => bind_controller_cursor(
+            &mut response.next_cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_LOADED_LIST,
+        ),
+        ClientResponsePayload::ThreadSectionList(response) => bind_controller_cursor(
+            &mut response.next_cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_SECTION_LIST,
+        ),
         ClientResponsePayload::ThreadResume(response) => {
             if let Some(initial_turns_page) = response.initial_turns_page.as_mut() {
                 bind_controller_cursor(
