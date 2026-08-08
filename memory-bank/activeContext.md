@@ -78,10 +78,20 @@
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`
     and
     `just test -p codex-app-server controller_participation_rejects_unproven_display_claims`.
+  - Added controller-bound exact-thread pagination cursors for controller
+    `thread/resume` cursor fields, `thread/turns/list`, `thread/items/list`,
+    `thread/searchOccurrences`, and `thread/backgroundTerminals/list`; replay
+    now requires the same controller connection and authorized main thread.
+  - Fixed `controller/signOff` origin checking so non-controller origins still
+    receive the external-controller-origin error before main-thread admission.
+  - Validated the cursor-binding slice with
+    `just test -p codex-app-server controller_cursor`,
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`,
+    and `just test -p codex-app-server controller` passing 46/46 tests.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
-    continuations, cursor/subscription binding beyond sign-off cleanup, and
-    remaining prompt/egress transactionality.
+    long-lived subscription binding, implicit targets, and remaining
+    prompt/egress transactionality.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -90,9 +100,9 @@
 
 ## Next Steps
 
-- Keep tightening app-server normal-interface parity around cursors,
+- Keep tightening app-server normal-interface parity around long-lived
   subscriptions, implicit targets, and prompt/egress transactionality beyond the
-  committed sign-off close/subscription cleanup path and resume-override gate.
+  committed cursor-binding, sign-off cleanup, and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

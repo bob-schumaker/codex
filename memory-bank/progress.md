@@ -34,11 +34,17 @@
   for main-thread rejoin, but controller-origin history, path, configuration,
   instruction, approval, sandbox, permission, and personality overrides are
   rejected before handler dispatch.
+- Exact-thread pagination cursors returned to an approved controller are now
+  connection-bound and main-thread-bound before reuse. The binding covers
+  `thread/resume` cursor fields, `thread/turns/list`, `thread/items/list`,
+  `thread/searchOccurrences`, and `thread/backgroundTerminals/list`.
+- `controller/signOff` now preserves the expected external-origin error for
+  non-controller callers before any main-thread admission check.
 - The current branch head includes coherent Codex-side commits through
-  `729520b` for launch metadata publication, native approval coverage, exact
+  `697d6c2` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
   aware sign-off teardown with ingress fencing, resume-override gating, and
-  sign-off subscription cleanup.
+  sign-off subscription cleanup plus exact-thread cursor binding.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -55,9 +61,10 @@
 ## Remaining
 
 - Codex app-server should explicitly validate remaining server-side binding for
-  cursors, subscriptions, implicit targets, and prompt responses across
-  ownership changes. Controller-origin `thread/resume` override fields now have
-  a pre-dispatch gate, and sign-off now cleans up the controller's main-thread
+  long-lived subscriptions, implicit targets, and prompt responses across
+  ownership changes. Exact-thread pagination cursors are now connection-bound
+  for controllers, controller-origin `thread/resume` override fields now have a
+  pre-dispatch gate, and sign-off now cleans up the controller's main-thread
   subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
@@ -82,8 +89,8 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
-- Continue validating collection continuation behavior: cursors and long-lived
-  subscriptions still need explicit connection/main-thread binding coverage
-  beyond the committed sign-off cleanup.
+- Continue validating long-lived subscription behavior; exact-thread
+  pagination cursors now have explicit connection/main-thread binding coverage,
+  while subscriptions still need coverage beyond committed sign-off cleanup.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
