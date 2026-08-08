@@ -628,9 +628,13 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
+                let thread_id = started.session.thread_id;
                 if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(started.session.thread_id);
+                    self.mark_primary_thread_parent_owned(thread_id);
                 }
+                app_server
+                    .publish_local_controller_main_thread_id(thread_id)
+                    .await;
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.chat_widget.maybe_send_next_queued_input();
@@ -699,6 +703,9 @@ impl App {
                 } else {
                     None
                 };
+                app_server
+                    .publish_local_controller_main_thread_id(started.session.thread_id)
+                    .await;
                 if let Err(err) = self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
@@ -1029,6 +1036,9 @@ impl App {
                 );
                 self.file_search
                     .update_search_dir(self.config.cwd.to_path_buf());
+                app_server
+                    .publish_local_controller_main_thread_id(resumed_thread_id)
+                    .await;
                 match self
                     .replace_chat_widget_with_app_server_thread(
                         tui,

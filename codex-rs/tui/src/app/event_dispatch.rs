@@ -252,7 +252,11 @@ impl App {
                             } else {
                                 None
                             };
+                            let thread_id = forked.session.thread_id;
                             self.shutdown_current_thread(app_server).await;
+                            app_server
+                                .publish_local_controller_main_thread_id(thread_id)
+                                .await;
                             match self
                                 .replace_chat_widget_with_app_server_thread(
                                     tui,
@@ -411,7 +415,11 @@ impl App {
                 };
                 match started {
                     Ok(forked) => {
+                        let thread_id = forked.session.thread_id;
                         self.shutdown_current_thread(app_server).await;
+                        app_server
+                            .publish_local_controller_main_thread_id(thread_id)
+                            .await;
                         match self
                             .replace_chat_widget_with_app_server_thread(
                                 tui,

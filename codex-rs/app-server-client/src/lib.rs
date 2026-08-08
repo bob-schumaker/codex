@@ -437,6 +437,10 @@ enum ClientCommand {
         decision: NativeControllerParticipationDecision,
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    PublishLocalControllerMainThreadId {
+        main_thread_id: String,
+        response_tx: oneshot::Sender<IoResult<()>>,
+    },
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
@@ -542,6 +546,15 @@ impl InProcessAppServerClient {
                                         request_id,
                                         decision,
                                     );
+                                let _ = response_tx.send(send_result);
+                            }
+                            Some(ClientCommand::PublishLocalControllerMainThreadId {
+                                main_thread_id,
+                                response_tx,
+                            }) => {
+                                let send_result = request_sender
+                                    .publish_local_controller_main_thread_id(main_thread_id)
+                                    .await;
                                 let _ = response_tx.send(send_result);
                             }
                             Some(ClientCommand::Shutdown { response_tx }) => {
@@ -796,6 +809,34 @@ impl InProcessAppServerClient {
         })?
     }
 
+    /// Publishes the owning TUI's primary thread ID to the embedded
+    /// local-controller discovery metadata, when this client owns such an
+    /// endpoint.
+    pub async fn publish_local_controller_main_thread_id(
+        &self,
+        main_thread_id: String,
+    ) -> IoResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::PublishLocalControllerMainThreadId {
+                main_thread_id,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process local-controller metadata update channel is closed",
+            )
+        })?
+    }
+
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
@@ -984,6 +1025,20 @@ impl AppServerClient {
         }
     }
 
+    pub async fn publish_local_controller_main_thread_id(
+        &self,
+        main_thread_id: String,
+    ) -> IoResult<()> {
+        match self {
+            Self::InProcess(client) => {
+                client
+                    .publish_local_controller_main_thread_id(main_thread_id)
+                    .await
+            }
+            Self::Remote(_) => Ok(()),
+        }
+    }
+
     pub async fn next_event(&mut self) -> Option<AppServerEvent> {
         match self {
             Self::InProcess(client) => client.next_event().await.map(Into::into),
@@ -1109,6 +1164,21 @@ mod tests {
         }
     }
 
+    async fn read_local_controller_metadata(
+        codex_home: &Path,
+        launch_id: &str,
+    ) -> LocalControllerEndpointMetadata {
+        let metadata_path = codex_home
+            .join("local-controllers")
+            .join(format!("launch-{launch_id}.json"));
+        serde_json::from_slice(
+            &tokio::fs::read(metadata_path)
+                .await
+                .expect("metadata should read"),
+        )
+        .expect("metadata should deserialize")
+    }
+
     async fn start_test_client_with_capacity(
         session_source: SessionSource,
         channel_capacity: usize,
@@ -1187,6 +1257,22 @@ mod tests {
             .cloned()
             .expect("local-controller endpoint should be published");
         assert_eq!(metadata.main_thread_id, None);
+        assert_eq!(
+            read_local_controller_metadata(client._codex_home.path(), &metadata.launch_id)
+                .await
+                .main_thread_id,
+            None
+        );
+        client
+            .publish_local_controller_main_thread_id("main-thread".to_string())
+            .await
+            .expect("main thread metadata should publish");
+        assert_eq!(
+            read_local_controller_metadata(client._codex_home.path(), &metadata.launch_id)
+                .await
+                .main_thread_id,
+            Some("main-thread".to_string())
+        );
         let socket_path = metadata
             .endpoint_uri
             .strip_prefix("unix://")

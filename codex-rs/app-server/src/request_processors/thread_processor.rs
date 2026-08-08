@@ -3507,6 +3507,8 @@ impl ThreadRequestProcessor {
                 };
 
                 let connection_id = request_id.connection_id;
+                self.controller_processor
+                    .register_main_thread(thread_id, connection_id);
                 self.outgoing
                     .send_response_with_thread_originator(request_id, response, thread_originator)
                     .await;
@@ -3824,6 +3826,8 @@ impl ThreadRequestProcessor {
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
                 )));
             }
+            self.controller_processor
+                .register_main_thread(existing_thread_id, request_id.connection_id);
             return Ok(RunningThreadResumeResult::Handled);
         }
         Ok(RunningThreadResumeResult::NotRunning(None))

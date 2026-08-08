@@ -272,6 +272,63 @@ async fn local_controller_acceptor_publishes_metadata_and_forwards_websocket_mes
 
 #[cfg(unix)]
 #[tokio::test]
+async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
+    let temp_dir = short_temp_dir();
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let mut handle = start_local_controller_acceptor(
+        temp_dir.path(),
+        /*main_thread_id*/ None,
+        transport_event_tx,
+        shutdown_token.clone(),
+    )
+    .await
+    .expect("local-controller acceptor should start");
+    let paths = local_controller_endpoint_paths(temp_dir.path(), &handle.metadata().launch_id)
+        .expect("paths should resolve");
+
+    assert_eq!(
+        read_metadata(paths.metadata_path.as_path())
+            .await
+            .main_thread_id,
+        None
+    );
+
+    handle
+        .publish_main_thread_id("main-thread".to_string())
+        .await
+        .expect("main thread metadata should publish");
+
+    assert_eq!(
+        handle.metadata().main_thread_id,
+        Some("main-thread".to_string())
+    );
+    assert_eq!(
+        read_metadata(paths.metadata_path.as_path()).await,
+        handle.metadata().clone()
+    );
+
+    handle
+        .publish_main_thread_id("other-thread".to_string())
+        .await
+        .expect("second main thread metadata publish should be a no-op");
+    assert_eq!(
+        handle.metadata().main_thread_id,
+        Some("main-thread".to_string())
+    );
+    assert_eq!(
+        read_metadata(paths.metadata_path.as_path()).await,
+        handle.metadata().clone()
+    );
+
+    handle.shutdown().await.expect("acceptor should join");
+    assert!(!paths.socket_path.as_path().exists());
+    assert!(!paths.metadata_path.as_path().exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn local_controller_acceptor_rejects_missing_or_wrong_launch_nonce() {
     let temp_dir = short_temp_dir();
     let (transport_event_tx, mut transport_event_rx) =

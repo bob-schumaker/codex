@@ -143,6 +143,7 @@ impl Drop for LocalControllerEndpointGuard {
 
 #[derive(Debug)]
 pub struct LocalControllerEndpointHandle {
+    codex_home: AbsolutePathBuf,
     metadata: LocalControllerEndpointMetadata,
     socket_path: AbsolutePathBuf,
     _metadata_guard: LocalControllerEndpointGuard,
@@ -157,6 +158,18 @@ impl LocalControllerEndpointHandle {
 
     pub fn socket_path(&self) -> &AbsolutePathBuf {
         &self.socket_path
+    }
+
+    pub async fn publish_main_thread_id(&mut self, main_thread_id: String) -> io::Result<()> {
+        if self.metadata.main_thread_id.is_some() {
+            return Ok(());
+        }
+
+        let mut metadata = self.metadata.clone();
+        metadata.main_thread_id = Some(main_thread_id);
+        write_local_controller_metadata(self.codex_home.as_path(), &metadata).await?;
+        self.metadata = metadata;
+        Ok(())
     }
 
     pub async fn shutdown(mut self) -> Result<(), JoinError> {
@@ -256,6 +269,7 @@ pub async fn start_local_controller_acceptor(
     );
 
     Ok(LocalControllerEndpointHandle {
+        codex_home: absolute_path(codex_home.to_path_buf())?,
         metadata,
         socket_path: paths.socket_path,
         _metadata_guard: metadata_guard,
@@ -283,6 +297,19 @@ pub async fn publish_local_controller_metadata(
     codex_home: &Path,
     metadata: &LocalControllerEndpointMetadata,
 ) -> io::Result<LocalControllerEndpointGuard> {
+    let metadata_path = write_local_controller_metadata(codex_home, metadata).await?;
+
+    Ok(LocalControllerEndpointGuard {
+        metadata_path,
+        launch_id: metadata.launch_id.clone(),
+        launch_nonce: metadata.launch_nonce.clone(),
+    })
+}
+
+async fn write_local_controller_metadata(
+    codex_home: &Path,
+    metadata: &LocalControllerEndpointMetadata,
+) -> io::Result<AbsolutePathBuf> {
     let paths = local_controller_endpoint_paths(codex_home, &metadata.launch_id)?;
     codex_uds::prepare_private_socket_directory(paths.directory.as_path()).await?;
     remove_stale_metadata_if_owned(paths.metadata_path.as_path(), metadata).await?;
@@ -307,11 +334,7 @@ pub async fn publish_local_controller_metadata(
         );
     }
 
-    Ok(LocalControllerEndpointGuard {
-        metadata_path: paths.metadata_path,
-        launch_id: metadata.launch_id.clone(),
-        launch_nonce: metadata.launch_nonce.clone(),
-    })
+    Ok(paths.metadata_path)
 }
 
 async fn prepare_local_controller_socket_path(socket_path: &Path) -> io::Result<()> {

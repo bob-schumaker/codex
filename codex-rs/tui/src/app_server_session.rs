@@ -1463,6 +1463,20 @@ impl AppServerSession {
             .await
     }
 
+    pub(crate) async fn publish_local_controller_main_thread_id(&self, thread_id: ThreadId) {
+        if let Err(err) = self
+            .client
+            .publish_local_controller_main_thread_id(thread_id.to_string())
+            .await
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                %err,
+                "failed to publish local-controller main thread id"
+            );
+        }
+    }
+
     pub(crate) async fn shutdown(self) -> std::io::Result<()> {
         self.client.shutdown().await
     }

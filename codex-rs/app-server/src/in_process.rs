@@ -264,6 +264,10 @@ enum InProcessClientMessage {
         request_id: NativeControllerParticipationRequestId,
         decision: NativeControllerParticipationDecision,
     },
+    PublishLocalControllerMainThreadId {
+        main_thread_id: String,
+        response_tx: oneshot::Sender<IoResult<()>>,
+    },
     Shutdown {
         done_tx: oneshot::Sender<()>,
     },
@@ -339,6 +343,23 @@ impl InProcessClientSender {
             request_id,
             decision,
         })
+    }
+
+    pub async fn publish_local_controller_main_thread_id(
+        &self,
+        main_thread_id: String,
+    ) -> IoResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::PublishLocalControllerMainThreadId {
+            main_thread_id,
+            response_tx,
+        })?;
+        response_rx.await.map_err(|err| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                format!("in-process local-controller metadata update channel closed: {err}"),
+            )
+        })?
     }
 
     fn try_send_client_message(&self, message: InProcessClientMessage) -> IoResult<()> {
@@ -423,6 +444,17 @@ impl InProcessClientHandle {
     ) -> IoResult<()> {
         self.client
             .respond_to_controller_participation_request(request_id, decision)
+    }
+
+    /// Publishes the owning TUI's primary thread ID to the per-launch
+    /// local-controller metadata, when a local-controller endpoint is active.
+    pub async fn publish_local_controller_main_thread_id(
+        &self,
+        main_thread_id: String,
+    ) -> IoResult<()> {
+        self.client
+            .publish_local_controller_main_thread_id(main_thread_id)
+            .await
     }
 
     /// Receives the next server event from the in-process runtime.
@@ -1128,6 +1160,18 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     "dropping unmatched controller participation response"
                                 );
                             }
+                        }
+                        Some(InProcessClientMessage::PublishLocalControllerMainThreadId {
+                            main_thread_id,
+                            response_tx,
+                        }) => {
+                            let result = match local_controller_endpoint_handle.as_mut() {
+                                Some(handle) => {
+                                    handle.publish_main_thread_id(main_thread_id).await
+                                }
+                                None => Ok(()),
+                            };
+                            let _ = response_tx.send(result);
                         }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
                             shutdown_ack = Some(done_tx);
