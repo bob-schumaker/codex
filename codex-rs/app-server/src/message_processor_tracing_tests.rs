@@ -901,6 +901,18 @@ fn controller_turn_start_request(request_id: i64, thread_id: impl Into<String>) 
     }
 }
 
+fn controller_turn_start_with_model_request(
+    request_id: i64,
+    thread_id: impl Into<String>,
+) -> ClientRequest {
+    let mut request = controller_turn_start_request(request_id, thread_id);
+    let ClientRequest::TurnStart { params, .. } = &mut request else {
+        panic!("expected turn/start request");
+    };
+    params.model = Some("gpt-test".to_string());
+    request
+}
+
 fn controller_thread_resume_with_history_request(
     request_id: i64,
     thread_id: impl Into<String>,
@@ -1218,6 +1230,28 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 serde_json::from_value(unsafe_resume.error.data.expect("typed controller error"))?;
             assert_eq!(
                 unsafe_resume_data.code,
+                ControllerErrorCode::ControllerNotAllowed
+            );
+
+            let unsafe_turn_start = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_turn_start_with_model_request(
+                        /*request_id*/ 40_051,
+                        started.thread.id.clone(),
+                    ),
+                )
+                .await;
+            let unsafe_turn_start_data: ControllerErrorData = serde_json::from_value(
+                unsafe_turn_start
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                unsafe_turn_start_data.code,
                 ControllerErrorCode::ControllerNotAllowed
             );
 

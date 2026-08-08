@@ -1,9 +1,14 @@
 use super::*;
 use crate::controller_admission::client_request_rule;
+use codex_app_server_protocol::AdditionalContextEntry;
+use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::ApprovalsReviewer;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::SandboxMode;
+use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -13,7 +18,16 @@ use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSectionListParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::UserInput;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::Settings;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -98,6 +112,136 @@ fn controller_thread_resume_allows_read_shape_params_only() {
             "{field_name} must stay TUI-only for external-controller thread/resume"
         );
     }
+}
+
+#[test]
+fn controller_turn_start_rejects_context_and_config_overrides() {
+    let mut safe_params = safe_turn_start_params("thread-1");
+    safe_params.client_user_message_id = Some("client-message-1".to_string());
+    safe_params.responsesapi_client_metadata = Some(HashMap::from([(
+        "controllerMetadata".to_string(),
+        "allowed".to_string(),
+    )]));
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::TurnStart {
+            request_id: RequestId::Integer(13),
+            params: safe_params,
+        }),
+        Ok(())
+    );
+
+    let unsafe_params = [
+        unsafe_turn_start_params("additional_context", |params| {
+            params.additional_context = Some(HashMap::from([(
+                "context".to_string(),
+                AdditionalContextEntry {
+                    value: "injected context".to_string(),
+                    kind: AdditionalContextKind::Application,
+                },
+            )]));
+        }),
+        unsafe_turn_start_params("environments", |params| {
+            params.environments = Some(Vec::new())
+        }),
+        unsafe_turn_start_params("cwd", |params| params.cwd = Some(PathBuf::from("/tmp"))),
+        unsafe_turn_start_params("runtime_workspace_roots", |params| {
+            params.runtime_workspace_roots = Some(Vec::new());
+        }),
+        unsafe_turn_start_params("approval_policy", |params| {
+            params.approval_policy = Some(AskForApproval::Never);
+        }),
+        unsafe_turn_start_params("approvals_reviewer", |params| {
+            params.approvals_reviewer = Some(ApprovalsReviewer::User);
+        }),
+        unsafe_turn_start_params("sandbox_policy", |params| {
+            params.sandbox_policy = Some(SandboxPolicy::DangerFullAccess);
+        }),
+        unsafe_turn_start_params("permissions", |params| {
+            params.permissions = Some("read-only".to_string());
+        }),
+        unsafe_turn_start_params("model", |params| {
+            params.model = Some("gpt-test".to_string());
+        }),
+        unsafe_turn_start_params("service_tier", |params| {
+            params.service_tier = Some(None);
+        }),
+        unsafe_turn_start_params("effort", |params| {
+            params.effort = Some(ReasoningEffort::Low);
+        }),
+        unsafe_turn_start_params("summary", |params| {
+            params.summary = Some(ReasoningSummary::Concise);
+        }),
+        unsafe_turn_start_params("personality", |params| {
+            params.personality = Some(Personality::Pragmatic);
+        }),
+        unsafe_turn_start_params("output_schema", |params| {
+            params.output_schema = Some(serde_json::json!({ "type": "object" }));
+        }),
+        unsafe_turn_start_params("collaboration_mode", |params| {
+            params.collaboration_mode = Some(CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "gpt-test".to_string(),
+                    reasoning_effort: None,
+                    developer_instructions: Some("developer".to_string()),
+                },
+            });
+        }),
+        unsafe_turn_start_params("multi_agent_mode", |params| {
+            params.multi_agent_mode = Some(MultiAgentMode::Proactive);
+        }),
+    ];
+
+    for (field_name, params) in unsafe_params {
+        let error = reject_controller_tui_only_params(&ClientRequest::TurnStart {
+            request_id: RequestId::Integer(14),
+            params,
+        })
+        .expect_err("unsafe controller turn/start params should be rejected");
+        let data: ControllerErrorData =
+            serde_json::from_value(error.data.expect("controller error should include data"))
+                .expect("controller error data should deserialize");
+        assert_eq!(
+            data.code,
+            ControllerErrorCode::ControllerNotAllowed,
+            "{field_name} must stay TUI-only for external-controller turn/start"
+        );
+    }
+}
+
+#[test]
+fn controller_turn_steer_rejects_additional_context_override() {
+    let mut safe_params = safe_turn_steer_params("thread-1");
+    safe_params.client_user_message_id = Some("client-message-1".to_string());
+    safe_params.responsesapi_client_metadata = Some(HashMap::from([(
+        "controllerMetadata".to_string(),
+        "allowed".to_string(),
+    )]));
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::TurnSteer {
+            request_id: RequestId::Integer(15),
+            params: safe_params,
+        }),
+        Ok(())
+    );
+
+    let mut unsafe_params = safe_turn_steer_params("thread-1");
+    unsafe_params.additional_context = Some(HashMap::from([(
+        "context".to_string(),
+        AdditionalContextEntry {
+            value: "injected context".to_string(),
+            kind: AdditionalContextKind::Application,
+        },
+    )]));
+    let error = reject_controller_tui_only_params(&ClientRequest::TurnSteer {
+        request_id: RequestId::Integer(16),
+        params: unsafe_params,
+    })
+    .expect_err("controller turn/steer additional context should be rejected");
+    let data: ControllerErrorData =
+        serde_json::from_value(error.data.expect("controller error should include data"))
+            .expect("controller error data should deserialize");
+    assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
 }
 
 #[test]
@@ -346,4 +490,55 @@ fn unsafe_thread_resume_params(
     let mut params = safe_thread_resume_params("thread-1");
     mutate(&mut params);
     (field_name, params)
+}
+
+fn safe_turn_start_params(thread_id: impl Into<String>) -> TurnStartParams {
+    TurnStartParams {
+        thread_id: thread_id.into(),
+        client_user_message_id: None,
+        input: vec![UserInput::Text {
+            text: "controller input".to_string(),
+            text_elements: Vec::new(),
+        }],
+        responsesapi_client_metadata: None,
+        additional_context: None,
+        environments: None,
+        cwd: None,
+        runtime_workspace_roots: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox_policy: None,
+        permissions: None,
+        model: None,
+        service_tier: None,
+        effort: None,
+        summary: None,
+        personality: None,
+        output_schema: None,
+        collaboration_mode: None,
+        multi_agent_mode: None,
+    }
+}
+
+fn unsafe_turn_start_params(
+    field_name: &'static str,
+    mutate: impl FnOnce(&mut TurnStartParams),
+) -> (&'static str, TurnStartParams) {
+    let mut params = safe_turn_start_params("thread-1");
+    mutate(&mut params);
+    (field_name, params)
+}
+
+fn safe_turn_steer_params(thread_id: impl Into<String>) -> TurnSteerParams {
+    TurnSteerParams {
+        thread_id: thread_id.into(),
+        client_user_message_id: None,
+        input: vec![UserInput::Text {
+            text: "controller follow-up".to_string(),
+            text_elements: Vec::new(),
+        }],
+        responsesapi_client_metadata: None,
+        additional_context: None,
+        expected_turn_id: "turn-1".to_string(),
+    }
 }

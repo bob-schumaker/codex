@@ -1948,32 +1948,67 @@ fn thread_collection_scope(
 }
 
 fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSONRPCErrorError> {
-    let ClientRequest::ThreadResume { params, .. } = request else {
-        return Ok(());
-    };
+    match request {
+        ClientRequest::ThreadResume { params, .. } => {
+            if params.history.is_none()
+                && params.path.is_none()
+                && params.model.is_none()
+                && params.model_provider.is_none()
+                && params.service_tier.is_none()
+                && params.cwd.is_none()
+                && params.runtime_workspace_roots.is_none()
+                && params.approval_policy.is_none()
+                && params.approvals_reviewer.is_none()
+                && params.sandbox.is_none()
+                && params.permissions.is_none()
+                && params.config.is_none()
+                && params.base_instructions.is_none()
+                && params.developer_instructions.is_none()
+                && params.personality.is_none()
+            {
+                return Ok(());
+            }
 
-    if params.history.is_none()
-        && params.path.is_none()
-        && params.model.is_none()
-        && params.model_provider.is_none()
-        && params.service_tier.is_none()
-        && params.cwd.is_none()
-        && params.runtime_workspace_roots.is_none()
-        && params.approval_policy.is_none()
-        && params.approvals_reviewer.is_none()
-        && params.sandbox.is_none()
-        && params.permissions.is_none()
-        && params.config.is_none()
-        && params.base_instructions.is_none()
-        && params.developer_instructions.is_none()
-        && params.personality.is_none()
-    {
-        return Ok(());
+            Err(controller_not_allowed(
+                "external controller thread/resume may only rejoin the authorized main thread without history, path, or configuration overrides",
+            ))
+        }
+        ClientRequest::TurnStart { params, .. } => {
+            if params.additional_context.is_none()
+                && params.environments.is_none()
+                && params.cwd.is_none()
+                && params.runtime_workspace_roots.is_none()
+                && params.approval_policy.is_none()
+                && params.approvals_reviewer.is_none()
+                && params.sandbox_policy.is_none()
+                && params.permissions.is_none()
+                && params.model.is_none()
+                && params.service_tier.is_none()
+                && params.effort.is_none()
+                && params.summary.is_none()
+                && params.personality.is_none()
+                && params.output_schema.is_none()
+                && params.collaboration_mode.is_none()
+                && params.multi_agent_mode.is_none()
+            {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller turn/start may only submit input for the authorized main thread without additional context or configuration overrides",
+            ))
+        }
+        ClientRequest::TurnSteer { params, .. } => {
+            if params.additional_context.is_none() {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller turn/steer may only steer the authorized main thread without additional context overrides",
+            ))
+        }
+        _ => Ok(()),
     }
-
-    Err(controller_not_allowed(
-        "external controller thread/resume may only rejoin the authorized main thread without history, path, or configuration overrides",
-    ))
 }
 
 fn primary_input_reclaim_thread_id(
