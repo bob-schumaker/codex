@@ -5,6 +5,7 @@ use crate::request_processors::ControllerNormalAuthorization;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::ThreadResumeResponse;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -133,32 +134,7 @@ pub(crate) fn bind_controller_response_cursors(
             CURSOR_PURPOSE_THREAD_SECTION_LIST,
         ),
         ClientResponsePayload::ThreadResume(response) => {
-            if let Some(initial_turns_page) = response.initial_turns_page.as_mut() {
-                bind_controller_cursor(
-                    &mut initial_turns_page.next_cursor,
-                    connection_id,
-                    authorization,
-                    CURSOR_PURPOSE_THREAD_TURNS,
-                )?;
-                bind_controller_cursor(
-                    &mut initial_turns_page.backwards_cursor,
-                    connection_id,
-                    authorization,
-                    CURSOR_PURPOSE_THREAD_TURNS,
-                )?;
-            }
-            bind_controller_cursor(
-                &mut response.turns_backwards_cursor,
-                connection_id,
-                authorization,
-                CURSOR_PURPOSE_THREAD_TURNS,
-            )?;
-            bind_controller_cursor(
-                &mut response.items_backwards_cursor,
-                connection_id,
-                authorization,
-                CURSOR_PURPOSE_THREAD_ITEMS,
-            )
+            bind_controller_thread_resume_cursors(response, connection_id, authorization)
         }
         ClientResponsePayload::ThreadBackgroundTerminalsList(response) => bind_controller_cursor(
             &mut response.next_cursor,
@@ -212,6 +188,51 @@ pub(crate) fn bind_controller_response_cursors(
         }
         _ => Ok(()),
     }
+}
+
+pub(crate) fn bind_controller_thread_resume_response_cursors(
+    response: &mut ThreadResumeResponse,
+    connection_id: ConnectionId,
+    main_thread_id: &str,
+) -> Result<(), JSONRPCErrorError> {
+    let authorization = ControllerNormalAuthorization {
+        main_thread_id: main_thread_id.to_string(),
+        filter_collection_to_main_thread: false,
+    };
+    bind_controller_thread_resume_cursors(response, connection_id, &authorization)
+}
+
+fn bind_controller_thread_resume_cursors(
+    response: &mut ThreadResumeResponse,
+    connection_id: ConnectionId,
+    authorization: &ControllerNormalAuthorization,
+) -> Result<(), JSONRPCErrorError> {
+    if let Some(initial_turns_page) = response.initial_turns_page.as_mut() {
+        bind_controller_cursor(
+            &mut initial_turns_page.next_cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_TURNS,
+        )?;
+        bind_controller_cursor(
+            &mut initial_turns_page.backwards_cursor,
+            connection_id,
+            authorization,
+            CURSOR_PURPOSE_THREAD_TURNS,
+        )?;
+    }
+    bind_controller_cursor(
+        &mut response.turns_backwards_cursor,
+        connection_id,
+        authorization,
+        CURSOR_PURPOSE_THREAD_TURNS,
+    )?;
+    bind_controller_cursor(
+        &mut response.items_backwards_cursor,
+        connection_id,
+        authorization,
+        CURSOR_PURPOSE_THREAD_ITEMS,
+    )
 }
 
 fn bind_controller_cursor(

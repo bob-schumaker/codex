@@ -1,4 +1,5 @@
 use super::*;
+use crate::controller_cursor::bind_controller_thread_resume_response_cursors;
 use crate::extensions::send_thread_warning;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
@@ -709,7 +710,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     let session_id = conversation.session_configured().session_id.to_string();
     thread.session_id = session_id;
 
-    let response = ThreadResumeResponse {
+    let mut response = ThreadResumeResponse {
         thread,
         model,
         model_provider: model_provider_id,
@@ -727,6 +728,16 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
+    if let Some(main_thread_id) = pending.controller_cursor_main_thread_id.as_deref()
+        && let Err(error) = bind_controller_thread_resume_response_cursors(
+            &mut response,
+            connection_id,
+            main_thread_id,
+        )
+    {
+        outgoing.send_error(request_id, error).await;
+        return;
+    }
     outgoing
         .send_response_with_thread_originator(request_id, response, originator)
         .await;

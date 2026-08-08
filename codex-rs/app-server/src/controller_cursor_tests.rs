@@ -1,11 +1,19 @@
 use super::*;
+use codex_app_server_protocol::ApprovalsReviewer;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SandboxPolicy;
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadHistoryMode;
+use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSearchOccurrence;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesResponse;
@@ -14,9 +22,13 @@ use codex_app_server_protocol::ThreadSearchResponse;
 use codex_app_server_protocol::ThreadSearchTextRange;
 use codex_app_server_protocol::ThreadSectionListParams;
 use codex_app_server_protocol::ThreadSectionListResponse;
+use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnsPage;
+use codex_protocol::config_types::MultiAgentMode;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 
 const CONTROLLER_CONNECTION_ID: ConnectionId = ConnectionId(8);
@@ -44,9 +56,22 @@ fn thread_turns_request(cursor: Option<String>) -> ClientRequest {
     }
 }
 
+fn thread_items_request(cursor: Option<String>) -> ClientRequest {
+    ClientRequest::ThreadItemsList {
+        request_id: RequestId::Integer(2),
+        params: ThreadItemsListParams {
+            thread_id: MAIN_THREAD_ID.to_string(),
+            turn_id: None,
+            cursor,
+            limit: None,
+            sort_direction: Some(SortDirection::Desc),
+        },
+    }
+}
+
 fn thread_search_occurrences_request(cursor: Option<String>) -> ClientRequest {
     ClientRequest::ThreadSearchOccurrences {
-        request_id: RequestId::Integer(2),
+        request_id: RequestId::Integer(3),
         params: ThreadSearchOccurrencesParams {
             thread_id: MAIN_THREAD_ID.to_string(),
             search_term: "needle".to_string(),
@@ -58,7 +83,7 @@ fn thread_search_occurrences_request(cursor: Option<String>) -> ClientRequest {
 
 fn thread_list_request(cursor: Option<String>) -> ClientRequest {
     ClientRequest::ThreadList {
-        request_id: RequestId::Integer(3),
+        request_id: RequestId::Integer(4),
         params: ThreadListParams {
             cursor,
             limit: None,
@@ -79,7 +104,7 @@ fn thread_list_request(cursor: Option<String>) -> ClientRequest {
 
 fn thread_search_request(cursor: Option<String>) -> ClientRequest {
     ClientRequest::ThreadSearch {
-        request_id: RequestId::Integer(4),
+        request_id: RequestId::Integer(5),
         params: ThreadSearchParams {
             cursor,
             limit: None,
@@ -89,6 +114,59 @@ fn thread_search_request(cursor: Option<String>) -> ClientRequest {
             archived: None,
             search_term: "needle".to_string(),
         },
+    }
+}
+
+fn thread_resume_response_with_cursors() -> ThreadResumeResponse {
+    let cwd = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+    ThreadResumeResponse {
+        thread: Thread {
+            id: MAIN_THREAD_ID.to_string(),
+            extra: None,
+            session_id: "session-1".to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "preview".to_string(),
+            ephemeral: false,
+            section: None,
+            section_entered_at: None,
+            history_mode: ThreadHistoryMode::Paginated,
+            model_provider: "mock_provider".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            recency_at: None,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd: cwd.clone(),
+            cli_version: "test".to_string(),
+            source: SessionSource::AppServer,
+            can_accept_direct_input: Some(true),
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        },
+        model: "gpt-test".to_string(),
+        model_provider: "mock_provider".to_string(),
+        service_tier: None,
+        cwd,
+        runtime_workspace_roots: Vec::new(),
+        instruction_sources: Vec::new(),
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        sandbox: SandboxPolicy::DangerFullAccess,
+        active_permission_profile: None,
+        reasoning_effort: None,
+        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
+        initial_turns_page: Some(TurnsPage {
+            data: Vec::new(),
+            next_cursor: Some("initial-next".to_string()),
+            backwards_cursor: Some("initial-back".to_string()),
+        }),
+        turns_backwards_cursor: Some("turns-back".to_string()),
+        items_backwards_cursor: Some("items-back".to_string()),
     }
 }
 
@@ -169,6 +247,61 @@ fn exact_thread_cursor_rejects_cross_connection_or_thread_replay() {
     )
     .expect_err("cursor should not replay against another authorized thread");
     assert_controller_not_allowed(error);
+}
+
+#[test]
+fn thread_resume_response_cursors_are_bound_for_internal_send_path() {
+    let mut response = thread_resume_response_with_cursors();
+    bind_controller_thread_resume_response_cursors(
+        &mut response,
+        CONTROLLER_CONNECTION_ID,
+        MAIN_THREAD_ID,
+    )
+    .expect("thread/resume cursor binding should succeed");
+
+    let initial_turns_page = response
+        .initial_turns_page
+        .expect("initial turns page should remain present");
+    assert_ne!(
+        initial_turns_page.next_cursor.as_deref(),
+        Some("initial-next")
+    );
+    assert_ne!(
+        initial_turns_page.backwards_cursor.as_deref(),
+        Some("initial-back")
+    );
+    assert_ne!(
+        response.turns_backwards_cursor.as_deref(),
+        Some("turns-back")
+    );
+    assert_ne!(
+        response.items_backwards_cursor.as_deref(),
+        Some("items-back")
+    );
+
+    let authorization = controller_authorization(MAIN_THREAD_ID);
+    let turn_cursors = [
+        (initial_turns_page.next_cursor, "initial-next"),
+        (initial_turns_page.backwards_cursor, "initial-back"),
+        (response.turns_backwards_cursor, "turns-back"),
+    ];
+    for (cursor, expected_raw_cursor) in turn_cursors {
+        let mut request = thread_turns_request(cursor);
+        unbind_controller_request_cursors(&mut request, CONTROLLER_CONNECTION_ID, &authorization)
+            .expect("thread/resume turn cursor should unwrap for thread/turns/list");
+        let ClientRequest::ThreadTurnsList { params, .. } = request else {
+            panic!("expected thread turns request");
+        };
+        assert_eq!(params.cursor.as_deref(), Some(expected_raw_cursor));
+    }
+
+    let mut items_request = thread_items_request(response.items_backwards_cursor);
+    unbind_controller_request_cursors(&mut items_request, CONTROLLER_CONNECTION_ID, &authorization)
+        .expect("thread/resume item cursor should unwrap for thread/items/list");
+    let ClientRequest::ThreadItemsList { params, .. } = items_request else {
+        panic!("expected thread items request");
+    };
+    assert_eq!(params.cursor.as_deref(), Some("items-back"));
 }
 
 #[test]

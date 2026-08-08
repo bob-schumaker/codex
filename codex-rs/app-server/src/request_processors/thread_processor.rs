@@ -2,6 +2,7 @@ use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::turn_processor::can_accept_direct_input;
 use super::*;
+use crate::controller_cursor::bind_controller_thread_resume_response_cursors;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ThreadSection;
@@ -528,6 +529,7 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        controller_cursor_main_thread_id: Option<String>,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
@@ -535,6 +537,7 @@ impl ThreadRequestProcessor {
         self.thread_resume_inner(
             request_id,
             params,
+            controller_cursor_main_thread_id,
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
@@ -3193,6 +3196,7 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        controller_cursor_main_thread_id: Option<String>,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
@@ -3238,6 +3242,7 @@ impl ThreadRequestProcessor {
             .resume_running_thread(
                 &request_id,
                 &params,
+                controller_cursor_main_thread_id.clone(),
                 app_server_client_name.clone(),
                 app_server_client_version.clone(),
             )
@@ -3556,7 +3561,7 @@ impl ThreadRequestProcessor {
                 }
 
                 let thread_originator = config_snapshot.originator.clone();
-                let response = ThreadResumeResponse {
+                let mut response = ThreadResumeResponse {
                     thread,
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
@@ -3574,6 +3579,16 @@ impl ThreadRequestProcessor {
                     turns_backwards_cursor,
                     items_backwards_cursor,
                 };
+                if let Some(main_thread_id) = controller_cursor_main_thread_id.as_deref()
+                    && let Err(error) = bind_controller_thread_resume_response_cursors(
+                        &mut response,
+                        request_id.connection_id,
+                        main_thread_id,
+                    )
+                {
+                    self.outgoing.send_error(request_id, error).await;
+                    return Ok(());
+                }
 
                 let connection_id = request_id.connection_id;
                 self.controller_processor
@@ -3647,6 +3662,7 @@ impl ThreadRequestProcessor {
         &self,
         request_id: &ConnectionRequestId,
         params: &ThreadResumeParams,
+        controller_cursor_main_thread_id: Option<String>,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<RunningThreadResumeResult, JSONRPCErrorError> {
@@ -3888,6 +3904,7 @@ impl ThreadRequestProcessor {
                     paginated_initial_turns_page_with_active_slot,
                     resume_cursor_store,
                     redact_resume_payloads,
+                    controller_cursor_main_thread_id,
                 }),
             );
             if listener_command_tx.send(command).is_err() {

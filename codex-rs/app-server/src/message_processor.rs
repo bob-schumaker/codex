@@ -1390,6 +1390,9 @@ impl MessageProcessor {
                     .thread_resume(
                         request_id.clone(),
                         params,
+                        controller_authorization
+                            .as_ref()
+                            .map(|authorization| authorization.main_thread_id.clone()),
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
