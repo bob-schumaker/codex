@@ -227,6 +227,7 @@ pub(crate) const CLIENT_REQUEST_ADMISSION: &[MethodAdmission] = &[
     method_rule!("process/kill", None, TuiOnly),
     method_rule!("process/resizePty", None, TuiOnly),
     method_rule!("config/read", None, TuiOnly),
+    method_rule!("server/diagnostics", None, TuiOnly),
     method_rule!("threadSection/create", None, TuiOnly),
     method_rule!("threadSection/update", None, TuiOnly),
     method_rule!("threadSection/delete", None, TuiOnly),
