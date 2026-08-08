@@ -9,7 +9,9 @@ Internal implementation plan for `docs/external-controllers.md`.
 Implement the external-controller design as a staged vertical slice. The first
 half proves controller policy inside the existing app-server runtime before any
 new per-launch endpoint is discoverable. The second half exposes the local
-endpoint from embedded TUI launches and wires TUI reclaim/reflection behavior.
+endpoint from embedded TUI launches, wires TUI reclaim/reflection behavior, and
+defines the downstream controller-host discovery and presentation work needed to
+consume those launches correctly.
 
 Keep new logic out of `codex-core`. The natural owners are:
 
@@ -136,29 +138,31 @@ Commit 5: Add controller session and ownership domain state.
     `ControllerOwned`, `TuiUnavailable`, and `Closed` transitions
   - no socket or TUI wiring yet
 
-Commit 6: Add durable controller enrollment verification and revocation.
+Commit 6: Add native controller participation grants and revocation.
 
 - Scope:
-  - `ControllerEnrollmentGrant` source-of-truth boundary backed by Codex user
-    configuration or platform credential storage
-  - credential proof binding to the live `ConnectionId`
-  - authorization epoch, revocation epoch, expiry, credential rotation, policy
-    disabled, and policy required handling
-  - backward-compatible defaults: existing configs without controller state load
-    successfully and preserve best-effort controller startup behavior
+  - `ControllerEnrollmentGrant` source-of-truth boundary owned by the live
+    embedded TUI request processor
+  - native TUI approval creates a grant only for the live `ConnectionId`, launch
+    ID, and immutable main thread
+  - no external client credential, durable enrollment record, controller
+    registry, host-defined authority, or platform credential storage
+  - authorization epoch, revocation epoch, expiry, policy disabled, and policy
+    required handling
   - no socket publication or controller mutation routing yet
 - Suggested owner:
   - focused controller enrollment module near `controller_session.rs`
 - Validation:
-  - existing-config load tests with no controller fields
-  - policy disabled, policy required, grant expiry, credential rotation, and
-    revocation epoch tests
+  - native approval, native rejection, policy disabled, policy required, grant
+    expiry, disconnect, and revocation epoch tests
+  - tests proving reconnect loses grant state and requires a new native
+    participation request
   - tests proving display claims such as controller name or description never
     satisfy authorization
 
 Commit 7: Implement `controller/requestParticipation`,
 `controller/acquireControl`, `controller/releaseControl`, and
-`controller/signOff` through the durable enrollment verifier and test
+`controller/signOff` through the native participation grant verifier and test
 connections.
 
 - Primary files:
@@ -358,7 +362,8 @@ ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
 
 - Scope:
   - expose controller availability states
-  - embedded launches may publish endpoint metadata
+  - embedded launches may publish endpoint metadata under
+    `$CODEX_HOME/local-controllers`
   - daemon-backed and explicit remote launches report unsupported
   - `TuiUnavailable` remains terminal for the launch
 - Primary files:
@@ -374,7 +379,68 @@ ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
     regression tests
   - TUI snapshot tests only if user-visible text changes
 
-### 8. Hardening and cleanup
+### 8. Downstream controller-host discovery and presentation
+
+This work belongs in controller products such as Codex Waveshare rather than in
+the Codex app-server protocol. The Codex-side discovery contract is the
+owner-private local-controller metadata directory; generic Codex hooks and
+Herdr metadata are not launch-discovery authorities.
+
+External slice A: Watch and rescan the local-controller metadata directory.
+
+- Scope:
+  - watch `$CODEX_HOME/local-controllers` with the host OS file-watch facility
+  - perform a full directory rescan after every create, modify, delete, or
+    overflow event; polling is an acceptable fallback
+  - validate candidate `launch-*.json` records against directory privacy,
+    metadata version, filename launch ID, endpoint URI, nonce-bearing socket
+    path, live `processId`, and socket existence
+  - treat `mainThreadId: null` as a starting launch, not an offline launch
+  - remove candidates from presentation only when metadata disappears, the
+    process dies, the socket becomes invalid, validation fails, or Codex returns
+    a terminal no-main-thread state
+- Validation:
+  - launch multiple standalone TUIs and verify every live metadata record is
+    discovered after one rescan
+  - kill one TUI and verify only that launch becomes offline/removed
+  - verify a metadata update that fills `mainThreadId` transitions from
+    `starting` to discovered without requiring a controller reconnect
+
+External slice B: Decouple launch health, authorization, and slot assignment.
+
+- Scope:
+  - model launch liveness from metadata/process/socket/main-thread validation
+  - model controller authorization separately from participation state,
+    standing read session, and active input lease
+  - model product slot assignment separately from both launch liveness and
+    authorization
+  - do not report a live launch as offline merely because participation is
+    pending, TUI approval has not been granted, the controller has released
+    control, or another surface owns input
+- Validation:
+  - approved, awaiting-approval, connected-read-only, and released-control
+    launches all present as online/non-offline states
+  - only dead process, missing metadata, invalid socket, or terminal
+    `tui-unavailable`/`main-thread-closed` states present as offline
+
+External slice C: Auto-assign newly discovered launches when the product wants a
+slot-backed display.
+
+- Scope:
+  - preserve explicit user slot assignments
+  - fill free slots deterministically for discovered live launches not already
+    assigned
+  - avoid requiring Herdr `agent_session` or terminal metadata for discovery;
+    use Herdr only for optional labels, grouping, or focus/status enrichment
+- Validation:
+  - with five live Codex launches, four under Herdr and one plain external
+    `codex`, all five are assigned or offered for assignment after discovery
+  - a Herdr pane missing `agent_session` does not hide a validated Codex
+    local-controller launch
+  - restart of the controller host preserves explicit assignments and assigns
+    only newly discovered unassigned launches to free slots
+
+### 9. Hardening and cleanup
 
 Commit 19: Add the full end-to-end scenario.
 

@@ -81,8 +81,8 @@ The listener is created for each controller-enabled embedded interactive TUI lau
 The Unix endpoint path uses a short launch identifier created before app-server startup:
 
 ```text
-$CODEX_HOME/external-controllers/<launch-id>.sock  # Unix only
-$CODEX_HOME/external-controllers/<launch-id>.json
+$CODEX_HOME/local-controllers/codex-<launch-id>.sock  # Unix only
+$CODEX_HOME/local-controllers/launch-<launch-id>.json
 ```
 
 `launch-id` is a random, collision-resistant value. It is not a thread ID.
@@ -94,6 +94,24 @@ The listener and metadata file are private to the account that launched Codex. T
 Metadata is a versioned, regular, owner-only file containing the launch ID, a random launch nonce, endpoint URI, process ID, creation time, protocol version, and primary thread ID once one exists. The first created primary thread becomes the immutable `mainThreadId` for this launch; if it closes, no replacement inherits controller authority. The server publishes metadata atomically only after accepts are enabled. On Unix, a controller validates that the metadata path remains below the controller directory and that the launch ID matches its filename. Before WebSocket acceptance, the controller sends the nonce in the dedicated HTTP Upgrade header `X-Codex-Launch-Nonce`; the endpoint compares it to metadata and rejects a mismatch. The nonce is never echoed in JSON-RPC messages, events, or ordinary RPC payloads. The Windows adapter provides equivalent metadata validation, nonce checking, same-user peer verification, and cleanup semantics.
 
 On normal TUI shutdown, the runtime closes controller connections, removes the socket and metadata file, and stops the listener. Cleanup only removes resources proved to belong to this launch by their launch ID and nonce; it never relies on a PID alone, follows a symlink, or deletes an arbitrary file. A failed or partially published launch removes its own resources before reporting failure.
+
+### Controller-side launch discovery and presentation
+
+The local-controller metadata directory is the launch-discovery contract for controller products. Generic Codex lifecycle hooks such as `SessionStart` are not controller-inventory hooks: they run inside an agent/thread workflow, are subject to hook configuration and trust policy, and do not publish the per-launch socket, nonce, process ID, or immutable main-thread binding as their contract. The app-server `fs/watch` API is also not a bootstrap mechanism because a controller must already have chosen and connected to a launch before it can call any app-server RPC.
+
+A controller that wants to maintain a live inventory should watch `$CODEX_HOME/local-controllers` with the host operating system's file-watch facility and perform a full directory rescan after every create, modify, delete, or overflow event. Polling is acceptable as a fallback; the authoritative operation is always a rescan of the directory, not trusting an individual watch event. The controller treats `launch-*.json` files as candidates only after validating the owner-private directory/file/socket invariants, metadata version, filename launch ID, endpoint URI, and nonce-bearing socket path. It must ignore or remove from presentation any candidate whose `processId` is no longer live, whose socket is missing or invalid, or whose metadata fails validation. A candidate with `mainThreadId: null` is a starting launch, not an offline launch; it should remain pending until metadata is updated or the process exits.
+
+Launch health, controller authorization, and product slot assignment are separate axes. A live metadata record with a live process, valid endpoint, and non-null `mainThreadId` means the Codex launch is online/discovered even if the controller has not yet connected, has not been approved, is awaiting native TUI approval, has released control, or currently has read access without an active input lease. A product UI must not display such a launch as offline solely because `controller/requestParticipation` has not completed or because the controller is not the active owner. Suggested presentation states are:
+
+- `unassigned` — no launch is assigned to this product slot.
+- `starting` — metadata exists and the process/socket are live, but `mainThreadId` is not yet published.
+- `discovered` — metadata, process, socket, and `mainThreadId` are live; no controller session is connected for that launch.
+- `awaitingApproval` — the controller has sent `controller/requestParticipation` and the owning TUI has not answered.
+- `connected` — participation is approved and the controller has read/subscription access, with `activeLease: null`.
+- `activeOwner` — participation is approved and the controller currently holds the `interactive-control` lease.
+- `offline` — metadata is gone, the process is dead, the socket is invalid/missing, or the launch returned a terminal no-main-thread state such as `tui-unavailable` or `main-thread-closed`.
+
+Slot assignment is a controller-product layer, not Codex authorization. If a controller product auto-populates visible controls, it should preserve explicit user assignments, remove dead assignments only under its own product policy, and assign newly discovered unassigned launches to free slots deterministically. Herdr, terminal metadata, or other host inventory may enrich labels and grouping, but they must not be required for discovering Codex launches or for deciding that a validated local-controller launch is online.
 
 ## Controller roles and ownership
 
@@ -207,8 +225,9 @@ External ingress is quota-limited per connection and uses reserved control capac
 7. Start and publish the per-launch local-endpoint WebSocket acceptor only after steps 3–6 are ready.
 8. Add per-connection external quotas, isolated egress routing, controllable egress-failure tests, and TUI-reserved capacity.
 9. Implement and surface the controller-availability states for all TUI launch modes.
-10. Add a TUI command classification table for every TUI-originated action that can reach the coordinator. Each command is classified as `threadAffecting` or `displayOnly`; unclassified commands default to `threadAffecting` until explicitly reviewed.
-11. Retire the duplicated in-process/out-of-process routing code only after behavioral parity is verified.
+10. Document and validate the controller-side discovery contract: metadata-directory watch plus full rescan, liveness validation, separate launch-health/authorization/slot-assignment state, and no dependency on generic Codex hooks or Herdr metadata for launch inventory.
+11. Add a TUI command classification table for every TUI-originated action that can reach the coordinator. Each command is classified as `threadAffecting` or `displayOnly`; unclassified commands default to `threadAffecting` until explicitly reviewed.
+12. Retire the duplicated in-process/out-of-process routing code only after behavioral parity is verified.
 
 ## Acceptance criteria
 
@@ -248,6 +267,9 @@ External ingress is quota-limited per connection and uses reserved control capac
 - Unix-socket and Windows local-endpoint creation, validation, peer verification, nonce handshake, and cleanup reject foreign resources and do not delete a live launch's endpoint.
 - Embedded, daemon-backed, and explicit-remote TUI launch modes report whether external controllers are available; only the embedded mode enables this first delivery.
 - Listener readiness and failure follow the documented authorize/bind/register/enable/publish order; an acceptor failure revokes established controller sessions and updates `embedded-unavailable` or `launch-failed` correctly.
+- A controller inventory implementation uses the local-controller metadata directory as the discovery source, watches or polls it with full rescans, and discovers every live embedded TUI launch whose metadata validates and whose `mainThreadId` is published. Codex hooks are not required or relied on for launch discovery.
+- Controller presentation distinguishes launch liveness from controller authorization and slot assignment. A live launch with valid metadata, a live process, a valid endpoint, and a non-null `mainThreadId` is not shown as offline merely because participation is pending, approval has not been granted, the controller has released control, or the controller lacks the active input lease.
+- Auto-assignment, when implemented by a controller product, preserves existing user assignments and fills free slots deterministically for newly discovered live launches; Herdr or other terminal inventory may enrich labels but cannot be a required discovery authority.
 - An end-to-end scenario launches the TUI, discovers the endpoint, approves a Codex Micro as the current input method, verifies normal app-server parity for the granted main thread, resolves an approval through the controller, sends thread-affecting TUI input that automatically reclaims control, and verifies TUI prompt ownership and final thread state.
 - Existing TUI startup and standalone `codex app-server` transport tests continue to pass.
 
