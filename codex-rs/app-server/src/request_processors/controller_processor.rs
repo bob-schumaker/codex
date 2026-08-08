@@ -167,7 +167,7 @@ impl ControllerRequestProcessor {
                     ))
                 }
                 NativeControllerParticipationDecision::TuiUnavailable { reason } => {
-                    self.mark_tui_unavailable();
+                    self.mark_tui_unavailable(reason.clone()).await;
                     Err(tui_unavailable(reason))
                 }
             };
@@ -420,6 +420,34 @@ impl ControllerRequestProcessor {
         }
     }
 
+    pub(crate) fn thread_notification_recipients(
+        &self,
+        thread_id: ThreadId,
+        subscribed_connection_ids: Vec<ConnectionId>,
+    ) -> Vec<ConnectionId> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_ref() else {
+            return subscribed_connection_ids;
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return subscribed_connection_ids;
+        };
+        if main_thread_id != thread_id {
+            return subscribed_connection_ids;
+        }
+
+        match coordinator.interactive_owner() {
+            InteractiveOwner::TuiUnavailable { .. } => Vec::new(),
+            InteractiveOwner::TuiOwned { .. }
+            | InteractiveOwner::TransferPending { .. }
+            | InteractiveOwner::ControllerOwned { .. }
+            | InteractiveOwner::Closed => subscribed_connection_ids,
+        }
+    }
+
     pub(crate) async fn reclaim_for_primary_thread_input(
         &self,
         thread_id: &str,
@@ -504,19 +532,30 @@ impl ControllerRequestProcessor {
         self.rebind_pending_prompts(rebind).await;
     }
 
-    fn mark_tui_unavailable(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.launch_state = ControllerLaunchState::TuiUnavailable;
-        if let Some(coordinator) = state.coordinator.as_mut()
-            && let Err(err) = coordinator.mark_tui_unavailable()
-        {
-            tracing::debug!(
-                error = ?err,
-                "failed to mark controller launch TUI-unavailable"
-            );
+    async fn mark_tui_unavailable(&self, reason: String) {
+        let main_thread_id = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.launch_state = ControllerLaunchState::TuiUnavailable;
+            let Some(coordinator) = state.coordinator.as_mut() else {
+                return;
+            };
+            let main_thread_id = coordinator.main_thread_id();
+            if let Err(err) = coordinator.mark_tui_unavailable() {
+                tracing::debug!(
+                    error = ?err,
+                    "failed to mark controller launch TUI-unavailable"
+                );
+            }
+            main_thread_id
+        };
+
+        if let Some(main_thread_id) = main_thread_id {
+            self.outgoing
+                .cancel_requests_for_thread(main_thread_id, Some(tui_unavailable(reason)))
+                .await;
         }
     }
 

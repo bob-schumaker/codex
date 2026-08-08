@@ -4,11 +4,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::ControllerLaunchState;
 use codex_app_server_protocol::ControllerRequestParticipationParams;
 use codex_app_server_protocol::ControllerRetryDisposition;
+use codex_app_server_protocol::ServerRequestPayload;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 
@@ -20,13 +22,14 @@ use crate::outgoing_message::OutgoingMessageSender;
 #[tokio::test]
 async fn native_tui_unavailable_marks_controller_launch_terminal() {
     let (outgoing_tx, _outgoing_rx) = mpsc::channel(/*buffer*/ 4);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        AnalyticsEventsClient::disabled(),
+    ));
     let approval_calls = Arc::new(AtomicUsize::new(0));
     let approval_calls_for_closure = Arc::clone(&approval_calls);
     let processor = ControllerRequestProcessor::new(
-        Arc::new(OutgoingMessageSender::new(
-            outgoing_tx,
-            AnalyticsEventsClient::disabled(),
-        )),
+        Arc::clone(&outgoing),
         Arc::new(EmptyControllerEnrollmentSource),
         Some(Arc::new(move |_request| {
             approval_calls_for_closure.fetch_add(/*val*/ 1, Ordering::Relaxed);
@@ -46,6 +49,13 @@ async fn native_tui_unavailable_marks_controller_launch_terminal() {
     let controller_connection_id = ConnectionId(2);
     let main_thread_id = ThreadId::new();
     processor.register_main_thread(main_thread_id, tui_connection_id);
+    let (_prompt_request_id, mut wait_for_prompt) = outgoing
+        .send_request_to_connections(
+            Some(&[controller_connection_id]),
+            command_execution_approval_payload(main_thread_id),
+            Some(main_thread_id),
+        )
+        .await;
 
     let first_error = processor
         .request_participation(
@@ -105,6 +115,36 @@ async fn native_tui_unavailable_marks_controller_launch_terminal() {
         ControllerRetryDisposition::DoNotRetry,
         Some(ControllerLaunchState::TuiUnavailable),
     );
+
+    assert_eq!(
+        processor.thread_notification_recipients(
+            main_thread_id,
+            vec![tui_connection_id, controller_connection_id],
+        ),
+        Vec::<ConnectionId>::new(),
+        "terminal TUI-unavailable launch should stop main-thread notifications"
+    );
+    let prompt_error = tokio::time::timeout(Duration::from_secs(/*secs*/ 1), &mut wait_for_prompt)
+        .await
+        .expect("pending prompt should fail after terminal TUI-unavailable")
+        .expect("pending prompt waiter should receive cancellation")
+        .expect_err("pending prompt should receive TUI-unavailable error");
+    assert_controller_error(
+        prompt_error,
+        ControllerErrorCode::TuiUnavailable,
+        ControllerRetryDisposition::DoNotRetry,
+        Some(ControllerLaunchState::TuiUnavailable),
+    );
+
+    let other_thread_id = ThreadId::new();
+    assert_eq!(
+        processor.thread_notification_recipients(
+            other_thread_id,
+            vec![tui_connection_id, controller_connection_id],
+        ),
+        vec![tui_connection_id, controller_connection_id],
+        "terminal TUI-unavailable launch should not affect unrelated threads"
+    );
 }
 
 fn participation_params() -> ControllerRequestParticipationParams {
@@ -112,6 +152,26 @@ fn participation_params() -> ControllerRequestParticipationParams {
         controller_name: "codex-waveshare".to_string(),
         description: "external test controller".to_string(),
     }
+}
+
+fn command_execution_approval_payload(thread_id: ThreadId) -> ServerRequestPayload {
+    ServerRequestPayload::CommandExecutionRequestApproval(CommandExecutionRequestApprovalParams {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-1".to_string(),
+        item_id: "item-1".to_string(),
+        started_at_ms: 0,
+        approval_id: None,
+        environment_id: None,
+        reason: None,
+        network_approval_context: None,
+        command: Some("echo hi".to_string()),
+        cwd: None,
+        command_actions: None,
+        additional_permissions: None,
+        proposed_execpolicy_amendment: None,
+        proposed_network_policy_amendments: None,
+        available_decisions: None,
+    })
 }
 
 fn assert_controller_error(

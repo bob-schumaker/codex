@@ -335,11 +335,16 @@ pub(super) async fn ensure_listener_task_running(
                         conversation_id,
                         subscribed_connection_ids.clone(),
                     );
+                    let notification_connection_ids =
+                        controller_processor.thread_notification_recipients(
+                            conversation_id,
+                            subscribed_connection_ids,
+                        );
                     let thread_outgoing =
                         ThreadScopedOutgoingMessageSender::new_with_request_recipients(
                             outgoing_for_task.clone(),
                             request_recipients,
-                            subscribed_connection_ids,
+                            notification_connection_ids,
                             conversation_id,
                         );
 
