@@ -167,6 +167,7 @@ impl ControllerRequestProcessor {
                     ))
                 }
                 NativeControllerParticipationDecision::TuiUnavailable { reason } => {
+                    self.mark_tui_unavailable();
                     Err(tui_unavailable(reason))
                 }
             };
@@ -501,6 +502,22 @@ impl ControllerRequestProcessor {
             return;
         }
         self.rebind_pending_prompts(rebind).await;
+    }
+
+    fn mark_tui_unavailable(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.launch_state = ControllerLaunchState::TuiUnavailable;
+        if let Some(coordinator) = state.coordinator.as_mut()
+            && let Err(err) = coordinator.mark_tui_unavailable()
+        {
+            tracing::debug!(
+                error = ?err,
+                "failed to mark controller launch TUI-unavailable"
+            );
+        }
     }
 
     async fn authorize_server_request_resolution(
@@ -1024,3 +1041,7 @@ fn controller_error(message: &str, data: ControllerErrorData) -> JSONRPCErrorErr
         data: Some(serde_json::to_value(data).unwrap_or(serde_json::Value::Null)),
     }
 }
+
+#[cfg(test)]
+#[path = "controller_processor_tests.rs"]
+mod tests;
