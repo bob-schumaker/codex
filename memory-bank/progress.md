@@ -26,14 +26,19 @@
 - After `controller/signOff` starts final-response teardown, subsequent
   external-controller ingress on that same connection is rejected with typed
   `transport-closing` while the final response flushes and the socket closes.
+- `controller/signOff` now requires an existing standing controller session
+  before revocation, and successful sign-off immediately unsubscribes the
+  external-controller connection from the TUI main thread before final
+  response/disconnect teardown continues.
 - External-controller `thread/resume` now remains `ExactThread + ActiveOwner`
   for main-thread rejoin, but controller-origin history, path, configuration,
   instruction, approval, sandbox, permission, and personality overrides are
   rejected before handler dispatch.
 - The current branch head includes coherent Codex-side commits through
-  `d417542` for launch metadata publication, native approval coverage, exact
+  `729520b` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, and backpressure-
-  aware sign-off teardown with ingress fencing and resume-override gating.
+  aware sign-off teardown with ingress fencing, resume-override gating, and
+  sign-off subscription cleanup.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -52,7 +57,8 @@
 - Codex app-server should explicitly validate remaining server-side binding for
   cursors, subscriptions, implicit targets, and prompt responses across
   ownership changes. Controller-origin `thread/resume` override fields now have
-  a pre-dispatch gate.
+  a pre-dispatch gate, and sign-off now cleans up the controller's main-thread
+  subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -76,7 +82,8 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
-- Continue validating collection continuation behavior: cursors and
-  subscriptions still need explicit connection/main-thread binding coverage.
+- Continue validating collection continuation behavior: cursors and long-lived
+  subscriptions still need explicit connection/main-thread binding coverage
+  beyond the committed sign-off cleanup.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.

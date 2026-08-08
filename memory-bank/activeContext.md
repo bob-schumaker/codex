@@ -69,9 +69,19 @@
     `just test -p codex-app-server controller_thread_resume_allows_read_shape_params_only`
     and
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
+  - Tightened `controller/signOff` so it requires an existing standing
+    controller session before revocation.
+  - After successful `controller/signOff`, the external-controller connection
+    is immediately unsubscribed from the TUI main thread before the final
+    response/disconnect teardown continues.
+  - Validated the sign-off authorization and subscription cleanup with
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`
+    and
+    `just test -p codex-app-server controller_participation_rejects_unproven_display_claims`.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
-    continuations, subscriptions, and remaining prompt/egress transactionality.
+    continuations, cursor/subscription binding beyond sign-off cleanup, and
+    remaining prompt/egress transactionality.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -82,7 +92,7 @@
 
 - Keep tightening app-server normal-interface parity around cursors,
   subscriptions, implicit targets, and prompt/egress transactionality beyond the
-  committed sign-off close path and resume-override gate.
+  committed sign-off close/subscription cleanup path and resume-override gate.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
