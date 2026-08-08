@@ -98,6 +98,7 @@ mod config_manager_service;
 mod connection_cleanup;
 mod connection_rpc_gate;
 mod controller_admission;
+mod controller_cursor;
 mod controller_enrollment;
 mod controller_native_approval;
 mod controller_session;

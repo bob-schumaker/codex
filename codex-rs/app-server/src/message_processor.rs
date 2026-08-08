@@ -14,6 +14,8 @@ use crate::controller_admission::TargetExtraction;
 use crate::controller_admission::admit_initialized_client_request;
 use crate::controller_admission::controller_not_allowed;
 use crate::controller_admission::controller_transport_closing;
+use crate::controller_cursor::bind_controller_response_cursors;
+use crate::controller_cursor::unbind_controller_request_cursors;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
@@ -1109,7 +1111,7 @@ impl MessageProcessor {
             connection_request_id,
             connection_origin,
             admission_rule,
-            codex_request,
+            mut codex_request,
             session,
             request_context,
             app_server_client_name,
@@ -1131,6 +1133,11 @@ impl MessageProcessor {
                     .authorize_normal_request(connection_id, admission_rule, target)
                     .await?;
                 reject_controller_tui_only_params(&codex_request)?;
+                unbind_controller_request_cursors(
+                    &mut codex_request,
+                    connection_id,
+                    &authorization,
+                )?;
                 Some(authorization)
             } else {
                 None
@@ -1245,27 +1252,34 @@ impl MessageProcessor {
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ControllerSignOff { .. } => {
-                let authorization = self
-                    .controller_processor
-                    .authorize_normal_request(
-                        connection_id,
-                        admission_rule,
-                        ControllerRequestTarget::None,
-                    )
-                    .await?;
-                let response = self
-                    .controller_processor
-                    .sign_off(connection_id, connection_origin)
-                    .await?;
-                self.thread_processor
-                    .thread_unsubscribe(
-                        &request_id,
-                        codex_app_server_protocol::ThreadUnsubscribeParams {
-                            thread_id: authorization.main_thread_id,
-                        },
-                    )
-                    .await?;
-                Ok(Some(response.into()))
+                if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
+                    self.controller_processor
+                        .sign_off(connection_id, connection_origin)
+                        .await
+                        .map(|response| Some(response.into()))
+                } else {
+                    let authorization = self
+                        .controller_processor
+                        .authorize_normal_request(
+                            connection_id,
+                            admission_rule,
+                            ControllerRequestTarget::None,
+                        )
+                        .await?;
+                    let response = self
+                        .controller_processor
+                        .sign_off(connection_id, connection_origin)
+                        .await?;
+                    self.thread_processor
+                        .thread_unsubscribe(
+                            &request_id,
+                            codex_app_server_protocol::ThreadUnsubscribeParams {
+                                thread_id: authorization.main_thread_id,
+                            },
+                        )
+                        .await?;
+                    Ok(Some(response.into()))
+                }
             }
             ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor
@@ -1779,6 +1793,16 @@ impl MessageProcessor {
                 self.feedback_processor.feedback_upload(params).await
             }
         };
+
+        let result = result.and_then(|response| {
+            let Some(mut response) = response else {
+                return Ok(None);
+            };
+            if let Some(authorization) = controller_authorization.as_ref() {
+                bind_controller_response_cursors(&mut response, connection_id, authorization)?;
+            }
+            Ok(Some(response))
+        });
 
         match result {
             Ok(Some(response)) => {
