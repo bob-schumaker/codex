@@ -217,6 +217,11 @@
     collection-filtered cursor binding, prompt owner-epoch binding,
     current-time owner routing, resume/turn override gating, internally-sent
     resume cursor binding, or idempotent acquire.
+  - Source inspection found the next concrete gap: the protocol defines
+    experimental `controller/authorizationChanged` and
+    `controller/controlOwnershipChanged` notifications, and the spec requires
+    ownership/status notifications, but app-server currently has no emission
+    sites for those notifications.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -231,6 +236,9 @@
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
   current-time owner routing, resume/turn override gates, and internally-sent
   resume cursor binding, plus terminal TUI-unavailable launch handling.
+- Implement controller authorization/ownership control-plane notifications from
+  the controller-session transition boundary, including correct reason,
+  session snapshot, owner epoch, session sequence, and ordered emission.
 - Treat the source tree as ready for the next narrow implementation slice after
   commit `dc3d3a5`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.

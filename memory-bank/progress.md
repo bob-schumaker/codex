@@ -111,6 +111,11 @@
   cursor-binding, internally-sent resume cursor binding, and owner-binding
   work. There is no known uncommitted Codex-side source diff in this
   checkpoint.
+- Source inspection identified a concrete remaining Codex-side gap: protocol
+  DTOs and docs exist for `controller/authorizationChanged` and
+  `controller/controlOwnershipChanged`, but app-server does not currently emit
+  those notifications on participation, acquire/release, TUI reclaim, expiry,
+  sign-off, disconnect, main-thread close, or TUI-unavailable transitions.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -128,6 +133,10 @@
   launch and fences main-thread egress. Unexpected controller disconnect now
   revokes ownership, rebinds pre-delivery prompts, and removes the controller's
   main-thread subscription before RPC drain.
+- Codex app-server should implement ordered controller authorization and
+  ownership notifications from the session transition boundary rather than
+  ad-hoc handler emission, so reason, session snapshot, owner epoch, and session
+  sequence stay coherent.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
