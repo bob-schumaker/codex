@@ -1244,11 +1244,29 @@ impl MessageProcessor {
                 .release_control(connection_id, connection_origin)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ControllerSignOff { .. } => self
-                .controller_processor
-                .sign_off(connection_id, connection_origin)
-                .await
-                .map(|response| Some(response.into())),
+            ClientRequest::ControllerSignOff { .. } => {
+                let authorization = self
+                    .controller_processor
+                    .authorize_normal_request(
+                        connection_id,
+                        admission_rule,
+                        ControllerRequestTarget::None,
+                    )
+                    .await?;
+                let response = self
+                    .controller_processor
+                    .sign_off(connection_id, connection_origin)
+                    .await?;
+                self.thread_processor
+                    .thread_unsubscribe(
+                        &request_id,
+                        codex_app_server_protocol::ThreadUnsubscribeParams {
+                            thread_id: authorization.main_thread_id,
+                        },
+                    )
+                    .await?;
+                Ok(Some(response.into()))
+            }
             ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor
                 .config_requirements_read()

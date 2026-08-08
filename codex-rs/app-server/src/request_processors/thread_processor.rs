@@ -3112,6 +3112,35 @@ impl ThreadRequestProcessor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn subscribed_connection_ids_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ConnectionId> {
+        self.thread_state_manager
+            .subscribed_connection_ids(thread_id)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn subscribe_test_connection_for_thread(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) {
+        self.thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        self.thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("test connection should be live");
+    }
+
     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
         self.thread_watch_manager.subscribe_running_turn_count()
     }

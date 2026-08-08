@@ -904,25 +904,32 @@ fn controller_thread_resume_with_history_request(
     ClientRequest::ThreadResume {
         request_id: RequestId::Integer(request_id),
         params: ThreadResumeParams {
-            thread_id: thread_id.into(),
             history: Some(Vec::new()),
-            path: None,
-            model: None,
-            model_provider: None,
-            service_tier: None,
-            cwd: None,
-            runtime_workspace_roots: None,
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox: None,
-            permissions: None,
-            config: None,
-            base_instructions: None,
-            developer_instructions: None,
-            personality: None,
-            exclude_turns: false,
-            initial_turns_page: None,
+            ..controller_thread_resume_params(thread_id)
         },
+    }
+}
+
+fn controller_thread_resume_params(thread_id: impl Into<String>) -> ThreadResumeParams {
+    ThreadResumeParams {
+        thread_id: thread_id.into(),
+        history: None,
+        path: None,
+        model: None,
+        model_provider: None,
+        service_tier: None,
+        cwd: None,
+        runtime_workspace_roots: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox: None,
+        permissions: None,
+        config: None,
+        base_instructions: None,
+        developer_instructions: None,
+        personality: None,
+        exclude_turns: false,
+        initial_turns_page: None,
     }
 }
 
@@ -1176,6 +1183,20 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             );
 
             let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(main_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
             let (approval_request_id, wait_for_approval) = harness
                 .processor
                 .outgoing
@@ -1624,6 +1645,14 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 signoff_request_id,
             )
             .await;
+            assert!(
+                !harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
             harness
                 .processor
                 .process_response(
@@ -1705,12 +1734,31 @@ fn controller_participation_rejects_unproven_display_claims() -> Result<()> {
             let started = harness
                 .start_thread(/*request_id*/ 41_002, /*trace*/ None)
                 .await;
+            let unapproved_signoff = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(/*request_id*/ 41_003, "controller/signOff"),
+                )
+                .await;
+            let unapproved_signoff_data: ControllerErrorData = serde_json::from_value(
+                unapproved_signoff
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                unapproved_signoff_data.code,
+                ControllerErrorCode::ParticipationRequired
+            );
+
             let rejected: ControllerRequestParticipationResponse = harness
                 .request_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     external_session,
-                    controller_participation_request(/*request_id*/ 41_003),
+                    controller_participation_request(/*request_id*/ 41_004),
                 )
                 .await;
 

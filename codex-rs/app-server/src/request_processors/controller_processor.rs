@@ -305,6 +305,9 @@ impl ControllerRequestProcessor {
     ) -> Result<ControllerSignOffResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
         let (response, rebind) = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator
+                .require_standing_session(connection_id)
+                .map_err(controller_session_error)?;
             coordinator.revoke_session(connection_id);
             Ok(ControllerSignOffResponse {})
         })?;
