@@ -1,9 +1,11 @@
-//! Durable controller-enrollment verification boundary.
+//! Optional host-provided controller-enrollment verification boundary.
 //!
-//! The local endpoint and public controller RPCs are not wired yet. This module
-//! keeps the product decision separate from transport: display claims are never
-//! authority, and a verified durable record must be proven by the live
-//! connection before a controller session grant is created.
+//! The embedded local-controller path does not require durable enrollment
+//! records or client credentials; it uses native TUI approval to create a live,
+//! connection-bound grant for one launch and main thread. This verifier remains
+//! isolated for host-provided credential flows: display claims are never
+//! authority, and any verified record must be bound to the live connection
+//! before a controller session grant is created.
 #![allow(dead_code)]
 
 use std::sync::Arc;

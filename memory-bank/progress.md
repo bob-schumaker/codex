@@ -9,10 +9,13 @@
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
   `$CODEX_HOME/local-controllers`, not generic Codex hooks or Herdr metadata.
+- In-process local-controller socket coverage now exercises the native TUI
+  approval path rather than durable enrollment test credentials.
 
 ## In Flight
 
-- Documentation/memory corpus cleanup for the external-controller work.
+- Downstream controller-host discovery and display behavior for all live Codex
+  launches, including non-Herdr launches.
 
 ## Remaining
 
@@ -35,3 +38,5 @@
 - The implementation plan must continue to avoid durable enrollment or reusable
   controller credentials unless a future design explicitly changes that
   decision.
+- Keep Codex native local-controller tests on the TUI approval path so stale
+  credential-enrollment assumptions do not mask launch behavior regressions.

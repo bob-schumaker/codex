@@ -1,7 +1,7 @@
 # Active Context
 
-- Current focus: external-controller spec consistency, local-controller
-  discovery semantics, and downstream display correctness.
+- Current focus: native local-controller approval parity in Codex and downstream
+  controller discovery/display follow-up.
 
 ## Current Status
 
@@ -16,15 +16,23 @@
     connection-bound participation grants.
   - Added repository-local memory-bank guidance through `AGENTS.local.md`.
   - Initialized `memory-bank/`.
+  - Converted the in-process local-controller socket parity test to use the
+    native TUI approval path instead of credential-enrollment test plumbing.
+  - Updated stale controller-enrollment module commentary so it no longer claims
+    the local endpoint/RPC path is unwired.
+  - Validated the focused app-server local-controller tests with
+    `just test -p codex-app-server local_controller`.
 - In progress:
-  - Commit the consistent spec and memory-bank corpus.
-- Not started:
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
+- Not started:
+  - Downstream acceptance rerun across multiple live Codex launches after the
+    controller host consumes the metadata-directory discovery contract.
 
 ## Next Steps
 
-- Review and commit the documentation and memory-bank changes.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
+- Rerun the downstream multi-launch controller smoke once the downstream host
+  work is in place.

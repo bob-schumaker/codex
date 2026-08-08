@@ -1343,8 +1343,6 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller_enrollment::ControllerEnrollmentRecord;
-    use crate::controller_enrollment::ControllerEnrollmentSource;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ControllerAcquireControlResponse;
@@ -1369,7 +1367,6 @@ mod tests {
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
-    use codex_protocol::ThreadId;
     #[cfg(unix)]
     use futures::SinkExt;
     #[cfg(unix)]
@@ -1378,7 +1375,6 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
-    use std::sync::RwLock;
     use tempfile::TempDir;
     #[cfg(unix)]
     use tokio::net::UnixStream;
@@ -1468,49 +1464,6 @@ mod tests {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
     }
 
-    #[derive(Default)]
-    struct TestControllerEnrollmentSource {
-        records: RwLock<HashMap<String, ControllerEnrollmentRecord>>,
-    }
-
-    impl TestControllerEnrollmentSource {
-        fn insert(&self, record: ControllerEnrollmentRecord) {
-            self.records
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(record.subject_id.clone(), record);
-        }
-    }
-
-    impl ControllerEnrollmentSource for TestControllerEnrollmentSource {
-        fn enrollment_for(&self, subject_id: &str) -> Option<ControllerEnrollmentRecord> {
-            self.records
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(subject_id)
-                .cloned()
-        }
-    }
-
-    fn controller_proof(connection_id: ConnectionId) -> ControllerCredentialProof {
-        ControllerCredentialProof {
-            subject_id: "controller-subject".to_string(),
-            credential_fingerprint: "credential-fingerprint".to_string(),
-            connection_id,
-        }
-    }
-
-    fn controller_record(main_thread_id: ThreadId) -> ControllerEnrollmentRecord {
-        ControllerEnrollmentRecord {
-            subject_id: "controller-subject".to_string(),
-            credential_fingerprint: "credential-fingerprint".to_string(),
-            main_thread_id,
-            authorization_epoch: 7,
-            revocation_epoch: 6,
-            expires_at: std::time::Instant::now() + Duration::from_secs(60),
-        }
-    }
-
     #[cfg(unix)]
     async fn connect_local_controller_websocket(
         metadata: &LocalControllerEndpointMetadata,
@@ -1534,6 +1487,48 @@ mod tests {
             .await
             .expect("local-controller websocket should upgrade")
             .0
+    }
+
+    #[cfg(unix)]
+    async fn approve_next_native_controller_participation(
+        client: &mut InProcessClientHandle,
+        expected_controller_name: &str,
+        expected_description: &str,
+        expected_main_thread_id: &str,
+    ) {
+        let native_request = timeout(Duration::from_secs(2), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("event stream should stay open")
+                {
+                    InProcessServerEvent::ControllerParticipationRequest(native_request) => {
+                        break native_request;
+                    }
+                    InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("native participation request should arrive before timeout");
+        assert_eq!(
+            *native_request,
+            InProcessControllerParticipationRequest {
+                request_id: native_request.request_id,
+                controller_name: expected_controller_name.to_string(),
+                description: expected_description.to_string(),
+                main_thread_id: expected_main_thread_id.to_string(),
+            }
+        );
+        client
+            .respond_to_controller_participation_request(
+                native_request.request_id,
+                NativeControllerParticipationDecision::Approved,
+            )
+            .expect("native participation response should send");
     }
 
     #[cfg(unix)]
@@ -1863,40 +1858,13 @@ mod tests {
             },
         )
         .await;
-
-        let native_request = timeout(Duration::from_secs(2), async {
-            loop {
-                match client
-                    .next_event()
-                    .await
-                    .expect("event stream should stay open")
-                {
-                    InProcessServerEvent::ControllerParticipationRequest(native_request) => {
-                        break native_request;
-                    }
-                    InProcessServerEvent::ServerRequest(_)
-                    | InProcessServerEvent::ServerNotification(_)
-                    | InProcessServerEvent::Lagged { .. } => {}
-                }
-            }
-        })
-        .await
-        .expect("native participation request should arrive before timeout");
-        assert_eq!(
-            *native_request,
-            InProcessControllerParticipationRequest {
-                request_id: native_request.request_id,
-                controller_name: "codex-waveshare".to_string(),
-                description: "external test controller".to_string(),
-                main_thread_id: started.thread.id.clone(),
-            }
-        );
-        client
-            .respond_to_controller_participation_request(
-                native_request.request_id,
-                NativeControllerParticipationDecision::Approved,
-            )
-            .expect("native participation response should send");
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
 
         let participation: ControllerRequestParticipationResponse =
             read_websocket_response(&mut websocket, /*expected_id*/ 20_102).await;
@@ -1920,8 +1888,7 @@ mod tests {
     #[tokio::test]
     async fn local_controller_socket_uses_main_thread_interface_and_tui_reclaim() {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
-        let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
-        let mut args = build_test_start_args(
+        let args = build_test_start_args(
             codex_home.path(),
             SessionSource::Cli,
             DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -1930,8 +1897,6 @@ mod tests {
             },
         )
         .await;
-        args.controller_enrollment_source = enrollment_source.clone();
-        args.controller_credential_proof_factory = Some(Arc::new(controller_proof));
         let mut client = start(args)
             .await
             .expect("local-controller startup should succeed");
@@ -1948,9 +1913,6 @@ mod tests {
                 .expect("thread/start should succeed"),
         )
         .expect("thread/start response should parse");
-        let main_thread_id =
-            ThreadId::from_string(&started.thread.id).expect("thread id should parse");
-        enrollment_source.insert(controller_record(main_thread_id));
 
         let metadata = client
             .local_controller_endpoint()
@@ -1986,6 +1948,14 @@ mod tests {
             },
         )
         .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+
         let participation: ControllerRequestParticipationResponse =
             read_websocket_response(&mut websocket, /*expected_id*/ 20_002).await;
         assert_eq!(
