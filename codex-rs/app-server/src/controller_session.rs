@@ -278,6 +278,25 @@ impl ControllerSessionCoordinator {
         &mut self,
         connection_id: ConnectionId,
     ) -> Result<ProtocolControllerSession, ControllerSessionError> {
+        let now = self.clock.now();
+        let authorization_expired = self.connection_authorization_expired(connection_id, now);
+        self.expire_deadlines_at(now);
+        if authorization_expired {
+            return Err(ControllerSessionError::AuthorizationExpired);
+        }
+        self.require_live_session(connection_id, now)?;
+        if matches!(
+            self.owner,
+            InteractiveOwner::ControllerOwned {
+                connection_id: owner_connection_id,
+                ..
+            } if owner_connection_id == connection_id
+        ) {
+            return self
+                .protocol_session(connection_id)
+                .ok_or(ControllerSessionError::ParticipationRequired);
+        }
+
         let transfer = self.begin_transfer_to_controller(connection_id)?;
         self.complete_transfer_to_controller(transfer)
     }

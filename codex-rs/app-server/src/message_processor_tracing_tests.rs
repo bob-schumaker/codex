@@ -1081,7 +1081,29 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             );
             let approved_session = participation.session.expect("approved session");
             assert_eq!(approved_session.main_thread_id, started.thread.id);
-            assert!(approved_session.active_lease.is_some());
+            let approved_lease = approved_session
+                .active_lease
+                .clone()
+                .expect("approved session should include an active lease");
+
+            let already_acquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_019,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert_eq!(already_acquired.session.active_lease, Some(approved_lease));
+            assert!(
+                already_acquired
+                    .session
+                    .effective_capabilities
+                    .mutate_main_thread
+            );
 
             let released: ControllerReleaseControlResponse = harness
                 .request_for_connection(

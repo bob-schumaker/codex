@@ -74,6 +74,10 @@ fn ownership_lifecycle_preserves_standing_authorization() {
         owner_session.authorization_expires_in_ms,
         Some(ms(AUTHORIZATION_DURATION))
     );
+    let already_acquired = coordinator
+        .acquire_control(controller)
+        .expect("active owner acquire should return the current session");
+    assert_eq!(already_acquired, owner_session);
 
     let observer_session = coordinator
         .request_participation(observer, grant(&clock, main_thread_id, /*epoch*/ 4))
