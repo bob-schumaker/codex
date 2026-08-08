@@ -46,13 +46,15 @@
     in isolation, so that fixture remains unhealthy independently of this
     controller change.
   - Implemented ordered `controller/signOff` transport teardown: successful
-    sign-off now sends the JSON-RPC response, waits for the final write, then
+    sign-off now waits for the final response to queue and write, then
     disconnects the controller socket.
   - Validated sign-off teardown with focused app-server tests:
     `just test -p codex-app-server to_connection_then_disconnect_waits_for_final_write`,
     `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim`,
     and
     `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
+  - Added backpressure coverage so a full outbound writer queue does not drop
+    the final sign-off response before disconnecting.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
     continuations, subscriptions, resume tokens, and remaining prompt/egress
