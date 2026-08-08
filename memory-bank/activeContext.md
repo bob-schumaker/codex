@@ -102,10 +102,18 @@
   - Validated the idempotent-acquire slice with
     `just test -p codex-app-server ownership_lifecycle_preserves_standing_authorization controller_control_plane_round_trips_after_enrollment`
     and `just test -p codex-app-server controller` passing 47/47 tests.
+  - Bound controller prompt/server-request replies to the owner epoch captured
+    when the prompt is delivered to the external controller, so a stale reply
+    from the same controller after release/reacquire no longer resolves the
+    old prompt under a new lease.
+  - Validated the prompt owner-epoch binding with
+    `just test -p codex-app-server controller_prompt_response_is_bound_to_owner_epoch controller_control_plane_round_trips_after_enrollment`
+    and `just test -p codex-app-server controller` passing 48/48 tests.
 - In progress:
   - Selecting the next small Codex-side parity slice around remaining
-    implicit targets, prompt/egress transactionality, and any server-bound
-    subscription edges not covered by sign-off or authorization-expiry cleanup.
+    implicit targets, current-time/direct server requests, remaining egress
+    transactionality, and any server-bound subscription edges not covered by
+    sign-off or authorization-expiry cleanup.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -115,9 +123,10 @@
 ## Next Steps
 
 - Keep tightening app-server normal-interface parity around implicit targets,
-  prompt/egress transactionality, and any remaining subscription edges beyond
-  the committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
-  idempotent acquire, and resume-override gates.
+  current-time/direct server requests, remaining egress transactionality, and
+  any subscription edges beyond the committed cursor-binding, sign-off cleanup,
+  authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
+  and resume-override gates.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
