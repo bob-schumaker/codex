@@ -3,6 +3,7 @@ use crate::controller_admission::client_request_rule;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::McpResourceReadParams;
+use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -12,7 +13,10 @@ use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSectionListParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::TurnInterruptParams;
+use codex_protocol::config_types::Personality;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[test]
 fn thread_resume_extracts_exact_controller_thread_target() {
@@ -20,30 +24,80 @@ fn thread_resume_extracts_exact_controller_thread_target() {
     assert_exact_thread_target(
         ClientRequest::ThreadResume {
             request_id: RequestId::Integer(1),
-            params: ThreadResumeParams {
-                thread_id: thread_id.clone(),
-                history: None,
-                path: None,
-                model: None,
-                model_provider: None,
-                service_tier: None,
-                cwd: None,
-                runtime_workspace_roots: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox: None,
-                permissions: None,
-                config: None,
-                base_instructions: None,
-                developer_instructions: None,
-                personality: None,
-                exclude_turns: false,
-                initial_turns_page: None,
-            },
+            params: safe_thread_resume_params(thread_id.clone()),
         },
         "thread/resume",
         &thread_id,
     );
+}
+
+#[test]
+fn controller_thread_resume_allows_read_shape_params_only() {
+    let mut safe_params = safe_thread_resume_params("thread-1");
+    safe_params.exclude_turns = true;
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ThreadResume {
+            request_id: RequestId::Integer(11),
+            params: safe_params,
+        }),
+        Ok(())
+    );
+
+    let unsafe_params = [
+        unsafe_thread_resume_params("history", |params| params.history = Some(Vec::new())),
+        unsafe_thread_resume_params("path", |params| {
+            params.path = Some(PathBuf::from("/tmp/thread.jsonl"));
+        }),
+        unsafe_thread_resume_params("model", |params| {
+            params.model = Some("gpt-test".to_string())
+        }),
+        unsafe_thread_resume_params("model_provider", |params| {
+            params.model_provider = Some("provider".to_string());
+        }),
+        unsafe_thread_resume_params("service_tier", |params| params.service_tier = Some(None)),
+        unsafe_thread_resume_params("cwd", |params| params.cwd = Some("/tmp".to_string())),
+        unsafe_thread_resume_params("runtime_workspace_roots", |params| {
+            params.runtime_workspace_roots = Some(Vec::new());
+        }),
+        unsafe_thread_resume_params("approval_policy", |params| {
+            params.approval_policy = Some(codex_app_server_protocol::AskForApproval::Never);
+        }),
+        unsafe_thread_resume_params("approvals_reviewer", |params| {
+            params.approvals_reviewer = Some(codex_app_server_protocol::ApprovalsReviewer::User);
+        }),
+        unsafe_thread_resume_params("sandbox", |params| {
+            params.sandbox = Some(SandboxMode::ReadOnly);
+        }),
+        unsafe_thread_resume_params("permissions", |params| {
+            params.permissions = Some("read-only".to_string());
+        }),
+        unsafe_thread_resume_params("config", |params| params.config = Some(HashMap::new())),
+        unsafe_thread_resume_params("base_instructions", |params| {
+            params.base_instructions = Some("base".to_string());
+        }),
+        unsafe_thread_resume_params("developer_instructions", |params| {
+            params.developer_instructions = Some("developer".to_string());
+        }),
+        unsafe_thread_resume_params("personality", |params| {
+            params.personality = Some(Personality::Pragmatic);
+        }),
+    ];
+
+    for (field_name, params) in unsafe_params {
+        let error = reject_controller_tui_only_params(&ClientRequest::ThreadResume {
+            request_id: RequestId::Integer(12),
+            params,
+        })
+        .expect_err("unsafe controller thread/resume params should be rejected");
+        let data: ControllerErrorData =
+            serde_json::from_value(error.data.expect("controller error should include data"))
+                .expect("controller error data should deserialize");
+        assert_eq!(
+            data.code,
+            ControllerErrorCode::ControllerNotAllowed,
+            "{field_name} must stay TUI-only for external-controller thread/resume"
+        );
+    }
 }
 
 #[test]
@@ -260,4 +314,36 @@ fn rule(required_authority: RequiredAuthority) -> AdmissionRule {
         target: TargetExtraction::ExactThread,
         required_authority,
     }
+}
+
+fn safe_thread_resume_params(thread_id: impl Into<String>) -> ThreadResumeParams {
+    ThreadResumeParams {
+        thread_id: thread_id.into(),
+        history: None,
+        path: None,
+        model: None,
+        model_provider: None,
+        service_tier: None,
+        cwd: None,
+        runtime_workspace_roots: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox: None,
+        permissions: None,
+        config: None,
+        base_instructions: None,
+        developer_instructions: None,
+        personality: None,
+        exclude_turns: false,
+        initial_turns_page: None,
+    }
+}
+
+fn unsafe_thread_resume_params(
+    field_name: &'static str,
+    mutate: impl FnOnce(&mut ThreadResumeParams),
+) -> (&'static str, ThreadResumeParams) {
+    let mut params = safe_thread_resume_params("thread-1");
+    mutate(&mut params);
+    (field_name, params)
 }

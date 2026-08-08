@@ -1126,11 +1126,12 @@ impl MessageProcessor {
                 && !codex_request.method_name().starts_with("controller/")
             {
                 let target = controller_request_target(&codex_request, admission_rule)?;
-                Some(
-                    self.controller_processor
-                        .authorize_normal_request(connection_id, admission_rule, target)
-                        .await?,
-                )
+                let authorization = self
+                    .controller_processor
+                    .authorize_normal_request(connection_id, admission_rule, target)
+                    .await?;
+                reject_controller_tui_only_params(&codex_request)?;
+                Some(authorization)
             } else {
                 None
             };
@@ -1851,6 +1852,35 @@ fn thread_collection_scope(
         .filter(|authorization| authorization.filter_collection_to_main_thread)
         .map(|authorization| ThreadListScope::SingleThread(authorization.main_thread_id.clone()))
         .unwrap_or(ThreadListScope::All)
+}
+
+fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSONRPCErrorError> {
+    let ClientRequest::ThreadResume { params, .. } = request else {
+        return Ok(());
+    };
+
+    if params.history.is_none()
+        && params.path.is_none()
+        && params.model.is_none()
+        && params.model_provider.is_none()
+        && params.service_tier.is_none()
+        && params.cwd.is_none()
+        && params.runtime_workspace_roots.is_none()
+        && params.approval_policy.is_none()
+        && params.approvals_reviewer.is_none()
+        && params.sandbox.is_none()
+        && params.permissions.is_none()
+        && params.config.is_none()
+        && params.base_instructions.is_none()
+        && params.developer_instructions.is_none()
+        && params.personality.is_none()
+    {
+        return Ok(());
+    }
+
+    Err(controller_not_allowed(
+        "external controller thread/resume may only rejoin the authorized main thread without history, path, or configuration overrides",
+    ))
 }
 
 fn primary_input_reclaim_thread_id(

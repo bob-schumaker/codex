@@ -39,6 +39,7 @@ use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -896,6 +897,35 @@ fn controller_turn_start_request(request_id: i64, thread_id: impl Into<String>) 
     }
 }
 
+fn controller_thread_resume_with_history_request(
+    request_id: i64,
+    thread_id: impl Into<String>,
+) -> ClientRequest {
+    ClientRequest::ThreadResume {
+        request_id: RequestId::Integer(request_id),
+        params: ThreadResumeParams {
+            thread_id: thread_id.into(),
+            history: Some(Vec::new()),
+            path: None,
+            model: None,
+            model_provider: None,
+            service_tier: None,
+            cwd: None,
+            runtime_workspace_roots: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox: None,
+            permissions: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            personality: None,
+            exclude_turns: false,
+            initial_turns_page: None,
+        },
+    }
+}
+
 fn command_execution_approval_payload(thread_id: impl Into<String>) -> ServerRequestPayload {
     ServerRequestPayload::CommandExecutionRequestApproval(CommandExecutionRequestApprovalParams {
         thread_id: thread_id.into(),
@@ -1126,6 +1156,24 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 .await;
             assert!(reacquired.session.active_lease.is_some());
             assert!(reacquired.session.effective_capabilities.mutate_main_thread);
+
+            let unsafe_resume = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_resume_with_history_request(
+                        /*request_id*/ 40_050,
+                        started.thread.id.clone(),
+                    ),
+                )
+                .await;
+            let unsafe_resume_data: ControllerErrorData =
+                serde_json::from_value(unsafe_resume.error.data.expect("typed controller error"))?;
+            assert_eq!(
+                unsafe_resume_data.code,
+                ControllerErrorCode::ControllerNotAllowed
+            );
 
             let main_thread_id = ThreadId::from_string(&started.thread.id)?;
             let (approval_request_id, wait_for_approval) = harness
