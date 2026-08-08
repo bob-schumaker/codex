@@ -71,23 +71,29 @@
   launch/coordinator `TuiUnavailable`, does not re-prompt on later
   participation attempts, and rejects normal-interface reads with typed
   `tui-unavailable`.
+- Terminal TUI-unavailable launches now also fence main-thread egress. Pending
+  main-thread server requests are canceled with typed `tui-unavailable`, future
+  main-thread notifications are suppressed for existing subscribers, and
+  unrelated thread notifications continue unchanged.
 - The latest Codex-side implementation commit is
-  `b07f485` for launch metadata publication, native approval coverage, exact
+  `048870c` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
   prompt owner-epoch reply binding, current-time owner routing, and controller
   turn override gating, internal `thread/resume` response cursor binding, plus
-  terminal native TUI-unavailable launch handling.
+  terminal native TUI-unavailable launch handling and main-thread egress
+  fencing.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1189 passed, 1 flaky passed on
   retry, 4 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
   remains a separate fixture health issue outside the controller slice.
-- The latest focused validation for commit `b07f485` is
+- The latest focused validation for commit `048870c` is
   `just test -p codex-app-server native_tui_unavailable_marks_controller_launch_terminal`,
   passing 1/1 focused test, `just test -p codex-app-server controller`, passing
-  57/57 controller tests, and `cargo build -p codex-cli` to rebuild
-  `codex-rs/target/debug/codex`.
+  57/57 controller tests, and `cargo build -p codex-cli -j 4` to rebuild
+  `codex-rs/target/debug/codex` after generated debug build intermediates were
+  cleaned to recover disk space.
 
 ## In Flight
 
@@ -111,7 +117,7 @@
   gates, owner-aware prompt/current-time replies are owner-epoch-bound, and
   sign-off plus authorization expiry now clean up the controller's main-thread
   subscription. Native TUI-unavailable launch state is now terminal for the
-  launch.
+  launch and fences main-thread egress.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -138,8 +144,10 @@
 - Continue validating long-lived subscription behavior; exact-thread and
   collection-filtered pagination cursors now have explicit
   connection/main-thread binding coverage, including internal `thread/resume`
-  response sends, while any remaining subscription work is outside the committed
-  sign-off and authorization-expiry cleanup paths.
+  response sends, while terminal TUI-unavailable now suppresses main-thread
+  notifications for existing subscribers. Any remaining subscription work is
+  outside the committed sign-off, authorization-expiry cleanup, and terminal
+  TUI-unavailable paths.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
