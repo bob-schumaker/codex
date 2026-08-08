@@ -20,9 +20,13 @@
   and dispatch for `thread/list`, `thread/search`, `thread/loaded/list`, and
   `threadSection/list`; controller collection reads are scoped to the immutable
   main thread instead of rejecting or exposing broad runtime state.
+- Successful `controller/signOff` now revokes the controller session, rebinds
+  prompts to the TUI, sends the sign-off response, waits for the final write,
+  and then disconnects the controller socket.
 - The current branch head includes coherent Codex-side commits through
-  `e0a50da` for launch metadata publication, native approval coverage, exact
-  target extraction, TUI reclaim, and collection-filtered reads.
+  `5427ef8` for launch metadata publication, native approval coverage, exact
+  target extraction, TUI reclaim, collection-filtered reads, and sign-off
+  teardown.
 - Focused app-server controller tests pass. The full app-server suite still
   shows zsh-fork timeout failures; the latest run failed the zsh-fork cluster
   even when sampled individually, so that fixture is currently unhealthy outside
@@ -32,7 +36,7 @@
 
 - Codex-side review for the next normal-interface parity slice: continuation
   binding, subscription binding, resume-token binding, and prompt/egress
-  transactionality.
+  transactionality beyond the sign-off close path.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 

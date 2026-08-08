@@ -45,9 +45,18 @@
     current zsh-fork timeout cluster failing. Sampled zsh-fork tests also failed
     in isolation, so that fixture remains unhealthy independently of this
     controller change.
+  - Implemented ordered `controller/signOff` transport teardown: successful
+    sign-off now sends the JSON-RPC response, waits for the final write, then
+    disconnects the controller socket.
+  - Validated sign-off teardown with focused app-server tests:
+    `just test -p codex-app-server to_connection_then_disconnect_waits_for_final_write`,
+    `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim`,
+    and
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`.
 - In progress:
   - Selecting the next small Codex-side parity slice around server-bound
-    continuations, subscriptions, and prompt/egress transactionality.
+    continuations, subscriptions, resume tokens, and remaining prompt/egress
+    transactionality.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -57,7 +66,8 @@
 ## Next Steps
 
 - Keep tightening app-server normal-interface parity around cursors,
-  subscriptions, and prompt/egress transactionality.
+  subscriptions, resume tokens, and prompt/egress transactionality beyond the
+  committed sign-off close path.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
