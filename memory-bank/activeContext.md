@@ -1,8 +1,9 @@
 # Active Context
 
-- Current focus: continue remaining external-controller normal-interface parity
-  checks while downstream controller discovery/display consumes the published
-  local-controller metadata contract.
+- Current focus: hand off the current external-controller checkpoint cleanly:
+  the Codex-side tree is between implementation slices, with remaining review
+  centered on normal-interface parity edges and downstream discovery/display
+  consuming the published local-controller metadata contract.
 
 ## Current Status
 
@@ -122,7 +123,8 @@
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
     covered by sign-off, authorization-expiry cleanup, cursor binding, prompt
-    owner-epoch binding, or current-time owner routing.
+    owner-epoch binding, current-time owner routing, resume-override gating, or
+    idempotent acquire.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -136,6 +138,8 @@
   committed cursor-binding, sign-off cleanup, authorization-expiry cleanup,
   idempotent acquire, prompt owner-epoch binding, current-time owner routing,
   and resume-override gates.
+- Treat the source tree as ready for the next narrow implementation slice; do
+  not assume an in-progress code diff exists.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

@@ -68,9 +68,11 @@
 
 ## In Flight
 
-- Codex-side review for the next normal-interface parity slice: remaining
+- Codex-side selection of the next normal-interface parity slice: remaining
   implicit targets, egress transactionality, and long-lived subscription edges
-  not covered by the committed cleanup and owner-binding work.
+  not covered by the committed cleanup, gating, cursor-binding, and
+  owner-binding work. There is no known uncommitted Codex-side source diff in
+  this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -110,5 +112,7 @@
   pagination cursors now have explicit connection/main-thread binding coverage,
   while any remaining subscription work is outside the committed sign-off and
   authorization-expiry cleanup paths.
+- For the next Codex-side slice, start from source inspection rather than
+  assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
