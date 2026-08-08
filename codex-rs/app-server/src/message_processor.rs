@@ -825,6 +825,9 @@ impl MessageProcessor {
         connection_id: ConnectionId,
         session_state: &ConnectionSessionState,
     ) {
+        self.controller_processor
+            .connection_closed(connection_id)
+            .await;
         if timeout(
             CONNECTION_RPC_DRAIN_TIMEOUT,
             session_state.rpc_gate.shutdown(),
@@ -838,9 +841,6 @@ impl MessageProcessor {
                 "timed out waiting for connection RPCs to drain"
             );
         }
-        self.controller_processor
-            .connection_closed(connection_id)
-            .await;
         self.outgoing.connection_closed(connection_id).await;
         self.fs_processor.connection_closed(connection_id).await;
         self.command_exec_processor

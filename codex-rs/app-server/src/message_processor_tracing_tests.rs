@@ -81,6 +81,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tracing_subscriber::layer::SubscriberExt;
 use wiremock::MockServer;
 
@@ -1982,6 +1983,185 @@ fn controller_prompt_response_is_bound_to_owner_epoch() -> Result<()> {
                     .await
             );
 
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_disconnect_rebinds_prompts_before_rpc_drain() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_disconnect_rebinds_prompts_before_rpc_drain",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 44_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let started = harness
+                .start_thread(/*request_id*/ 44_002, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 44_003),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let request_recipients = harness
+                .processor
+                .controller_processor
+                .prompt_request_recipients(
+                    main_thread_id,
+                    vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                );
+            assert_eq!(
+                request_recipients.connection_ids(),
+                &[EXTERNAL_CONNECTION_ID]
+            );
+            let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                Arc::clone(&harness.processor.outgoing),
+                request_recipients,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                main_thread_id,
+            );
+            let (prompt_request_id, mut wait_for_prompt) = thread_outgoing
+                .send_request(command_execution_approval_payload(
+                    started.thread.id.clone(),
+                ))
+                .await;
+
+            let external_write_complete_tx = loop {
+                let envelope = tokio::time::timeout(
+                    Duration::from_secs(/*secs*/ 5),
+                    harness.outgoing_rx.recv(),
+                )
+                .await
+                .expect("timed out waiting for external controller prompt")
+                .expect("outgoing channel closed");
+                let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message,
+                    write_complete_tx,
+                } = envelope
+                else {
+                    continue;
+                };
+                if connection_id != EXTERNAL_CONNECTION_ID {
+                    continue;
+                }
+                let crate::outgoing_message::OutgoingMessage::Request(request) = message else {
+                    continue;
+                };
+                if request.id() == &prompt_request_id {
+                    break write_complete_tx
+                        .expect("external controller prompt should track write completion");
+                }
+            };
+
+            let (gate_entered_tx, gate_entered_rx) = oneshot::channel();
+            let (gate_release_tx, gate_release_rx) = oneshot::channel();
+            let gate = Arc::clone(&external_session.rpc_gate);
+            let gate_task = tokio::spawn(async move {
+                gate.run(async move {
+                    gate_entered_tx.send(()).expect("receiver should be open");
+                    let _ = gate_release_rx.await;
+                })
+                .await;
+            });
+            gate_entered_rx.await.expect("gate run should start");
+
+            let processor = Arc::clone(&harness.processor);
+            let session = Arc::clone(&external_session);
+            let mut close_task = tokio::spawn(async move {
+                processor
+                    .connection_closed(EXTERNAL_CONNECTION_ID, &session)
+                    .await;
+            });
+            tokio::time::timeout(Duration::from_millis(/*millis*/ 50), &mut close_task)
+                .await
+                .expect_err("connection close should still wait for the running RPC");
+
+            let rebound_prompt = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                TEST_CONNECTION_ID,
+                &prompt_request_id,
+            )
+            .await;
+            assert_eq!(rebound_prompt.id(), &prompt_request_id);
+
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: prompt_request_id.clone(),
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(/*millis*/ 10), &mut wait_for_prompt)
+                    .await
+                    .is_err()
+            );
+
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+            let prompt_result =
+                tokio::time::timeout(Duration::from_secs(/*secs*/ 1), wait_for_prompt)
+                    .await
+                    .expect("TUI prompt response should not time out")
+                    .expect("prompt waiter should receive TUI response")
+                    .expect("TUI accept should resolve rebound prompt");
+            assert_eq!(prompt_result, serde_json::json!({ "decision": "accept" }));
+
+            drop(external_write_complete_tx);
+            gate_release_tx
+                .send(())
+                .expect("running gate future should still be waiting");
+            gate_task.await.expect("gate task should finish");
+            close_task
+                .await
+                .expect("connection close task should finish");
             harness.shutdown().await;
             Ok(())
         },
