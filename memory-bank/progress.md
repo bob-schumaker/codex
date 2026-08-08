@@ -42,6 +42,12 @@
   now also connection-bound and main-thread-bound before reuse. The binding
   covers `thread/list`, `thread/search`, `thread/loaded/list`, and
   `threadSection/list`.
+- Controller-origin `turn/start` and `turn/steer` now preserve the active-owner
+  normal input path while blocking pre-dispatch context/configuration override
+  fields. `turn/start` allows input and client metadata, but rejects additional
+  context, environment/cwd/workspace-root, approval/sandbox/permission,
+  model/service-tier, reasoning, personality, output-schema, collaboration-mode,
+  and multi-agent-mode overrides. `turn/steer` rejects additional context.
 - `controller/signOff` now preserves the expected external-origin error for
   non-controller callers before any main-thread admission check.
 - Authorization expiry now revokes the controller's standing session with a
@@ -60,23 +66,27 @@
   the current-time request for the TUI main thread, and replies are bound to the
   owner epoch captured when the request was delivered.
 - The latest Codex-side implementation commit is
-  `500afdd` for launch metadata publication, native approval coverage, exact
+  `e95d1ba` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
-  prompt owner-epoch reply binding, and current-time owner routing.
+  prompt owner-epoch reply binding, current-time owner routing, and controller
+  turn override gating.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1185 passed, 1 flaky passed on
   retry, 4 zsh-fork failures after retry, and 1 skipped; the zsh-fork cluster
   remains a separate fixture health issue outside the controller slice.
+- The latest focused validation for commit `e95d1ba` is
+  `just test -p codex-app-server controller`, passing 55/55 tests, followed by
+  `cargo build -p codex-cli` to rebuild `codex-rs/target/debug/codex`.
 
 ## In Flight
 
 - Codex-side selection of the next normal-interface parity slice: remaining
   implicit targets, egress transactionality, and long-lived subscription edges
-  not covered by the committed cleanup, gating, cursor-binding, and
-  owner-binding work. There is no known uncommitted Codex-side source diff in
-  this checkpoint.
+  not covered by the committed cleanup, resume/turn override gating,
+  cursor-binding, and owner-binding work. There is no known uncommitted
+  Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -86,8 +96,9 @@
   for long-lived subscriptions, implicit targets, and egress transactionality.
   Exact-thread and collection-filtered pagination cursors are now
   connection-bound for controllers, controller-origin `thread/resume` override
-  fields now have a pre-dispatch gate, owner-aware prompt/current-time replies
-  are owner-epoch-bound, and sign-off plus authorization expiry now clean up the
+  fields and controller-origin turn context/configuration overrides now have
+  pre-dispatch gates, owner-aware prompt/current-time replies are
+  owner-epoch-bound, and sign-off plus authorization expiry now clean up the
   controller's main-thread subscription.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.

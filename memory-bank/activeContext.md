@@ -1,10 +1,10 @@
 # Active Context
 
 - Current focus: continue external-controller normal-interface parity after
-  binding collection-filtered controller cursors; remaining Codex-side review
-  is centered on implicit targets, egress transactionality, and subscription
-  edges while downstream discovery/display consumes the published
-  local-controller metadata contract.
+  binding collection-filtered controller cursors and gating controller-origin
+  turn input shapes; remaining Codex-side review is centered on implicit
+  targets, egress transactionality, and subscription edges while downstream
+  discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -132,12 +132,23 @@
     skipped. The failing zsh-fork fixture cluster remains separate from the
     controller cursor slice.
   - Rebuilt the debug CLI binary again with `cargo build -p codex-cli`.
+  - Restricted external-controller `turn/start` and `turn/steer` to the
+    authorized main-thread input shape. `turn/start` may submit input and
+    client metadata, but controller-origin additional context, environment,
+    cwd/workspace-root, approval, sandbox, permission, model/service-tier,
+    reasoning, personality, output-schema, collaboration-mode, and
+    multi-agent-mode overrides now fail with typed `controller-not-allowed`.
+    `turn/steer` similarly rejects controller-origin additional context.
+  - Validated the turn override gate with
+    `just test -p codex-app-server controller` passing 55/55 tests.
+  - Rebuilt the debug CLI binary again with `cargo build -p codex-cli`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
     covered by sign-off, authorization-expiry cleanup, exact-thread and
     collection-filtered cursor binding, prompt owner-epoch binding,
-    current-time owner routing, resume-override gating, or idempotent acquire.
+    current-time owner routing, resume/turn override gating, or idempotent
+    acquire.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -150,9 +161,9 @@
   implicit targets, egress transactionality, and subscription edges beyond the
   committed exact-thread/collection cursor binding, sign-off cleanup,
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
-  current-time owner routing, and resume-override gates.
+  current-time owner routing, and resume/turn override gates.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `500afdd`.
+  commit `e95d1ba`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
