@@ -121,6 +121,7 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
     outgoing: Arc<OutgoingMessageSender>,
     request_recipients: Arc<ServerRequestRecipients>,
     notification_connection_ids: Arc<Vec<ConnectionId>>,
+    external_notification_connection_ids: Arc<Vec<ConnectionId>>,
     thread_id: ThreadId,
 }
 
@@ -189,6 +190,7 @@ impl ThreadScopedOutgoingMessageSender {
             outgoing,
             request_recipients: Arc::new(request_recipients),
             notification_connection_ids: Arc::new(connection_ids),
+            external_notification_connection_ids: Arc::new(Vec::new()),
             thread_id,
         }
     }
@@ -203,6 +205,23 @@ impl ThreadScopedOutgoingMessageSender {
             outgoing,
             request_recipients: Arc::new(request_recipients),
             notification_connection_ids: Arc::new(notification_connection_ids),
+            external_notification_connection_ids: Arc::new(Vec::new()),
+            thread_id,
+        }
+    }
+
+    pub(crate) fn new_with_controller_recipients(
+        outgoing: Arc<OutgoingMessageSender>,
+        request_recipients: ServerRequestRecipients,
+        notification_connection_ids: Vec<ConnectionId>,
+        external_notification_connection_ids: Vec<ConnectionId>,
+        thread_id: ThreadId,
+    ) -> Self {
+        Self {
+            outgoing,
+            request_recipients: Arc::new(request_recipients),
+            notification_connection_ids: Arc::new(notification_connection_ids),
+            external_notification_connection_ids: Arc::new(external_notification_connection_ids),
             thread_id,
         }
     }
@@ -246,7 +265,17 @@ impl ThreadScopedOutgoingMessageSender {
     }
 
     pub(crate) async fn send_global_server_notification(&self, notification: ServerNotification) {
-        self.outgoing.send_server_notification(notification).await;
+        self.outgoing
+            .send_server_notification(notification.clone())
+            .await;
+        if !self.external_notification_connection_ids.is_empty() {
+            self.outgoing
+                .send_server_notification_to_connections(
+                    self.external_notification_connection_ids.as_slice(),
+                    notification,
+                )
+                .await;
+        }
     }
 
     pub(crate) async fn abort_pending_server_requests(&self) {
@@ -1393,6 +1422,68 @@ mod tests {
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_global_notifications_target_external_controllers() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_controller_recipients(
+            outgoing,
+            ServerRequestRecipients::normal(vec![ConnectionId(1), ConnectionId(2)]),
+            vec![ConnectionId(1), ConnectionId(2)],
+            vec![ConnectionId(2)],
+            ThreadId::new(),
+        );
+        let notification = ServerNotification::ConfigWarning(ConfigWarningNotification {
+            summary: "summary".to_string(),
+            details: Some("details".to_string()),
+            path: None,
+            range: None,
+        });
+
+        thread_outgoing
+            .send_global_server_notification(notification.clone())
+            .await;
+
+        let OutgoingEnvelope::Broadcast { message } = rx
+            .recv()
+            .await
+            .expect("broadcast notification should be sent")
+        else {
+            panic!("expected broadcast notification");
+        };
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected app-server notification");
+        };
+        assert_eq!(
+            serde_json::to_value(envelope.notification).expect("notification should serialize"),
+            serde_json::to_value(&notification).expect("notification should serialize"),
+        );
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx: None,
+        } = rx
+            .recv()
+            .await
+            .expect("targeted external controller notification should be sent")
+        else {
+            panic!("expected targeted notification");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected app-server notification");
+        };
+        assert_eq!(
+            serde_json::to_value(envelope.notification).expect("notification should serialize"),
+            serde_json::to_value(notification).expect("notification should serialize"),
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
