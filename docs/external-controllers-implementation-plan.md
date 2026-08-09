@@ -562,6 +562,13 @@ Commit 19: Add the full end-to-end scenario.
       reviewed and reverted, `git diff --check` passed, and
       `cargo build -p codex-cli --bin codex` rebuilt
       `codex-rs/target/debug/codex` as `codex-cli 0.147.1`.
+    - The downstream
+      `first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>`
+      passed after native TUI approval against two live Codex launches, proving
+      downstream discovery, participation, aggregate inventory, and isolated
+      assignment persistence. Its checked-in binary currently reports `no Codex
+      mutation requested`, so downstream `thread/resume`, control mutation, and
+      removed-launch reconciliation remain unproven by that smoke.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

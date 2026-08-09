@@ -8,9 +8,12 @@
   listener-ordered events the TUI bridge observes. The current source audit has
   no confirmed remaining Codex-side subscription, implicit-target,
   launch-availability, TUI reclaim/reflection, prompt, egress, or in-process
-  recovery gap. Remaining known work is downstream controller-host discovery,
-  presentation-state separation, deterministic slot auto-assignment, and the
-  downstream multi-launch acceptance rerun against the published
+  recovery gap. A downstream two-launch smoke now passes discovery, native
+  participation, aggregate inventory, and isolated route persistence after
+  operator approval. Remaining known work is downstream controller-host stale
+  metadata/process-liveness filtering, presentation-state separation,
+  deterministic slot auto-assignment, and any downstream mutating
+  `thread/resume`/removed-launch acceptance rerun against the published
   `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
@@ -776,14 +779,23 @@
     still fails only in unrelated fixture clusters: two remote-thread-store
     deadline tests and three zsh-fork deadline/mock-request tests reproduced on
     exact rerun.
+  - Reran the downstream
+    `first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>`
+    against live Codex launches. The first run timed out while native
+    participation prompts were missed; the second run passed after the owning
+    TUIs approved `codex-waveshare`, reporting two launches, exact
+    launch-scoped route persistence, and `no Codex mutation requested`.
+    Treat this as downstream inventory/persistence evidence, not as
+    `thread/resume` or removed-launch evidence.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery/full
-    rescans of `$CODEX_HOME/local-controllers`, launch-health versus
-    authorization versus slot-assignment state separation, and deterministic
-    auto-assignment.
+    rescans of `$CODEX_HOME/local-controllers`, stale metadata/process-liveness
+    filtering, launch-health versus authorization versus slot-assignment state
+    separation, and deterministic auto-assignment.
 - Not started:
-  - Downstream acceptance rerun across multiple live Codex launches after the
-    controller host consumes the metadata-directory discovery contract.
+  - Downstream mutating acceptance rerun across multiple live Codex launches
+    after the downstream smoke/host covers `thread/resume`, control mutation, or
+    removed-launch reconciliation again.
 
 ## Next Steps
 
@@ -792,7 +804,11 @@
   prompt, egress, subscription, or in-process recovery gap until a narrower
   downstream finding identifies one.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
+- Add downstream process-liveness/stale-record filtering; the current
+  downstream `LocalControllerDiscovery` validates owner-private metadata and
+  sockets but does not parse/check `processId`.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
-- Rerun the downstream multi-launch controller smoke once the downstream host
-  work is in place.
+- Extend or rerun the downstream multi-launch controller smoke if mutating
+  `thread/resume`/removal evidence is required; the current checked-in smoke is
+  status-only and prints `no Codex mutation requested`.

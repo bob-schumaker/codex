@@ -330,6 +330,8 @@ At the availability reconciliation slice, the cumulative goal cost was
 At the controller participation auto-subscribe and e2e approval slice, the
 cumulative goal cost was 25,650,619 tokens and 102,284 seconds (approximately
 28h 24m 44s).
+At the downstream inventory/persistence smoke slice, the cumulative goal cost
+was 25,828,117 tokens and 102,665 seconds (approximately 28h 31m 05s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -500,6 +502,7 @@ Recorded build and validation evidence:
 | `just fix -p codex-app-server` | Passed after the controller participation auto-subscribe slice. It auto-fixed two unrelated lint sites; those hunks were reviewed and reverted so the commit stayed scoped to controller behavior. | Cargo reported 36.09s. |
 | `git diff --check` | Passed after the controller participation auto-subscribe source slice. | Subsecond. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; `./codex-rs/target/debug/codex --version` reported `codex-cli 0.147.1`, and the final binary size was 757,129,080 bytes. | Cargo reported 29.76s with the known `__eh_frame section too large` linker warning. |
+| `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>` | Passed after the owning TUIs approved the native `codex-waveshare` participation prompts: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. The first run timed out while participation was pending because the prompts were missed. This is downstream inventory/persistence evidence only; the checked-in downstream smoke binary explicitly does not perform Codex mutation, `thread/resume`, or removal reconciliation. | Passing run wall time was 7.710s. Isolated root was `/private/tmp/codex-external-smoke.gvtgFu`. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -532,6 +535,13 @@ interface. The focused socket e2e validates normal app-server parity,
 controller-resolved command approval, command and turn completion visibility,
 TUI reclaim, stale controller mutation rejection, standing read access after
 reclaim, controller reacquire, final thread state, and sign-off.
+
+Downstream smoke note: the downstream controller host's current smoke binary now
+passes its bounded two-launch discovery, native participation, aggregate
+inventory, and isolated assignment-persistence check against live local Codex
+metadata. That binary prints `no Codex mutation requested`; it is not evidence
+for downstream `thread/resume`, control mutation, or removed-launch
+reconciliation.
 
 ## Relevant implementation seams
 

@@ -16,6 +16,10 @@
   connects after the main thread already exists receives listener-ordered
   `serverRequest/resolved`, item completion, turn completion, and other normal
   main-thread notifications for its actions.
+- Downstream `first-vertical-slice-external-controller-smoke` now passes a
+  bounded two-launch discovery/native-participation/inventory/persistence run
+  against live Codex local-controller metadata after the owning TUIs approve
+  `codex-waveshare`.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -657,6 +661,11 @@
   unrelated fixer hunks were reverted, `git diff --check`, and
   `cargo build -p codex-cli --bin codex`, which rebuilt
   `codex-rs/target/debug/codex` as `codex-cli 0.147.1`.
+- Downstream smoke validation passed
+  `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>`
+  after native TUI approval. The first attempt timed out while prompts were
+  missed; the passing attempt reported `launches: 2`, exact launch-scoped route
+  persistence, and `no Codex mutation requested`.
 
 ## In Flight
 
@@ -666,7 +675,8 @@
   auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
 - Downstream controller-host discovery and display behavior for all live Codex
-  launches, including non-Herdr launches.
+  launches, including non-Herdr launches and stale metadata whose process is no
+  longer live.
 
 ## Remaining
 
@@ -779,6 +789,9 @@
   resolution plus reflected command/turn completion over the published socket.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
+- Downstream `LocalControllerDiscovery` still needs process-liveness/stale-record
+  filtering; the current implementation validates owner-private metadata and
+  socket paths but does not parse or check `processId`.
 - Downstream display should separate:
   - launch liveness,
   - participation/authorization state,
@@ -786,6 +799,10 @@
   - product slot assignment.
 - Downstream auto-assignment should preserve explicit slots and fill free slots
   deterministically for newly discovered live launches.
+- Downstream mutating acceptance remains unproven by the currently checked-in
+  smoke binary because it explicitly reports `no Codex mutation requested`; any
+  product gate that requires `thread/resume`, control mutation, or removed-launch
+  reconciliation needs a restored/extended downstream smoke.
 
 ## Risks or Follow-ups
 
@@ -793,6 +810,9 @@
   valid Codex launches.
 - A product that maps "not approved" or "not active owner" to offline will
   misrepresent live Codex sessions.
+- A product that trusts stale local-controller socket files without checking
+  metadata `processId` liveness can display dead launches or choose a dead
+  endpoint for a controller connection.
 - The implementation plan must continue to avoid durable enrollment or reusable
   controller credentials unless a future design explicitly changes that
   decision.
