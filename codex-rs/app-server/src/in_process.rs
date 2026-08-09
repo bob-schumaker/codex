@@ -1382,6 +1382,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     let Some(queued_message) = queued_message else {
                         break;
                     };
+                    if !queued_message.begin_write() {
+                        continue;
+                    }
                     let outgoing_message = queued_message.message;
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
@@ -1472,7 +1475,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                     if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                        let _ = write_complete_tx.send(());
+                        write_complete_tx.complete();
                     }
                 }
             }

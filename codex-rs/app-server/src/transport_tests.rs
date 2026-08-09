@@ -693,8 +693,7 @@ async fn to_connection_then_disconnect_waits_for_final_write() {
     queued_message
         .write_complete_tx
         .expect("final message should track write completion")
-        .send(())
-        .expect("route should wait for write completion");
+        .complete();
 
     let still_connected = timeout(Duration::from_secs(1), route_task)
         .await
@@ -794,8 +793,7 @@ async fn to_connection_then_disconnect_waits_for_slow_queue_space() {
     final_message
         .write_complete_tx
         .expect("final message should track write completion")
-        .send(())
-        .expect("route should wait for write completion");
+        .complete();
 
     let still_connected = timeout(Duration::from_secs(1), route_task)
         .await

@@ -1004,6 +1004,13 @@ impl RemoteControlWebsocket {
                     }
                 }
             };
+            if queued_server_envelope
+                .write_complete_tx
+                .as_ref()
+                .is_some_and(|write_complete_tx| !write_complete_tx.begin_write())
+            {
+                continue;
+            }
             let (payloads, write_complete_tx) = {
                 let mut state = state.lock().await;
                 let seq_key = (
@@ -1058,7 +1065,7 @@ impl RemoteControlWebsocket {
                 }
             }
             if let Some(write_complete_tx) = write_complete_tx {
-                let _ = write_complete_tx.send(());
+                write_complete_tx.complete();
             }
         }
     }

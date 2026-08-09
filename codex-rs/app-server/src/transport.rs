@@ -26,6 +26,7 @@ pub(crate) use codex_app_server_transport::RemoteControlPolicy;
 pub(crate) use codex_app_server_transport::RemoteControlStartConfig;
 pub use codex_app_server_transport::RemoteControlStartupMode;
 pub(crate) use codex_app_server_transport::RemoteControlUnavailable;
+pub(crate) use codex_app_server_transport::TrackedWriteCompletion;
 pub(crate) use codex_app_server_transport::TransportEvent;
 pub(crate) use codex_app_server_transport::acquire_app_server_startup_lock;
 pub use codex_app_server_transport::app_server_control_socket_path;
@@ -162,7 +163,7 @@ async fn send_message_to_connection(
     connections: &mut HashMap<ConnectionId, OutboundConnectionState>,
     connection_id: ConnectionId,
     message: OutgoingMessage,
-    write_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    write_complete_tx: Option<TrackedWriteCompletion>,
 ) -> bool {
     let Some(connection_state) = connections.get(&connection_id) else {
         warn!("dropping message for disconnected connection: {connection_id:?}");
@@ -217,7 +218,7 @@ async fn send_message_to_connection_then_disconnect(
     let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
     let queued_message = QueuedOutgoingMessage {
         message,
-        write_complete_tx: Some(write_complete_tx),
+        write_complete_tx: Some(TrackedWriteCompletion::new(write_complete_tx)),
     };
     match timeout(DISCONNECT_AFTER_WRITE_TIMEOUT, writer.send(queued_message)).await {
         Ok(Ok(())) => {

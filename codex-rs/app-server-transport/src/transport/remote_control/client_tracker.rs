@@ -258,6 +258,9 @@ impl ClientTracker {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
+                    if !queued_message.begin_write() {
+                        continue;
+                    }
                     let event = ServerEvent::ServerMessage {
                         message: Box::new(queued_message.message),
                     };

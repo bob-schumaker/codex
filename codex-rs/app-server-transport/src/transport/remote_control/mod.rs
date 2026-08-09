@@ -29,6 +29,7 @@ use self::protocol::normalize_remote_control_url;
 use super::CHANNEL_CAPACITY;
 use super::TransportEvent;
 use super::next_connection_id;
+use crate::outgoing_message::TrackedWriteCompletion;
 use codex_app_server_protocol::RemoteControlClientsListParams;
 use codex_app_server_protocol::RemoteControlClientsListResponse;
 use codex_app_server_protocol::RemoteControlClientsRevokeParams;
@@ -99,7 +100,7 @@ pub(super) struct QueuedServerEnvelope {
     pub(super) event: ServerEvent,
     pub(super) client_id: ClientId,
     pub(super) stream_id: StreamId,
-    pub(super) write_complete_tx: Option<oneshot::Sender<()>>,
+    pub(super) write_complete_tx: Option<TrackedWriteCompletion>,
 }
 
 #[derive(Clone)]

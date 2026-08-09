@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -24,6 +25,7 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
@@ -35,6 +37,7 @@ pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
 pub(crate) use codex_app_server_transport::OutgoingResponse;
 pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
+pub(crate) use codex_app_server_transport::TrackedWriteCompletion;
 
 #[cfg(test)]
 use codex_protocol::account::PlanType;
@@ -93,7 +96,7 @@ pub(crate) enum OutgoingEnvelope {
     ToConnection {
         connection_id: ConnectionId,
         message: OutgoingMessage,
-        write_complete_tx: Option<oneshot::Sender<()>>,
+        write_complete_tx: Option<TrackedWriteCompletion>,
     },
     ToConnectionThenDisconnect {
         connection_id: ConnectionId,
@@ -130,10 +133,16 @@ struct PendingCallbackEntry {
     recipient_connection_ids: Option<Vec<ConnectionId>>,
     external_delivery_connection_ids: Vec<ConnectionId>,
     external_delivery_fallback_connection_id: Option<ConnectionId>,
+    external_delivery_write_permits: HashMap<ConnectionId, ExternalDeliveryWritePermit>,
     external_controller_owner_epoch: Option<u64>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
+}
+
+struct ExternalDeliveryWritePermit {
+    permit_tx: watch::Sender<bool>,
+    write_started: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -172,10 +181,44 @@ impl PendingCallbackEntry {
         {
             self.external_delivery_connection_ids.push(connection_id);
         }
+        self.external_delivery_write_permits.remove(&connection_id);
     }
 
     fn has_external_delivery(&self) -> bool {
         !self.external_delivery_connection_ids.is_empty()
+    }
+
+    fn replace_external_delivery_write_permit(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> (watch::Receiver<bool>, Arc<AtomicBool>) {
+        if let Some(write_permit) = self.external_delivery_write_permits.remove(&connection_id) {
+            let _ = write_permit.permit_tx.send(false);
+        }
+        let (write_permit_tx, write_permit_rx) = watch::channel(true);
+        let write_started = Arc::new(AtomicBool::new(false));
+        self.external_delivery_write_permits.insert(
+            connection_id,
+            ExternalDeliveryWritePermit {
+                permit_tx: write_permit_tx,
+                write_started: Arc::clone(&write_started),
+            },
+        );
+        (write_permit_rx, write_started)
+    }
+
+    fn revoke_external_delivery_write_permits(&mut self) {
+        for (_, write_permit) in self.external_delivery_write_permits.drain() {
+            let _ = write_permit.permit_tx.send(false);
+        }
+    }
+
+    fn has_external_delivery_or_started_write(&self) -> bool {
+        self.has_external_delivery()
+            || self
+                .external_delivery_write_permits
+                .values()
+                .any(|permit| permit.write_started.load(Ordering::Acquire))
     }
 }
 
@@ -453,6 +496,7 @@ impl OutgoingMessageSender {
                     recipient_connection_ids: connection_ids.map(<[ConnectionId]>::to_vec),
                     external_delivery_connection_ids: Vec::new(),
                     external_delivery_fallback_connection_id: None,
+                    external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: None,
                     thread_id,
                     request: request.clone(),
@@ -499,7 +543,9 @@ impl OutgoingMessageSender {
         if let Err(err) = send_result {
             warn!("failed to send request {outgoing_message_id:?} to client: {err:?}");
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-            request_id_to_callback.remove(&outgoing_message_id);
+            if let Some(mut entry) = request_id_to_callback.remove(&outgoing_message_id) {
+                entry.revoke_external_delivery_write_permits();
+            }
         }
         (outgoing_message_id, rx_approve)
     }
@@ -525,6 +571,7 @@ impl OutgoingMessageSender {
                     external_delivery_connection_ids: Vec::new(),
                     external_delivery_fallback_connection_id: recipients
                         .external_delivery_fallback_connection_id,
+                    external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: recipients.external_controller_owner_epoch,
                     thread_id,
                     request: request.clone(),
@@ -535,11 +582,13 @@ impl OutgoingMessageSender {
 
         let mut send_error = None;
         for connection_id in recipients.connection_ids() {
-            let write_complete_tx = self.tracked_write_completion(
-                outgoing_message_id.clone(),
-                *connection_id,
-                recipients.delivery_for(*connection_id),
-            );
+            let write_complete_tx = self
+                .tracked_write_completion(
+                    outgoing_message_id.clone(),
+                    *connection_id,
+                    recipients.delivery_for(*connection_id),
+                )
+                .await;
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
@@ -559,22 +608,29 @@ impl OutgoingMessageSender {
         if let Some(err) = send_error {
             warn!("failed to send request {outgoing_message_id:?} to client: {err:?}");
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-            request_id_to_callback.remove(&outgoing_message_id);
+            if let Some(mut entry) = request_id_to_callback.remove(&outgoing_message_id) {
+                entry.revoke_external_delivery_write_permits();
+            }
         }
         (outgoing_message_id, rx_approve)
     }
 
-    fn tracked_write_completion(
+    async fn tracked_write_completion(
         &self,
         request_id: RequestId,
         connection_id: ConnectionId,
         delivery: ServerRequestDelivery,
-    ) -> Option<oneshot::Sender<()>> {
+    ) -> Option<TrackedWriteCompletion> {
         if delivery == ServerRequestDelivery::Normal {
             return None;
         }
 
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
+        let (write_permit_rx, write_started) = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let entry = request_id_to_callback.get_mut(&request_id)?;
+            entry.replace_external_delivery_write_permit(connection_id)
+        };
         let request_id_to_callback = Arc::clone(&self.request_id_to_callback);
         let sender = self.sender.clone();
         tokio::spawn(async move {
@@ -590,7 +646,10 @@ impl OutgoingMessageSender {
                     return;
                 }
 
-                if !entry.can_resolve_from(connection_id) || entry.has_external_delivery() {
+                entry.external_delivery_write_permits.remove(&connection_id);
+                if !entry.can_resolve_from(connection_id)
+                    || entry.has_external_delivery_or_started_write()
+                {
                     return;
                 }
                 let Some(fallback_connection_id) = entry.external_delivery_fallback_connection_id
@@ -599,6 +658,7 @@ impl OutgoingMessageSender {
                 };
                 entry.recipient_connection_ids = Some(vec![fallback_connection_id]);
                 entry.external_delivery_fallback_connection_id = None;
+                entry.revoke_external_delivery_write_permits();
                 entry.external_controller_owner_epoch = None;
                 (fallback_connection_id, entry.request.clone())
             };
@@ -617,7 +677,11 @@ impl OutgoingMessageSender {
                 );
             }
         });
-        Some(write_complete_tx)
+        Some(TrackedWriteCompletion::with_write_permit(
+            write_complete_tx,
+            write_permit_rx,
+            write_started,
+        ))
     }
 
     pub(crate) async fn replay_requests_to_connection_for_thread(
@@ -640,9 +704,12 @@ impl OutgoingMessageSender {
             let mut requests = request_id_to_callback
                 .values_mut()
                 .filter_map(|entry| {
-                    if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
+                    if entry.thread_id == Some(thread_id)
+                        && !entry.has_external_delivery_or_started_write()
+                    {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         entry.external_delivery_fallback_connection_id = None;
+                        entry.revoke_external_delivery_write_permits();
                         entry.external_controller_owner_epoch = None;
                         Some(entry.request.clone())
                     } else {
@@ -669,9 +736,12 @@ impl OutgoingMessageSender {
             let mut requests = request_id_to_callback
                 .values_mut()
                 .filter_map(|entry| {
-                    if entry.thread_id == Some(thread_id) && !entry.has_external_delivery() {
+                    if entry.thread_id == Some(thread_id)
+                        && !entry.has_external_delivery_or_started_write()
+                    {
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         entry.external_delivery_fallback_connection_id = fallback_connection_id;
+                        entry.revoke_external_delivery_write_permits();
                         entry.external_controller_owner_epoch = Some(owner_epoch);
                         Some(entry.request.clone())
                     } else {
@@ -716,6 +786,7 @@ impl OutgoingMessageSender {
 
         entry.recipient_connection_ids = Some(vec![connection_id]);
         entry.external_delivery_fallback_connection_id = None;
+        entry.revoke_external_delivery_write_permits();
         entry.external_controller_owner_epoch = None;
         true
     }
@@ -747,11 +818,13 @@ impl OutgoingMessageSender {
     ) {
         for request in requests {
             let request_id = request.id().clone();
-            let write_complete_tx = self.tracked_write_completion(
-                request_id,
-                connection_id,
-                ServerRequestDelivery::ExternalController,
-            );
+            let write_complete_tx = self
+                .tracked_write_completion(
+                    request_id,
+                    connection_id,
+                    ServerRequestDelivery::ExternalController,
+                )
+                .await;
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
@@ -860,7 +933,10 @@ impl OutgoingMessageSender {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback
                 .drain()
-                .map(|(_, entry)| entry)
+                .map(|(_, mut entry)| {
+                    entry.revoke_external_delivery_write_permits();
+                    entry
+                })
                 .collect::<Vec<_>>()
         };
 
@@ -880,7 +956,8 @@ impl OutgoingMessageSender {
         let mut request_id_to_callback = self.request_id_to_callback.lock().await;
         request_id_to_callback
             .remove_entry(id)
-            .map(|(request_id, entry)| {
+            .map(|(request_id, mut entry)| {
+                entry.revoke_external_delivery_write_permits();
                 TakeRequestCallbackResult::Found(request_id, Box::new(entry))
             })
             .unwrap_or(TakeRequestCallbackResult::Missing)
@@ -905,7 +982,8 @@ impl OutgoingMessageSender {
         }
         request_id_to_callback
             .remove_entry(id)
-            .map(|(request_id, entry)| {
+            .map(|(request_id, mut entry)| {
+                entry.revoke_external_delivery_write_permits();
                 TakeRequestCallbackResult::Found(request_id, Box::new(entry))
             })
             .unwrap_or(TakeRequestCallbackResult::Missing)
@@ -919,8 +997,9 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id) && !entry.has_external_delivery())
-                    .then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id)
+                    && !entry.has_external_delivery_or_started_write())
+                .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
@@ -957,7 +1036,8 @@ impl OutgoingMessageSender {
 
             let mut entries = Vec::with_capacity(request_ids.len());
             for request_id in request_ids {
-                if let Some(entry) = request_id_to_callback.remove(&request_id) {
+                if let Some(mut entry) = request_id_to_callback.remove(&request_id) {
+                    entry.revoke_external_delivery_write_permits();
                     entries.push(entry);
                 }
             }
@@ -1144,7 +1224,7 @@ impl OutgoingMessageSender {
             .send(OutgoingEnvelope::ToConnection {
                 connection_id,
                 message: outgoing_message,
-                write_complete_tx: Some(write_complete_tx),
+                write_complete_tx: Some(TrackedWriteCompletion::new(write_complete_tx)),
             })
             .await
         {
@@ -1853,8 +1933,7 @@ mod tests {
         );
         write_complete_tx
             .expect("write completion sender should be attached")
-            .send(())
-            .expect("receiver should still be waiting");
+            .complete();
 
         timeout(Duration::from_secs(1), send_task)
             .await
@@ -2073,11 +2152,15 @@ mod tests {
         };
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
-        drop(write_complete_tx.expect("external controller request should track write completion"));
+        let write_complete_tx =
+            write_complete_tx.expect("external controller request should track write completion");
+        assert!(write_complete_tx.is_write_permitted());
 
         outgoing
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
             .await;
+        assert!(!write_complete_tx.is_write_permitted());
+        drop(write_complete_tx);
         let OutgoingEnvelope::ToConnection {
             connection_id,
             message: OutgoingMessage::Request(rebound_request),
@@ -2151,7 +2234,10 @@ mod tests {
         };
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
-        drop(write_complete_tx.expect("external controller request should track write completion"));
+        let write_complete_tx =
+            write_complete_tx.expect("external controller request should track write completion");
+        assert!(write_complete_tx.begin_write());
+        drop(write_complete_tx);
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
@@ -2229,10 +2315,10 @@ mod tests {
         };
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
-        write_complete_tx
-            .expect("external controller request should track write completion")
-            .send(())
-            .expect("write completion receiver should be waiting");
+        let write_complete_tx =
+            write_complete_tx.expect("external controller request should track write completion");
+        assert!(write_complete_tx.begin_write());
+        write_complete_tx.complete();
         timeout(Duration::from_secs(1), async {
             loop {
                 if outgoing
@@ -2251,6 +2337,77 @@ mod tests {
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
             .await;
         assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_controller_request_is_not_redelivered_after_write_begins() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                None,
+                /*owner_epoch*/ 1,
+            ),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+        let write_complete_tx =
+            write_complete_tx.expect("external controller request should track write completion");
+        assert!(write_complete_tx.begin_write());
+
+        outgoing
+            .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+        write_complete_tx.complete();
 
         outgoing
             .notify_client_response_from_connection(
@@ -2313,10 +2470,10 @@ mod tests {
         };
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
-        write_complete_tx
-            .expect("external controller request should track write completion")
-            .send(())
-            .expect("write completion receiver should be waiting");
+        let write_complete_tx =
+            write_complete_tx.expect("external controller request should track write completion");
+        assert!(write_complete_tx.begin_write());
+        write_complete_tx.complete();
         timeout(Duration::from_secs(1), async {
             loop {
                 if outgoing

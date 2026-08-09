@@ -319,6 +319,9 @@ async fn run_websocket_outbound_loop<M, SinkError>(
                 let Some(queued_message) = queued_message else {
                     break;
                 };
+                if !queued_message.begin_write() {
+                    continue;
+                }
                 let Some(json) = serialize_outgoing_message(queued_message.message) else {
                     continue;
                 };
@@ -326,7 +329,7 @@ async fn run_websocket_outbound_loop<M, SinkError>(
                     break;
                 }
                 if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                    let _ = write_complete_tx.send(());
+                    write_complete_tx.complete();
                 }
             }
         }

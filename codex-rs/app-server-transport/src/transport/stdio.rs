@@ -82,6 +82,9 @@ pub async fn start_stdio_connection(
     stdio_handles.push(tokio::spawn(async move {
         let mut stdout = io::stdout();
         while let Some(queued_message) = writer_rx.recv().await {
+            if !queued_message.begin_write() {
+                continue;
+            }
             let Some(mut json) = serialize_outgoing_message(queued_message.message) else {
                 continue;
             };
@@ -91,7 +94,7 @@ pub async fn start_stdio_connection(
                 break;
             }
             if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                let _ = write_complete_tx.send(());
+                write_complete_tx.complete();
             }
         }
         info!("stdout writer exited (channel closed)");

@@ -937,9 +937,9 @@ async fn read_server_request_for_connection(
     }
 }
 
-fn acknowledge_write(write_complete_tx: Option<tokio::sync::oneshot::Sender<()>>) {
+fn acknowledge_write(write_complete_tx: Option<crate::outgoing_message::TrackedWriteCompletion>) {
     if let Some(write_complete_tx) = write_complete_tx {
-        let _ = write_complete_tx.send(());
+        write_complete_tx.complete();
     }
 }
 
@@ -2292,7 +2292,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                 serde_json::json!({ "decision": "accept" })
             );
 
-            let (acquire_prompt_request_id, mut wait_for_acquire_prompt) = harness
+            let (acquire_prompt_request_id, wait_for_acquire_prompt) = harness
                 .processor
                 .outgoing
                 .send_request_to_connections(
@@ -2349,31 +2349,34 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     },
                 )
                 .await;
-            assert!(
-                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_acquire_prompt)
-                    .await
-                    .is_err()
-            );
-            harness
-                .processor
-                .process_response(
-                    EXTERNAL_CONNECTION_ID,
-                    ConnectionOrigin::ExternalController,
-                    JSONRPCResponse {
-                        id: acquire_prompt_request_id,
-                        result: serde_json::json!({ "decision": "accept" }),
-                    },
-                )
-                .await;
             let acquire_prompt_result =
                 tokio::time::timeout(Duration::from_secs(1), wait_for_acquire_prompt)
                     .await
                     .expect("acquire-rebound prompt response should not time out")
                     .expect("approval waiter should receive acquire-rebound response")
-                    .expect("controller accept should resolve acquire-rebound prompt");
+                    .expect("TUI accept should reclaim and resolve acquire-rebound prompt");
             assert_eq!(
                 acquire_prompt_result,
                 serde_json::json!({ "decision": "accept" })
+            );
+
+            let reacquired_after_primary_prompt_response: ControllerAcquireControlResponse =
+                harness
+                    .request_for_connection(
+                        EXTERNAL_CONNECTION_ID,
+                        ConnectionOrigin::ExternalController,
+                        Arc::clone(&external_session),
+                        controller_no_params_request(
+                            /*request_id*/ 40_012,
+                            "controller/acquireControl",
+                        ),
+                    )
+                    .await;
+            assert!(
+                reacquired_after_primary_prompt_response
+                    .session
+                    .active_lease
+                    .is_some()
             );
 
             let primary_session = Arc::clone(&harness.session);
@@ -2383,7 +2386,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::Stdio,
                     primary_session,
                     controller_turn_start_request(
-                        /*request_id*/ 40_012,
+                        /*request_id*/ 40_013,
                         started.thread.id.clone(),
                     ),
                 )
@@ -2394,7 +2397,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     controller_turn_start_request(
-                        /*request_id*/ 40_013,
+                        /*request_id*/ 40_014,
                         started.thread.id.clone(),
                     ),
                 )
@@ -2429,7 +2432,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_initialize_request(/*request_id*/ 40_014),
+                    controller_initialize_request(/*request_id*/ 40_015),
                 )
                 .await;
             second_session
@@ -2439,7 +2442,7 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     SECOND_EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&second_session),
-                    controller_participation_request(/*request_id*/ 40_015),
+                    controller_participation_request(/*request_id*/ 40_016),
                 )
                 .await;
             assert_eq!(
