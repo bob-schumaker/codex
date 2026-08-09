@@ -2085,6 +2085,29 @@ fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSON
                 "external controller turn/steer may only steer the authorized main thread without additional context overrides",
             ))
         }
+        ClientRequest::ThreadRealtimeStart { params, .. } => {
+            if params.client_managed_handoffs.is_none()
+                && params.delegation_ack_filler.is_none()
+                && params.flush_transcript_tail_on_session_end.is_none()
+                && params.codex_responses_as_items.is_none()
+                && params.codex_response_item_prefix.is_none()
+                && params.codex_response_handoff_mode.is_none()
+                && params.codex_response_handoff_channel_prefixes.is_none()
+                && params.model.is_none()
+                && params.include_startup_context.is_none()
+                && params.initial_items.is_none()
+                && params.realtime_start_instructions.is_none()
+                && params.realtime_end_instructions.is_none()
+                && params.prompt.is_none()
+                && params.version.is_none()
+            {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller thread/realtime/start may only start realtime input for the authorized main thread without context or configuration overrides",
+            ))
+        }
         ClientRequest::ReviewStart { params, .. } => {
             if !matches!(
                 params.delivery.as_ref(),

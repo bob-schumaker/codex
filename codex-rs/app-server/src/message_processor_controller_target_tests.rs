@@ -15,6 +15,9 @@ use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadRealtimeInitialItem;
+use codex_app_server_protocol::ThreadRealtimeStartParams;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchParams;
@@ -31,7 +34,13 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::CodexResponseHandoffMode;
+use codex_protocol::protocol::ConversationTextRole;
+use codex_protocol::protocol::RealtimeConversationVersion;
+use codex_protocol::protocol::RealtimeOutputModality;
+use codex_protocol::protocol::RealtimeVoice;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -245,6 +254,90 @@ fn controller_turn_steer_rejects_additional_context_override() {
         serde_json::from_value(error.data.expect("controller error should include data"))
             .expect("controller error data should deserialize");
     assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+}
+
+#[test]
+fn controller_realtime_start_allows_input_transport_shape_only() {
+    let mut safe_params = safe_realtime_start_params("thread-1");
+    safe_params.realtime_session_id = Some("sess-1".to_string());
+    safe_params.transport = Some(ThreadRealtimeStartTransport::Webrtc {
+        sdp: "v=0".to_string(),
+    });
+    safe_params.voice = Some(RealtimeVoice::Alloy);
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ThreadRealtimeStart {
+            request_id: RequestId::Integer(17),
+            params: safe_params,
+        }),
+        Ok(())
+    );
+
+    let unsafe_params = [
+        unsafe_realtime_start_params("client_managed_handoffs", |params| {
+            params.client_managed_handoffs = Some(true);
+        }),
+        unsafe_realtime_start_params("delegation_ack_filler", |params| {
+            params.delegation_ack_filler = Some(false);
+        }),
+        unsafe_realtime_start_params("flush_transcript_tail_on_session_end", |params| {
+            params.flush_transcript_tail_on_session_end = Some(true);
+        }),
+        unsafe_realtime_start_params("codex_responses_as_items", |params| {
+            params.codex_responses_as_items = Some(true);
+        }),
+        unsafe_realtime_start_params("codex_response_item_prefix", |params| {
+            params.codex_response_item_prefix = Some("[codex]".to_string());
+        }),
+        unsafe_realtime_start_params("codex_response_handoff_mode", |params| {
+            params.codex_response_handoff_mode = Some(CodexResponseHandoffMode::Commentary);
+        }),
+        unsafe_realtime_start_params("codex_response_handoff_channel_prefixes", |params| {
+            params.codex_response_handoff_channel_prefixes = Some(BTreeMap::from([(
+                "final".to_string(),
+                vec!["F".to_string()],
+            )]));
+        }),
+        unsafe_realtime_start_params("model", |params| {
+            params.model = Some("realtime-test".to_string());
+        }),
+        unsafe_realtime_start_params("include_startup_context", |params| {
+            params.include_startup_context = Some(false);
+        }),
+        unsafe_realtime_start_params("initial_items", |params| {
+            params.initial_items = Some(vec![ThreadRealtimeInitialItem {
+                role: ConversationTextRole::Developer,
+                text: "inject context".to_string(),
+            }]);
+        }),
+        unsafe_realtime_start_params("realtime_start_instructions", |params| {
+            params.realtime_start_instructions = Some("start differently".to_string());
+        }),
+        unsafe_realtime_start_params("realtime_end_instructions", |params| {
+            params.realtime_end_instructions = Some("end differently".to_string());
+        }),
+        unsafe_realtime_start_params("prompt", |params| {
+            params.prompt = Some(Some("custom realtime prompt".to_string()));
+        }),
+        unsafe_realtime_start_params("version", |params| {
+            params.version = Some(RealtimeConversationVersion::V3);
+        }),
+    ];
+
+    for (field_name, params) in unsafe_params {
+        let error = reject_controller_tui_only_params(&ClientRequest::ThreadRealtimeStart {
+            request_id: RequestId::Integer(18),
+            params,
+        })
+        .expect_err("unsafe controller thread/realtime/start params should be rejected");
+        let data: ControllerErrorData =
+            serde_json::from_value(error.data.expect("controller error should include data"))
+                .expect("controller error data should deserialize");
+        assert_eq!(
+            data.code,
+            ControllerErrorCode::ControllerNotAllowed,
+            "{field_name} must stay TUI-only for external-controller thread/realtime/start"
+        );
+    }
 }
 
 #[test]
@@ -577,6 +670,39 @@ fn safe_turn_steer_params(thread_id: impl Into<String>) -> TurnSteerParams {
         additional_context: None,
         expected_turn_id: "turn-1".to_string(),
     }
+}
+
+fn safe_realtime_start_params(thread_id: impl Into<String>) -> ThreadRealtimeStartParams {
+    ThreadRealtimeStartParams {
+        thread_id: thread_id.into(),
+        client_managed_handoffs: None,
+        delegation_ack_filler: None,
+        flush_transcript_tail_on_session_end: None,
+        codex_responses_as_items: None,
+        codex_response_item_prefix: None,
+        codex_response_handoff_mode: None,
+        codex_response_handoff_channel_prefixes: None,
+        model: None,
+        output_modality: RealtimeOutputModality::Text,
+        include_startup_context: None,
+        initial_items: None,
+        realtime_start_instructions: None,
+        realtime_end_instructions: None,
+        prompt: None,
+        realtime_session_id: None,
+        transport: None,
+        version: None,
+        voice: None,
+    }
+}
+
+fn unsafe_realtime_start_params(
+    field_name: &'static str,
+    mutate: impl FnOnce(&mut ThreadRealtimeStartParams),
+) -> (&'static str, ThreadRealtimeStartParams) {
+    let mut params = safe_realtime_start_params("thread-1");
+    mutate(&mut params);
+    (field_name, params)
 }
 
 fn safe_review_start_params(thread_id: impl Into<String>) -> ReviewStartParams {
