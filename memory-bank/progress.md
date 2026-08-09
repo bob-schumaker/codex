@@ -82,6 +82,10 @@
 - External-controller disconnect now also removes that controller's main-thread
   subscription before RPC drain, and only for connections that actually held a
   controller session.
+- Terminal sign-off/disconnect paths now remove controller main-thread
+  subscriptions before terminal revocation events or notifications can be
+  emitted, preserving existing post-revocation cleanup as an idempotent safety
+  net.
 - App-server now emits controller authorization and control-ownership
   notifications from the `ControllerSessionCoordinator` transition boundary.
   `controller/authorizationChanged` and
@@ -100,7 +104,7 @@
   client behavior while filtering external controllers to their authorized main
   thread only, preventing controller subscription bleed to secondary threads.
 - The latest Codex-side implementation commit is
-  `93cd090` for launch metadata publication, native approval coverage, exact
+  `354c4dc` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -110,7 +114,8 @@
   early controller disconnect revocation, and early disconnect subscription
   cleanup, plus controller authorization/control-ownership notification
   emission, plus serialized-request priority, dequeue-time TUI reclaim, and
-  controller auto-subscribe filtering.
+  controller auto-subscribe filtering, plus terminal sign-off/disconnect
+  subscription fencing.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -140,6 +145,13 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `354c4dc` is
+  `just test -p codex-app-server controller_signoff_unsubscribes_before_terminal_notification`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 68/68 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -148,8 +160,9 @@
   not covered by the committed cleanup, resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
-  and controller auto-subscribe filtering. There is no known uncommitted
-  Codex-side source diff in this checkpoint.
+  controller auto-subscribe filtering, and terminal sign-off/disconnect
+  subscription fencing. There is no known uncommitted Codex-side source diff in
+  this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -171,7 +184,8 @@
   Primary/TUI serialized requests now preempt queued controller work, and
   queued primary thread input reclaims ownership again at dequeue time.
   Automatic subscription attach now filters external controllers to the
-  authorized main thread.
+  authorized main thread. Terminal sign-off/disconnect paths now remove
+  subscriptions before terminal revocation events or notifications.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -204,7 +218,8 @@
   remaining subscription work is outside the committed sign-off,
   authorization-expiry cleanup, terminal TUI-unavailable,
   disconnect-revocation, disconnect-subscription-cleanup, and queued
-  primary-reclaim paths, plus automatic subscription attach filtering.
+  primary-reclaim paths, plus automatic subscription attach filtering and
+  terminal sign-off/disconnect subscription fencing.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

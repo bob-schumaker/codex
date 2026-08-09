@@ -10,8 +10,10 @@
   transition boundary, and prioritizing queued TUI thread input over queued
   controller work with dequeue-time reclaim, and filtering automatic listener
   attachment so external controllers only auto-subscribe to their authorized
-  main thread; remaining Codex-side review is centered on implicit targets,
-  egress transactionality, and subscription edges while downstream
+  main thread, and removing controller main-thread subscriptions before
+  terminal sign-off/disconnect revocation events; remaining Codex-side review
+  is centered on implicit targets, egress transactionality, and subscription
+  edges while downstream
   discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
@@ -250,6 +252,19 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Moved external-controller main-thread subscription cleanup ahead of
+    terminal sign-off and disconnect revocation events, while preserving the
+    existing post-revocation cleanup as an idempotent safety net.
+  - Added deterministic bounded-egress coverage with
+    `controller_signoff_unsubscribes_before_terminal_notification`, proving
+    sign-off unsubscribes the controller before terminal notification emission
+    can proceed.
+  - Validated the sign-off/disconnect subscription fence with
+    `just test -p codex-app-server controller_signoff_unsubscribes_before_terminal_notification`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 68/68 controller tests, `just fix -p codex-app-server` after
+    reverting unrelated fixer hunks, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -258,7 +273,7 @@
     current-time owner routing, resume/turn override gating, internally-sent
     resume cursor binding, idempotent acquire, controller notifications, or
     serialized-request priority/dequeue reclaim, or controller auto-subscribe
-    filtering.
+    filtering, or terminal sign-off/disconnect subscription fencing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -275,9 +290,10 @@
   resume cursor binding, plus terminal TUI-unavailable launch handling and
   controller authorization/ownership notification emission, plus
   serialized-request priority and dequeue-time TUI reclaim, plus controller
-  auto-subscribe filtering.
+  auto-subscribe filtering, plus terminal sign-off/disconnect subscription
+  fencing.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `93cd090`.
+  commit `354c4dc`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
