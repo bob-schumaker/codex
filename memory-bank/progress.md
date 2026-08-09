@@ -154,8 +154,13 @@
 - TUI reclaim-classifier tests now cover Guardian-denied approval input as a
   thread-affecting approval path, so the documented TUI-primary reclaim
   invariant includes `AppCommand::ApproveGuardianDeniedAction`.
+- Late local-controller endpoint failure now reaches the TUI through a
+  lossless in-process event after established controller connections are closed
+  through the normal revocation path. The TUI reports
+  `embedded-unavailable`; onboarding and `codex exec` ignore the event as
+  non-interactive controller state.
 - The latest Codex-side source checkpoint is
-  `cfa8ea6` for launch metadata publication, native approval coverage, exact
+  `6e69a87` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -387,6 +392,18 @@
   filesystem had 823 MiB free; removing `codex-rs/target/debug/incremental`
   freed enough cache space while preserving debug binaries, and the rerun
   rebuilt `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `6e69a87` is
+  `just test -p codex-app-server in_process::tests` passing 11/11,
+  `just test -p codex-tui external_controller_availability` passing 5/5,
+  `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+  passing 1/1, and `just test -p codex-exec` passing 136/136. Scoped
+  `just fix -p codex-app-server`, `just fix -p codex-app-server-client`,
+  `just fix -p codex-tui`, and `just fix -p codex-exec` completed, with the
+  known unrelated app-server fixer hunks reverted; `just fmt` passed. A direct
+  `cargo build -p codex-cli -p codex-code-mode-host -j 4` failed at the
+  upstream `rusty_v8` archive download due Python TLS certificate verification,
+  so the successful host build used the repo wrapper `just build-code-mode-host`
+  and the successful CLI build used `cargo build -p codex-cli -j 4`.
 
 ## In Flight
 
@@ -474,7 +491,8 @@
   Terminal local-controller acceptor failure now stops the acceptor, reports the
   failure to the embedded runtime, drops socket/metadata guards, prevents
   `mainThreadId` republication through the closed handle, and closes existing
-  external-controller connections through the normal revocation path.
+  external-controller connections through the normal revocation path. Late
+  endpoint failure now also reports `embedded-unavailable` into the owning TUI.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

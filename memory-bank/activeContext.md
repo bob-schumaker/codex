@@ -34,7 +34,8 @@
   client-side lossless bridge sees reflected controller work, plus centralizing
   the embedded app-server/app-server-client lossless delivery classifier, plus
   closing established external controllers and removing discovery metadata when
-  the local-controller acceptor hits a terminal failure;
+  the local-controller acceptor hits a terminal failure, plus reporting late
+  local-controller endpoint failure to the TUI as `embedded-unavailable`;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -511,6 +512,19 @@
     `codex-app-server-transport` and `codex-app-server`, `just fmt`, `git diff
     --check`, and `cargo build -p codex-cli -j 4` after freeing
     `target/debug/incremental` build cache.
+  - Added an in-process `LocalControllerEndpointUnavailable` event so late
+    local-controller endpoint failure reaches the TUI after established
+    controller connections are closed through the normal revocation path. The
+    TUI now reports `embedded-unavailable` from that event while onboarding and
+    `codex exec` ignore it as non-interactive controller state.
+  - Validated the late endpoint-unavailable slice with
+    `just test -p codex-app-server in_process::tests` passing 11/11,
+    `just test -p codex-tui external_controller_availability` passing 5/5,
+    `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+    passing 1/1, `just test -p codex-exec` passing 136/136, scoped `just fix`
+    runs for `codex-app-server`, `codex-app-server-client`, `codex-tui`, and
+    `codex-exec`, `just fmt`, `just build-code-mode-host`, and
+    `cargo build -p codex-cli -j 4`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -531,7 +545,8 @@
     controller-origin realtime text role fencing, or controller-origin
     section-move implicit target fencing, or controller-origin archive/delete
     spawned-descendant subtree fencing, or delivered controller prompt replay
-    fencing, or terminal local-controller acceptor failure handling.
+    fencing, or terminal local-controller acceptor failure handling, or late
+    endpoint-unavailable TUI reporting.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -558,7 +573,7 @@
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `cfa8ea6`.
+  commit `6e69a87`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
