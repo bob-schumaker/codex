@@ -1095,6 +1095,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             InProcessServerEvent::ServerRequest(request) => {
                 handle_server_request(&client, *request, &mut error_seen).await;
             }
+            InProcessServerEvent::ControllerOwnershipStatus(_) => {}
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
                 if let ServerNotification::Error(payload) = &notification {

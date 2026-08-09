@@ -215,14 +215,44 @@ pub(crate) enum ControllerSessionNotification {
     },
 }
 
+/// Ownership status event delivered to the owning in-process TUI.
+///
+/// Controller JSON-RPC notifications are controller control-plane messages. This
+/// status is the transport-local TUI state event emitted from the same
+/// coordinator transition so the TUI can track who currently owns input for the
+/// main thread without consuming controller notifications as application state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControllerOwnershipStatus {
+    pub main_thread_id: ThreadId,
+    pub owner: ControllerOwnershipStatusOwner,
+    pub owner_epoch: u64,
+    pub reason: ControllerControlOwnershipChangedReason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControllerOwnershipStatusOwner {
+    Tui,
+    Controller { session_id: String },
+    TuiUnavailable,
+    Closed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ControllerSessionEvents {
+    pub(crate) controller_notifications: Vec<ControllerSessionNotification>,
+    pub(crate) ownership_statuses: Vec<ControllerOwnershipStatus>,
+}
+
 pub(crate) struct ControllerSessionCoordinator {
     main_thread_id: ThreadId,
     clock: ControllerSessionClock,
     config: ControllerSessionConfig,
     owner: InteractiveOwner,
+    last_owner_epoch: u64,
     sessions: HashMap<ConnectionId, ControllerSession>,
     next_session_sequence: u64,
     notifications: Vec<ControllerSessionNotification>,
+    ownership_statuses: Vec<ControllerOwnershipStatus>,
 }
 
 impl ControllerSessionCoordinator {
@@ -236,9 +266,11 @@ impl ControllerSessionCoordinator {
             clock,
             config,
             owner: InteractiveOwner::TuiOwned { owner_epoch: 0 },
+            last_owner_epoch: 0,
             sessions: HashMap::new(),
             next_session_sequence: 1,
             notifications: Vec::new(),
+            ownership_statuses: Vec::new(),
         }
     }
 
@@ -266,6 +298,13 @@ impl ControllerSessionCoordinator {
 
     pub(crate) fn drain_notifications(&mut self) -> Vec<ControllerSessionNotification> {
         std::mem::take(&mut self.notifications)
+    }
+
+    pub(crate) fn drain_events(&mut self) -> ControllerSessionEvents {
+        ControllerSessionEvents {
+            controller_notifications: std::mem::take(&mut self.notifications),
+            ownership_statuses: std::mem::take(&mut self.ownership_statuses),
+        }
     }
 
     pub(crate) fn request_participation(
@@ -348,7 +387,7 @@ impl ControllerSessionCoordinator {
         match self.owner.clone() {
             InteractiveOwner::TuiOwned { owner_epoch } => {
                 let owner_epoch = owner_epoch + 1;
-                self.owner = InteractiveOwner::TransferPending { owner_epoch };
+                self.set_owner(InteractiveOwner::TransferPending { owner_epoch });
                 Ok(PendingControllerTransfer {
                     connection_id,
                     owner_epoch,
@@ -569,7 +608,7 @@ impl ControllerSessionCoordinator {
         }
         self.clear_all_active_leases();
         let owner_epoch = self.next_owner_epoch();
-        self.owner = InteractiveOwner::TuiUnavailable { owner_epoch };
+        self.set_owner(InteractiveOwner::TuiUnavailable { owner_epoch });
         self.push_control_ownership_changed_for_all_sessions(
             ControllerControlOwnershipChangedReason::TuiUnavailable,
         );
@@ -582,6 +621,8 @@ impl ControllerSessionCoordinator {
 
     pub(crate) fn close_main_thread(&mut self) {
         self.clear_all_active_leases();
+        self.last_owner_epoch = self.next_owner_epoch();
+        self.owner = InteractiveOwner::Closed;
         self.push_control_ownership_changed_for_all_sessions(
             ControllerControlOwnershipChangedReason::MainThreadClosed,
         );
@@ -590,7 +631,6 @@ impl ControllerSessionCoordinator {
             AuthorizationNotificationSession::None,
         );
         self.sessions.clear();
-        self.owner = InteractiveOwner::Closed;
     }
 
     fn upsert_session(&mut self, connection_id: ConnectionId, grant: ControllerEnrollmentGrant) {
@@ -636,11 +676,11 @@ impl ControllerSessionCoordinator {
             .ok_or(ControllerSessionError::ParticipationRequired)?;
         session.active_lease = Some(lease.clone());
         session.session_sequence = session_sequence;
-        self.owner = InteractiveOwner::ControllerOwned {
+        self.set_owner(InteractiveOwner::ControllerOwned {
             connection_id,
             lease_id: lease.lease_id,
             owner_epoch,
-        };
+        });
         self.protocol_session(connection_id)
             .ok_or(ControllerSessionError::ParticipationRequired)
     }
@@ -731,8 +771,8 @@ impl ControllerSessionCoordinator {
 
     fn transfer_to_tui_owned_after(&mut self, owner_epoch: u64) {
         let owner_epoch = owner_epoch + 1;
-        self.owner = InteractiveOwner::TransferPending { owner_epoch };
-        self.owner = InteractiveOwner::TuiOwned { owner_epoch };
+        self.set_owner(InteractiveOwner::TransferPending { owner_epoch });
+        self.set_owner(InteractiveOwner::TuiOwned { owner_epoch });
     }
 
     fn clear_active_lease(&mut self, connection_id: ConnectionId) {
@@ -757,7 +797,14 @@ impl ControllerSessionCoordinator {
     }
 
     fn next_owner_epoch(&self) -> u64 {
-        self.owner.owner_epoch().unwrap_or(0) + 1
+        self.owner.owner_epoch().unwrap_or(self.last_owner_epoch) + 1
+    }
+
+    fn set_owner(&mut self, owner: InteractiveOwner) {
+        if let Some(owner_epoch) = owner.owner_epoch() {
+            self.last_owner_epoch = owner_epoch;
+        }
+        self.owner = owner;
     }
 
     fn revoke_session_with_reason(
@@ -855,6 +902,7 @@ impl ControllerSessionCoordinator {
         &mut self,
         reason: ControllerControlOwnershipChangedReason,
     ) {
+        self.push_ownership_status(reason.clone());
         let sessions = self.sessions.values().cloned().collect::<Vec<_>>();
         for session in sessions {
             self.push_control_ownership_changed_for_session(
@@ -892,9 +940,36 @@ impl ControllerSessionCoordinator {
     }
 
     fn owner_epoch_for_notification(&self) -> u64 {
-        self.owner
-            .owner_epoch()
-            .unwrap_or_else(|| self.next_owner_epoch().saturating_sub(1))
+        self.owner.owner_epoch().unwrap_or(self.last_owner_epoch)
+    }
+
+    fn push_ownership_status(&mut self, reason: ControllerControlOwnershipChangedReason) {
+        self.ownership_statuses.push(ControllerOwnershipStatus {
+            main_thread_id: self.main_thread_id,
+            owner: self.ownership_status_owner(),
+            owner_epoch: self.owner_epoch_for_notification(),
+            reason,
+        });
+    }
+
+    fn ownership_status_owner(&self) -> ControllerOwnershipStatusOwner {
+        match &self.owner {
+            InteractiveOwner::TuiOwned { .. } | InteractiveOwner::TransferPending { .. } => {
+                ControllerOwnershipStatusOwner::Tui
+            }
+            InteractiveOwner::ControllerOwned { connection_id, .. } => {
+                let session_id = self
+                    .sessions
+                    .get(connection_id)
+                    .map(|session| session.session_id.clone())
+                    .unwrap_or_else(|| format!("controller-connection-{}", connection_id.0));
+                ControllerOwnershipStatusOwner::Controller { session_id }
+            }
+            InteractiveOwner::TuiUnavailable { .. } => {
+                ControllerOwnershipStatusOwner::TuiUnavailable
+            }
+            InteractiveOwner::Closed => ControllerOwnershipStatusOwner::Closed,
+        }
     }
 }
 

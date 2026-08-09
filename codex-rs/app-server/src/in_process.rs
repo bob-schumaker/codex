@@ -61,6 +61,8 @@ use crate::controller_native_approval::NativeControllerParticipationApprover;
 pub use crate::controller_native_approval::NativeControllerParticipationDecision;
 use crate::controller_native_approval::NativeControllerParticipationRequest;
 pub use crate::controller_native_approval::NativeControllerParticipationRequestId;
+pub use crate::controller_session::ControllerOwnershipStatus as InProcessControllerOwnershipStatus;
+pub use crate::controller_session::ControllerOwnershipStatusOwner as InProcessControllerOwnershipStatusOwner;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
@@ -231,6 +233,8 @@ pub struct InProcessStartArgs {
 pub enum InProcessServerEvent {
     /// Local-controller participation request that requires owning TUI approval.
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
+    /// Controller input-ownership status update for the owning in-process TUI.
+    ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
     /// Server request that requires client response/rejection.
     ServerRequest(Box<ServerRequest>),
     /// App-server notification directed to the embedded client.
@@ -807,6 +811,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             args.thread_config_loader,
         );
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
+        let (controller_ownership_status_tx, mut controller_ownership_status_rx) =
+            mpsc::channel::<InProcessControllerOwnershipStatus>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
@@ -829,6 +835,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 native_controller_participation_approver: Some(
                     native_controller_participation_approver,
                 ),
+                controller_ownership_status_tx: Some(controller_ownership_status_tx),
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
@@ -1071,6 +1078,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
+        let mut listen_for_controller_ownership_status = true;
 
         loop {
             tokio::select! {
@@ -1180,6 +1188,19 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         None => {
                             break;
                         }
+                    }
+                }
+                status = controller_ownership_status_rx.recv(), if listen_for_controller_ownership_status => {
+                    let Some(status) = status else {
+                        listen_for_controller_ownership_status = false;
+                        continue;
+                    };
+                    if event_tx
+                        .send(InProcessServerEvent::ControllerOwnershipStatus(Box::new(status)))
+                        .await
+                        .is_err()
+                    {
+                        break;
                     }
                 }
                 queued_message = writer_rx.recv() => {
@@ -1346,6 +1367,7 @@ mod tests {
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ControllerAcquireControlResponse;
+    use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
     use codex_app_server_protocol::ControllerErrorCode;
     use codex_app_server_protocol::ControllerErrorData;
     use codex_app_server_protocol::ControllerParticipationStatus;
@@ -1511,7 +1533,8 @@ mod tests {
                     InProcessServerEvent::ControllerParticipationRequest(native_request) => {
                         break native_request;
                     }
-                    InProcessServerEvent::ServerRequest(_)
+                    InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
                 }
@@ -1534,6 +1557,43 @@ mod tests {
                 NativeControllerParticipationDecision::Approved,
             )
             .expect("native participation response should send");
+    }
+
+    #[cfg(unix)]
+    async fn expect_next_controller_ownership_status(
+        client: &mut InProcessClientHandle,
+        expected_main_thread_id: &str,
+        expected_owner: InProcessControllerOwnershipStatusOwner,
+        expected_owner_epoch: u64,
+        expected_reason: ControllerControlOwnershipChangedReason,
+    ) {
+        let status = timeout(Duration::from_secs(2), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("event stream should stay open")
+                {
+                    InProcessServerEvent::ControllerOwnershipStatus(status) => break status,
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("controller ownership status should arrive before timeout");
+        assert_eq!(
+            *status,
+            InProcessControllerOwnershipStatus {
+                main_thread_id: codex_protocol::ThreadId::from_string(expected_main_thread_id)
+                    .expect("expected main thread id should parse"),
+                owner: expected_owner,
+                owner_epoch: expected_owner_epoch,
+                reason: expected_reason,
+            }
+        );
     }
 
     #[cfg(unix)]
@@ -1943,6 +2003,16 @@ mod tests {
         assert!(session.active_lease.is_some());
         assert!(session.effective_capabilities.read_main_thread);
         assert!(session.effective_capabilities.mutate_main_thread);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
 
         client
             .shutdown()
@@ -2033,6 +2103,16 @@ mod tests {
         assert!(session.active_lease.is_some());
         assert!(session.effective_capabilities.read_main_thread);
         assert!(session.effective_capabilities.mutate_main_thread);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
 
         send_websocket_typed_request(
             &mut websocket,
@@ -2115,6 +2195,14 @@ mod tests {
                 .expect("TUI thread/name/set should succeed"),
         )
         .expect("thread/name/set response should parse");
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Tui,
+            /*expected_owner_epoch*/ 2,
+            ControllerControlOwnershipChangedReason::ReclaimedByTui,
+        )
+        .await;
 
         send_websocket_typed_request(
             &mut websocket,
@@ -2164,6 +2252,16 @@ mod tests {
             read_websocket_response(&mut websocket, /*expected_id*/ 20_007).await;
         assert!(reacquired.session.active_lease.is_some());
         assert!(reacquired.session.effective_capabilities.mutate_main_thread);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: reacquired.session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 3,
+            ControllerControlOwnershipChangedReason::Acquired,
+        )
+        .await;
 
         send_websocket_typed_request(
             &mut websocket,
@@ -2183,7 +2281,7 @@ mod tests {
                 .request(ClientRequest::ThreadRead {
                     request_id: RequestId::Integer(10_003),
                     params: ThreadReadParams {
-                        thread_id: started.thread.id,
+                        thread_id: started.thread.id.clone(),
                         include_turns: false,
                     },
                 })
@@ -2206,6 +2304,14 @@ mod tests {
         .await;
         let _: ControllerSignOffResponse =
             read_websocket_response(&mut websocket, /*expected_id*/ 20_011).await;
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Tui,
+            /*expected_owner_epoch*/ 4,
+            ControllerControlOwnershipChangedReason::SignOff,
+        )
+        .await;
         expect_websocket_closed(&mut websocket).await;
 
         client

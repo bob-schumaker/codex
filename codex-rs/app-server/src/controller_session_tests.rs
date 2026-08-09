@@ -398,6 +398,118 @@ fn notifications_track_deadline_and_terminal_revocation() {
 }
 
 #[test]
+fn ownership_statuses_track_transitions_for_tui() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+    let mut coordinator = new_coordinator(main_thread_id, &clock);
+
+    let approved = coordinator
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("participation should grant initial lease");
+    let session_id = approved.session_id;
+    let events = coordinator.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Controller {
+                session_id: session_id.clone(),
+            },
+            owner_epoch: 1,
+            reason: ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        }]
+    );
+
+    coordinator
+        .release_control(controller)
+        .expect("release should preserve standing session");
+    let events = coordinator.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Tui,
+            owner_epoch: 2,
+            reason: ControllerControlOwnershipChangedReason::Released,
+        }]
+    );
+
+    coordinator
+        .acquire_control(controller)
+        .expect("standing session should reacquire");
+    let events = coordinator.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Controller { session_id },
+            owner_epoch: 3,
+            reason: ControllerControlOwnershipChangedReason::Acquired,
+        }]
+    );
+
+    coordinator.disconnect_session(controller);
+    let events = coordinator.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Tui,
+            owner_epoch: 4,
+            reason: ControllerControlOwnershipChangedReason::ControllerDisconnected,
+        }]
+    );
+    assert_eq!(
+        events.controller_notifications,
+        Vec::<ControllerSessionNotification>::new()
+    );
+}
+
+#[test]
+fn ownership_statuses_report_terminal_owner_states() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+
+    let mut unavailable = new_coordinator(main_thread_id, &clock);
+    unavailable
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("participation should grant initial lease");
+    unavailable.drain_events();
+    unavailable
+        .mark_tui_unavailable()
+        .expect("TUI unavailable should transition");
+    let events = unavailable.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::TuiUnavailable,
+            owner_epoch: 2,
+            reason: ControllerControlOwnershipChangedReason::TuiUnavailable,
+        }]
+    );
+
+    let mut closed = new_coordinator(main_thread_id, &clock);
+    closed
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 4))
+        .expect("participation should grant initial lease");
+    closed.drain_events();
+    closed.close_main_thread();
+    let events = closed.drain_events();
+    assert_eq!(
+        events.ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Closed,
+            owner_epoch: 2,
+            reason: ControllerControlOwnershipChangedReason::MainThreadClosed,
+        }]
+    );
+}
+
+#[test]
 fn tui_unavailable_and_closed_are_terminal_states() {
     let clock = ManualClock::new();
     let main_thread_id = thread_id(1);

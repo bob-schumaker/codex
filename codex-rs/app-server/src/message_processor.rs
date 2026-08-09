@@ -20,6 +20,7 @@ use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
 use crate::controller_native_approval::NativeControllerParticipationApprover;
+use crate::controller_session::ControllerOwnershipStatus;
 use crate::controller_session::ControllerSessionClock;
 use crate::controller_session::ControllerSessionConfig;
 use crate::current_time::app_server_time_provider;
@@ -106,6 +107,7 @@ use codex_thread_store::QueueStore;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::timeout;
@@ -274,6 +276,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     pub(crate) native_controller_participation_approver:
         Option<NativeControllerParticipationApprover>,
+    pub(crate) controller_ownership_status_tx: Option<mpsc::Sender<ControllerOwnershipStatus>>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
 }
 
@@ -312,6 +315,7 @@ impl MessageProcessor {
             remote_control_handle,
             controller_enrollment_source,
             native_controller_participation_approver,
+            controller_ownership_status_tx,
             plugin_startup_tasks,
         } = args;
         let thread_state_manager = ThreadStateManager::new();
@@ -341,6 +345,7 @@ impl MessageProcessor {
             outgoing.clone(),
             controller_enrollment_source,
             native_controller_participation_approver,
+            controller_ownership_status_tx,
             ControllerEnrollmentPolicy::BestEffort,
             ControllerSessionClock::from_fn(std::time::Instant::now),
             ControllerSessionConfig {

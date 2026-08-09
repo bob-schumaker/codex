@@ -39,6 +39,7 @@ async fn native_tui_unavailable_marks_controller_launch_terminal() {
                 }
             })
         })),
+        None,
         ControllerEnrollmentPolicy::BestEffort,
         ControllerSessionClock::from_fn(std::time::Instant::now),
         ControllerSessionConfig {

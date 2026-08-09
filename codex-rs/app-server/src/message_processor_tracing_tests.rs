@@ -434,6 +434,7 @@ async fn build_test_processor(
         remote_control_handle: None,
         controller_enrollment_source,
         native_controller_participation_approver: None,
+        controller_ownership_status_tx: None,
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
     }));
     (processor, outgoing_rx)

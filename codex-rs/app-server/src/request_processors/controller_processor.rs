@@ -37,10 +37,12 @@ use crate::controller_native_approval::NativeControllerParticipationApprover;
 use crate::controller_native_approval::NativeControllerParticipationDecision;
 use crate::controller_native_approval::NativeControllerParticipationRequest;
 use crate::controller_session::ControllerEnrollmentGrant;
+use crate::controller_session::ControllerOwnershipStatus;
 use crate::controller_session::ControllerSessionClock;
 use crate::controller_session::ControllerSessionConfig;
 use crate::controller_session::ControllerSessionCoordinator;
 use crate::controller_session::ControllerSessionError;
+use crate::controller_session::ControllerSessionEvents;
 use crate::controller_session::ControllerSessionNotification;
 use crate::controller_session::InteractiveOwner;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
@@ -58,6 +60,7 @@ pub(crate) struct ControllerRequestProcessor {
     state: Arc<Mutex<ControllerProcessorState>>,
     enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     native_participation_approver: Option<NativeControllerParticipationApprover>,
+    ownership_status_tx: Option<tokio::sync::mpsc::Sender<ControllerOwnershipStatus>>,
     enrollment_policy: ControllerEnrollmentPolicy,
     clock: ControllerSessionClock,
     session_config: ControllerSessionConfig,
@@ -86,7 +89,7 @@ type ControllerTransitionResult<T> = Result<
     (
         Result<T, JSONRPCErrorError>,
         Option<PromptRebind>,
-        Vec<ControllerSessionNotification>,
+        ControllerSessionEvents,
     ),
     JSONRPCErrorError,
 >;
@@ -107,6 +110,7 @@ impl ControllerRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         enrollment_source: Arc<dyn ControllerEnrollmentSource>,
         native_participation_approver: Option<NativeControllerParticipationApprover>,
+        ownership_status_tx: Option<tokio::sync::mpsc::Sender<ControllerOwnershipStatus>>,
         enrollment_policy: ControllerEnrollmentPolicy,
         clock: ControllerSessionClock,
         session_config: ControllerSessionConfig,
@@ -120,6 +124,7 @@ impl ControllerRequestProcessor {
             })),
             enrollment_source,
             native_participation_approver,
+            ownership_status_tx,
             enrollment_policy,
             clock,
             session_config,
@@ -190,7 +195,7 @@ impl ControllerRequestProcessor {
             self.clock.clone(),
         );
 
-        let (response, rebind, notifications) =
+        let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, main_thread_id| {
                 let grant = match verifier.verify(
                     connection_id,
@@ -227,7 +232,7 @@ impl ControllerRequestProcessor {
             })?;
 
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         response
     }
 
@@ -256,7 +261,7 @@ impl ControllerRequestProcessor {
         connection_id: ConnectionId,
         requested_main_thread_id: ThreadId,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
-        let (response, rebind, notifications) =
+        let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, main_thread_id| {
                 if main_thread_id != requested_main_thread_id {
                     return Err(thread_target_error(main_thread_id.to_string()));
@@ -279,7 +284,7 @@ impl ControllerRequestProcessor {
             })?;
 
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         response
     }
 
@@ -289,7 +294,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerAcquireControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let (response, rebind, notifications) =
+        let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
                     .acquire_control(connection_id)
@@ -297,7 +302,7 @@ impl ControllerRequestProcessor {
                     .map_err(controller_session_error)
             })?;
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         response
     }
 
@@ -307,7 +312,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerReleaseControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let (response, rebind, notifications) =
+        let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
                     .release_control(connection_id)
@@ -315,7 +320,7 @@ impl ControllerRequestProcessor {
                     .map_err(controller_session_error)
             })?;
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         response
     }
 
@@ -325,7 +330,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerSignOffResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
-        let (response, rebind, notifications) =
+        let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
                     .require_standing_session(connection_id)
@@ -334,7 +339,7 @@ impl ControllerRequestProcessor {
                 Ok(ControllerSignOffResponse {})
             })?;
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         response
     }
 
@@ -366,7 +371,7 @@ impl ControllerRequestProcessor {
             RequiredAuthority::StandingSession | RequiredAuthority::ActiveOwner => {}
         }
 
-        let (result, rebind, notifications) =
+        let (result, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 let authorized_main_thread_id = match rule.required_authority {
                     RequiredAuthority::StandingSession => coordinator
@@ -384,7 +389,7 @@ impl ControllerRequestProcessor {
                 })
             })?;
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         result
     }
 
@@ -478,7 +483,7 @@ impl ControllerRequestProcessor {
         &self,
         thread_id: &str,
     ) -> Result<(), JSONRPCErrorError> {
-        let (result, rebind, notifications) = {
+        let (result, rebind, events) = {
             let mut state = self
                 .state
                 .lock()
@@ -504,11 +509,11 @@ impl ControllerRequestProcessor {
                 &owner_before,
                 coordinator.interactive_owner(),
             );
-            let notifications = coordinator.drain_notifications();
-            (result, rebind, notifications)
+            let events = coordinator.drain_events();
+            (result, rebind, events)
         };
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         result
     }
 
@@ -548,7 +553,7 @@ impl ControllerRequestProcessor {
     }
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) -> Option<ThreadId> {
-        let Ok((result, rebind, notifications)) =
+        let Ok((result, rebind, events)) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 let removed_main_thread_id = coordinator
                     .session_for(connection_id)
@@ -563,12 +568,12 @@ impl ControllerRequestProcessor {
             return None;
         }
         self.rebind_pending_prompts(rebind).await;
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
         result.ok().flatten()
     }
 
     async fn mark_tui_unavailable(&self, reason: String) {
-        let (main_thread_id, notifications) = {
+        let (main_thread_id, events) = {
             let mut state = self
                 .state
                 .lock()
@@ -584,8 +589,8 @@ impl ControllerRequestProcessor {
                     "failed to mark controller launch TUI-unavailable"
                 );
             }
-            let notifications = coordinator.drain_notifications();
-            (main_thread_id, notifications)
+            let events = coordinator.drain_events();
+            (main_thread_id, events)
         };
 
         if let Some(main_thread_id) = main_thread_id {
@@ -593,7 +598,7 @@ impl ControllerRequestProcessor {
                 .cancel_requests_for_thread(main_thread_id, Some(tui_unavailable(reason)))
                 .await;
         }
-        self.send_controller_notifications(notifications).await;
+        self.send_controller_events(events).await;
     }
 
     async fn authorize_server_request_resolution(
@@ -624,7 +629,7 @@ impl ControllerRequestProcessor {
                         ),
                     ));
                 };
-                let (result, rebind, notifications) =
+                let (result, rebind, events) =
                     self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                         coordinator
                             .require_active_owner_with_epoch(connection_id)
@@ -646,7 +651,7 @@ impl ControllerRequestProcessor {
                             })
                     })?;
                 self.rebind_pending_prompts(rebind).await;
-                self.send_controller_notifications(notifications).await;
+                self.send_controller_events(events).await;
                 result
             }
             RequiredAuthority::TuiOnly => Err(controller_error(
@@ -695,8 +700,8 @@ impl ControllerRequestProcessor {
             &owner_before,
             coordinator.interactive_owner(),
         );
-        let notifications = coordinator.drain_notifications();
-        Ok((result, rebind, notifications))
+        let events = coordinator.drain_events();
+        Ok((result, rebind, events))
     }
 
     async fn rebind_pending_prompts(&self, rebind: Option<PromptRebind>) {
@@ -734,11 +739,19 @@ impl ControllerRequestProcessor {
         }
     }
 
-    async fn send_controller_notifications(
-        &self,
-        notifications: Vec<ControllerSessionNotification>,
-    ) {
-        for notification in notifications {
+    async fn send_controller_events(&self, events: ControllerSessionEvents) {
+        if let Some(ownership_status_tx) = self.ownership_status_tx.as_ref() {
+            for status in events.ownership_statuses {
+                if ownership_status_tx.send(status).await.is_err() {
+                    tracing::warn!(
+                        "dropping controller ownership status; TUI event sink is closed"
+                    );
+                    break;
+                }
+            }
+        }
+
+        for notification in events.controller_notifications {
             let (connection_id, notification) = match notification {
                 ControllerSessionNotification::AuthorizationChanged {
                     connection_id,

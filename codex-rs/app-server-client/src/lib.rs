@@ -28,6 +28,8 @@ use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+pub use codex_app_server::in_process::InProcessControllerOwnershipStatus;
+pub use codex_app_server::in_process::InProcessControllerOwnershipStatusOwner;
 pub use codex_app_server::in_process::InProcessControllerParticipationRequest;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointStatus;
@@ -105,6 +107,7 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 pub enum AppServerEvent {
     Lagged { skipped: usize },
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
+    ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
     ServerNotification(Box<ServerNotification>),
     ServerRequest(Box<ServerRequest>),
     Disconnected { message: String },
@@ -116,6 +119,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
             InProcessServerEvent::Lagged { skipped } => Self::Lagged { skipped },
             InProcessServerEvent::ControllerParticipationRequest(request) => {
                 Self::ControllerParticipationRequest(request)
+            }
+            InProcessServerEvent::ControllerOwnershipStatus(status) => {
+                Self::ControllerOwnershipStatus(status)
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 Self::ServerNotification(notification)
@@ -135,6 +141,7 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
             server_notification_requires_delivery(notification)
         }
         InProcessServerEvent::ControllerParticipationRequest(_) => true,
+        InProcessServerEvent::ControllerOwnershipStatus(_) => true,
         _ => false,
     }
 }
@@ -2551,6 +2558,20 @@ mod tests {
                     controller_name: "codex-waveshare".to_string(),
                     description: "test controller".to_string(),
                     main_thread_id: "thread".to_string(),
+                }
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ControllerOwnershipStatus(Box::new(
+                InProcessControllerOwnershipStatus {
+                    main_thread_id: codex_protocol::ThreadId::from_string(
+                        "00000000-0000-0000-0000-000000000001"
+                    )
+                    .expect("test thread id should parse"),
+                    owner: InProcessControllerOwnershipStatusOwner::Tui,
+                    owner_epoch: 2,
+                    reason:
+                        codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
                 }
             ))
         ));

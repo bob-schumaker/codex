@@ -63,6 +63,15 @@ impl App {
                 self.chat_widget
                     .open_controller_participation_prompt(*request);
             }
+            AppServerEvent::ControllerOwnershipStatus(status) => {
+                tracing::debug!(
+                    main_thread_id = %status.main_thread_id,
+                    owner = ?status.owner,
+                    owner_epoch = status.owner_epoch,
+                    reason = ?status.reason,
+                    "controller ownership status changed"
+                );
+            }
             AppServerEvent::ServerNotification(notification) => {
                 self.handle_server_notification_event(app_server_client, *notification)
                     .await;

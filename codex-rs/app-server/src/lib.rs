@@ -930,6 +930,7 @@ pub async fn run_main_with_transport_options(
             remote_control_handle: Some(remote_control_handle.clone()),
             controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
             native_controller_participation_approver: None,
+            controller_ownership_status_tx: None,
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
