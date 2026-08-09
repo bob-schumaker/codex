@@ -450,6 +450,14 @@ Recorded build and validation evidence:
 | `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history controller_control_plane_notifications_do_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 3 test runs, 3 passed, 3461 skipped. This covers the new typed ownership-status history exclusion, existing JSON-RPC controller control-plane history exclusion, and lag snapshot recovery together. | Compile reported 1.07s; nextest reported 0.340s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI ownership-status history-exclusion slice. | Cargo reported 0.85s with the known `__eh_frame section too large` linker warning. |
 
+Implementation audit note: as of checkpoint `55c979b`, the code has lossless
+in-process event delivery, `Lagged` markers, and active-thread
+`thread/read(includeTurns=true)` recovery, but it does not expose a formal
+`threadSequence` / `lastSequence` field or an atomic snapshot-at-sequence that
+includes interactive owner and prompt-binding state. Treat the formal sequence
+snapshot wording above as an unresolved implementation/design gap until a later
+slice either implements it or explicitly amends the design.
+
 ## Relevant implementation seams
 
 - `codex-rs/app-server/src/in_process.rs` — typed in-process client and runtime bootstrap.

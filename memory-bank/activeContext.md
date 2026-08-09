@@ -56,7 +56,11 @@
   ownership-status history-exclusion coverage;
   current source audit has no confirmed remaining Codex-side
   subscription/implicit-target gap while downstream discovery/display consumes
-  the published local-controller metadata contract.
+  the published local-controller metadata contract, but it did find one larger
+  Commit 17 drift item: the source uses lossless in-process events, `Lagged`
+  signaling, and active-thread `thread/read(includeTurns=true)` recovery rather
+  than the formal `threadSequence` / `lastSequence` and atomic
+  owner/prompt-binding snapshot-at-sequence described by the spec.
 
 ## Current Status
 
@@ -764,6 +768,10 @@
     `codex-rs/target/debug/codex` in 24.24s with the known `__eh_frame` linker
     warning.
 - In progress:
+  - Resolving the Commit 17 sequence/recovery drift: either implement the formal
+    `threadSequence` / `lastSequence` plus owner/prompt-binding
+    snapshot-at-sequence contract, or explicitly amend the design to bless the
+    current lossless-event plus lag-refresh recovery model.
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets and long-lived subscription edges not
     covered by sign-off, authorization-expiry cleanup, exact-thread and
@@ -834,6 +842,8 @@
   egress-fencing at begin-write, plus controller egress-overflow
   isolation/fallback coverage, plus TUI in-process ownership-status
   history-exclusion coverage.
+- Resolve the Commit 17 sequence/recovery gap before calling the Codex-side
+  implementation complete.
 - Treat the source tree as ready for the next narrow implementation slice after
   commit `55c979b`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.

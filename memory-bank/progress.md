@@ -653,6 +653,11 @@
   history-exclusion coverage.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
+- Commit 17 sequence/recovery drift is open: the source currently uses lossless
+  in-process event delivery, `Lagged` signaling, and active-thread
+  `thread/read(includeTurns=true)` recovery. It does not expose the spec's
+  formal `threadSequence` / `lastSequence` surface or an atomic
+  snapshot-at-sequence containing interactive owner and prompt-binding state.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -752,6 +757,10 @@
   before subscription mutation. Typed in-process `ControllerOwnershipStatus`
   events are covered through the real TUI event handler and remain out of
   transcript/model-visible history.
+- The formal `threadSequence` / `lastSequence` plus owner/prompt-binding
+  snapshot-at-sequence requirement remains unresolved. Either implement that
+  contract or explicitly amend the design before declaring Codex-side Commit 17
+  complete.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -799,6 +808,8 @@
   history-exclusion coverage.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
+- Resolve the sequence/recovery design mismatch before marking the
+  external-controller implementation complete.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
 - Do not expect a local-controller launch to become available again after a
