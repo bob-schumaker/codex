@@ -532,6 +532,40 @@ impl ControllerRequestProcessor {
         }
     }
 
+    pub(crate) fn external_controller_thread_notification_recipients(
+        &self,
+        thread_id: ThreadId,
+        subscribed_connection_ids: Vec<ConnectionId>,
+    ) -> Vec<ConnectionId> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_ref() else {
+            return Vec::new();
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return Vec::new();
+        };
+        if main_thread_id != thread_id
+            || matches!(
+                coordinator.interactive_owner(),
+                InteractiveOwner::TuiUnavailable { .. }
+            )
+        {
+            return Vec::new();
+        }
+
+        subscribed_connection_ids
+            .into_iter()
+            .filter(|connection_id| {
+                coordinator
+                    .session_for(*connection_id)
+                    .is_some_and(|session| session.main_thread_id == main_thread_id)
+            })
+            .collect()
+    }
+
     pub(crate) async fn reclaim_for_primary_thread_input(
         &self,
         thread_id: &str,

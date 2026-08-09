@@ -465,6 +465,117 @@ async fn broadcast_does_not_block_on_slow_connection() {
 }
 
 #[tokio::test]
+async fn broadcast_skips_external_controller_connections() {
+    let primary_connection_id = ConnectionId(31);
+    let external_connection_id = ConnectionId(32);
+    let (primary_writer_tx, mut primary_writer_rx) = mpsc::channel(1);
+    let (external_writer_tx, mut external_writer_rx) = mpsc::channel(1);
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        primary_connection_id,
+        OutboundConnectionState::new_with_origin(
+            ConnectionOrigin::WebSocket,
+            primary_writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    );
+    connections.insert(
+        external_connection_id,
+        OutboundConnectionState::new_with_origin(
+            ConnectionOrigin::ExternalController,
+            external_writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    );
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::Broadcast {
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "broadcast".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+        },
+    )
+    .await;
+
+    let primary_message = primary_writer_rx
+        .recv()
+        .await
+        .expect("primary connection should receive broadcast notification");
+    assert!(matches!(
+        primary_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "broadcast"
+    ));
+    assert!(
+        external_writer_rx.try_recv().is_err(),
+        "external controller should not receive generic broadcasts"
+    );
+}
+
+#[tokio::test]
+async fn targeted_messages_reach_external_controller_connections() {
+    let external_connection_id = ConnectionId(33);
+    let (external_writer_tx, mut external_writer_rx) = mpsc::channel(1);
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        external_connection_id,
+        OutboundConnectionState::new_with_origin(
+            ConnectionOrigin::ExternalController,
+            external_writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    );
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id: external_connection_id,
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "targeted".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+            write_complete_tx: None,
+        },
+    )
+    .await;
+
+    let external_message = external_writer_rx
+        .recv()
+        .await
+        .expect("targeted notification should reach external controller");
+    assert!(matches!(
+        external_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "targeted"
+    ));
+}
+
+#[tokio::test]
 async fn to_connection_disconnects_slow_socket_connection_without_waiting() {
     let connection_id = ConnectionId(14);
     let (writer_tx, mut writer_rx) = mpsc::channel(1);

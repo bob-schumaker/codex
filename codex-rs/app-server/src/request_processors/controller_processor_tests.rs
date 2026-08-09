@@ -8,6 +8,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::ControllerLaunchState;
+use codex_app_server_protocol::ControllerParticipationStatus;
 use codex_app_server_protocol::ControllerRequestParticipationParams;
 use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ServerRequestPayload;
@@ -145,6 +146,64 @@ async fn native_tui_unavailable_marks_controller_launch_terminal() {
         ),
         vec![tui_connection_id, controller_connection_id],
         "terminal TUI-unavailable launch should not affect unrelated threads"
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_notification_recipients_include_only_authorized_main_thread_controllers() {
+    let (outgoing_tx, _outgoing_rx) = mpsc::channel(/*buffer*/ 16);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        AnalyticsEventsClient::disabled(),
+    ));
+    let processor = ControllerRequestProcessor::new(
+        Arc::clone(&outgoing),
+        Arc::new(EmptyControllerEnrollmentSource),
+        Some(Arc::new(|_request| {
+            Box::pin(async { NativeControllerParticipationDecision::Approved })
+        })),
+        None,
+        ControllerEnrollmentPolicy::BestEffort,
+        ControllerSessionClock::from_fn(std::time::Instant::now),
+        ControllerSessionConfig {
+            lease_duration: Duration::from_secs(/*secs*/ 300),
+        },
+    );
+    let tui_connection_id = ConnectionId(1);
+    let controller_connection_id = ConnectionId(2);
+    let unrelated_connection_id = ConnectionId(3);
+    let main_thread_id = ThreadId::new();
+    let other_thread_id = ThreadId::new();
+    processor.register_main_thread(main_thread_id, tui_connection_id);
+
+    let response = processor
+        .request_participation(
+            controller_connection_id,
+            ConnectionOrigin::ExternalController,
+            /*credential_proof*/ None,
+            participation_params(),
+        )
+        .await
+        .expect("native participation approval should create a controller session");
+    assert_eq!(response.status, ControllerParticipationStatus::Approved);
+
+    assert_eq!(
+        processor.external_controller_thread_notification_recipients(
+            main_thread_id,
+            vec![
+                tui_connection_id,
+                controller_connection_id,
+                unrelated_connection_id,
+            ],
+        ),
+        vec![controller_connection_id],
+    );
+    assert_eq!(
+        processor.external_controller_thread_notification_recipients(
+            other_thread_id,
+            vec![controller_connection_id],
+        ),
+        Vec::<ConnectionId>::new(),
     );
 }
 

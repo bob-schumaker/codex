@@ -173,6 +173,7 @@ enum OutboundControlEvent {
     /// Register a new writer for an opened connection.
     Opened {
         connection_id: ConnectionId,
+        origin: ConnectionOrigin,
         writer: mpsc::Sender<QueuedOutgoingMessage>,
         disconnect_sender: Option<CancellationToken>,
         initialized: Arc<AtomicBool>,
@@ -858,6 +859,7 @@ pub async fn run_main_with_transport_options(
                         match event {
                             OutboundControlEvent::Opened {
                                 connection_id,
+                                origin,
                                 writer,
                                 disconnect_sender,
                                 initialized,
@@ -866,7 +868,8 @@ pub async fn run_main_with_transport_options(
                             } => {
                                 outbound_connections.insert(
                                     connection_id,
-                                    OutboundConnectionState::new(
+                                    OutboundConnectionState::new_with_origin(
+                                        origin,
                                         writer,
                                         initialized,
                                         experimental_api_enabled,
@@ -995,6 +998,7 @@ pub async fn run_main_with_transport_options(
                                 if outbound_control_tx
                                     .send(OutboundControlEvent::Opened {
                                         connection_id,
+                                        origin,
                                         writer,
                                         disconnect_sender,
                                         initialized: Arc::clone(&outbound_initialized),
@@ -1085,19 +1089,24 @@ pub async fn run_main_with_transport_options(
                                                 std::sync::atomic::Ordering::Release,
                                             );
                                         if !was_initialized && is_initialized {
-                                            processor
-                                                .send_initialize_notifications_to_connection(
-                                                    connection_id,
-                                                )
-                                                .await;
-                                            initialize_notification_sender
-                                                .send_server_notification_to_connections(
-                                                    &[connection_id],
-                                                    ServerNotification::RemoteControlStatusChanged(
-                                                        remote_control_status.clone(),
-                                                    ),
-                                                )
-                                                .await;
+                                            if !matches!(
+                                                connection_state.origin,
+                                                ConnectionOrigin::ExternalController
+                                            ) {
+                                                processor
+                                                    .send_initialize_notifications_to_connection(
+                                                        connection_id,
+                                                    )
+                                                    .await;
+                                                initialize_notification_sender
+                                                    .send_server_notification_to_connections(
+                                                        &[connection_id],
+                                                        ServerNotification::RemoteControlStatusChanged(
+                                                            remote_control_status.clone(),
+                                                        ),
+                                                    )
+                                                    .await;
+                                            }
                                             processor
                                                 .connection_initialized(
                                                     connection_id,

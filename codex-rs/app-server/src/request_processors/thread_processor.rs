@@ -576,11 +576,13 @@ impl ThreadRequestProcessor {
                     .send_response(request_id.clone(), response)
                     .await;
                 for thread_id in archived_thread_ids {
-                    self.outgoing
-                        .send_server_notification(ServerNotification::ThreadArchived(
-                            ThreadArchivedNotification { thread_id },
-                        ))
-                        .await;
+                    self.send_thread_lifecycle_notification(
+                        &thread_id,
+                        ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                            thread_id: thread_id.clone(),
+                        }),
+                    )
+                    .await;
                 }
                 Ok(None)
             }
@@ -617,11 +619,12 @@ impl ThreadRequestProcessor {
                     .send_response(request_id.clone(), response)
                     .await;
                 if let Some(notification) = notification {
-                    self.outgoing
-                        .send_server_notification(ServerNotification::ThreadNameUpdated(
-                            notification,
-                        ))
-                        .await;
+                    let thread_id = notification.thread_id.clone();
+                    self.send_thread_lifecycle_notification(
+                        &thread_id,
+                        ServerNotification::ThreadNameUpdated(notification),
+                    )
+                    .await;
                 }
                 Ok(None)
             }
@@ -707,9 +710,12 @@ impl ThreadRequestProcessor {
                 self.outgoing
                     .send_response(request_id.clone(), response)
                     .await;
-                self.outgoing
-                    .send_server_notification(ServerNotification::ThreadUnarchived(notification))
-                    .await;
+                let thread_id = notification.thread_id.clone();
+                self.send_thread_lifecycle_notification(
+                    &thread_id,
+                    ServerNotification::ThreadUnarchived(notification),
+                )
+                .await;
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -779,6 +785,37 @@ impl ThreadRequestProcessor {
                 }),
             )
             .await;
+    }
+
+    pub(super) async fn send_thread_lifecycle_notification(
+        &self,
+        thread_id: &str,
+        notification: ServerNotification,
+    ) {
+        self.outgoing
+            .send_server_notification(notification.clone())
+            .await;
+        let Ok(thread_id) = ThreadId::from_string(thread_id) else {
+            return;
+        };
+        let subscribed_connection_ids = self
+            .thread_state_manager
+            .subscribed_connection_ids(thread_id)
+            .await;
+        let external_controller_connection_ids = self
+            .controller_processor
+            .external_controller_thread_notification_recipients(
+                thread_id,
+                subscribed_connection_ids,
+            );
+        if !external_controller_connection_ids.is_empty() {
+            self.outgoing
+                .send_server_notification_to_connections(
+                    external_controller_connection_ids.as_slice(),
+                    notification,
+                )
+                .await;
+        }
     }
 
     pub(crate) async fn thread_list(

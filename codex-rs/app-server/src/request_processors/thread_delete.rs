@@ -75,11 +75,13 @@ impl ThreadRequestProcessor {
 
     async fn send_thread_deleted_notifications(&self, deleted_thread_ids: Vec<String>) {
         for thread_id in deleted_thread_ids {
-            self.outgoing
-                .send_server_notification(ServerNotification::ThreadDeleted(
-                    ThreadDeletedNotification { thread_id },
-                ))
-                .await;
+            self.send_thread_lifecycle_notification(
+                &thread_id,
+                ServerNotification::ThreadDeleted(ThreadDeletedNotification {
+                    thread_id: thread_id.clone(),
+                }),
+            )
+            .await;
         }
     }
 

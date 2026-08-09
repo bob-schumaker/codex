@@ -285,6 +285,7 @@ enum ProcessorCommand {
 enum InProcessOutboundControlEvent {
     Opened {
         connection_id: ConnectionId,
+        origin: ConnectionOrigin,
         writer: mpsc::Sender<QueuedOutgoingMessage>,
         disconnect_sender: Option<CancellationToken>,
         initialized: Arc<AtomicBool>,
@@ -567,6 +568,7 @@ async fn run_outbound_router(
                 match event {
                     InProcessOutboundControlEvent::Opened {
                         connection_id,
+                        origin,
                         writer,
                         disconnect_sender,
                         initialized,
@@ -575,7 +577,8 @@ async fn run_outbound_router(
                     } => {
                         outbound_connections.insert(
                             connection_id,
-                            OutboundConnectionState::new(
+                            OutboundConnectionState::new_with_origin(
+                                origin,
                                 writer,
                                 initialized,
                                 experimental_api_enabled,
@@ -782,7 +785,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut outbound_connections = HashMap::<ConnectionId, OutboundConnectionState>::new();
         outbound_connections.insert(
             IN_PROCESS_CONNECTION_ID,
-            OutboundConnectionState::new(
+            OutboundConnectionState::new_with_origin(
+                ConnectionOrigin::InProcess,
                 writer_tx,
                 Arc::clone(&outbound_initialized),
                 Arc::clone(&outbound_experimental_api_enabled),
@@ -906,6 +910,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 if outbound_control_tx
                                     .send(InProcessOutboundControlEvent::Opened {
                                         connection_id,
+                                        origin,
                                         writer,
                                         disconnect_sender,
                                         initialized: Arc::clone(&outbound_initialized),
@@ -982,11 +987,16 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                             .await;
                                         sync_outbound_state_from_session(connection_state);
                                         if !was_initialized && connection_state.session.initialized() {
-                                            processor
-                                                .send_initialize_notifications_to_connection(
-                                                    connection_id,
-                                                )
-                                                .await;
+                                            if !matches!(
+                                                connection_state.origin,
+                                                ConnectionOrigin::ExternalController
+                                            ) {
+                                                processor
+                                                    .send_initialize_notifications_to_connection(
+                                                        connection_id,
+                                                    )
+                                                    .await;
+                                            }
                                             processor
                                                 .connection_initialized(
                                                     connection_id,

@@ -66,6 +66,7 @@ impl ConnectionState {
 }
 
 pub(crate) struct OutboundConnectionState {
+    pub(crate) origin: ConnectionOrigin,
     pub(crate) initialized: Arc<AtomicBool>,
     pub(crate) experimental_api_enabled: Arc<AtomicBool>,
     pub(crate) opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
@@ -74,6 +75,7 @@ pub(crate) struct OutboundConnectionState {
 }
 
 impl OutboundConnectionState {
+    #[cfg(test)]
     pub(crate) fn new(
         writer: mpsc::Sender<QueuedOutgoingMessage>,
         initialized: Arc<AtomicBool>,
@@ -81,7 +83,26 @@ impl OutboundConnectionState {
         opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
         disconnect_sender: Option<CancellationToken>,
     ) -> Self {
+        Self::new_with_origin(
+            ConnectionOrigin::WebSocket,
+            writer,
+            initialized,
+            experimental_api_enabled,
+            opted_out_notification_methods,
+            disconnect_sender,
+        )
+    }
+
+    pub(crate) fn new_with_origin(
+        origin: ConnectionOrigin,
+        writer: mpsc::Sender<QueuedOutgoingMessage>,
+        initialized: Arc<AtomicBool>,
+        experimental_api_enabled: Arc<AtomicBool>,
+        opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+        disconnect_sender: Option<CancellationToken>,
+    ) -> Self {
         Self {
+            origin,
             initialized,
             experimental_api_enabled,
             opted_out_notification_methods,
@@ -270,6 +291,10 @@ pub(crate) async fn route_outgoing_envelope(
                 .iter()
                 .filter_map(|(connection_id, connection_state)| {
                     if connection_state.initialized.load(Ordering::Acquire)
+                        && !matches!(
+                            connection_state.origin,
+                            ConnectionOrigin::ExternalController
+                        )
                         && !should_skip_notification_for_connection(connection_state, &message)
                     {
                         Some(*connection_id)
