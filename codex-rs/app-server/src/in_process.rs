@@ -294,6 +294,7 @@ enum InProcessClientMessage {
 enum ProcessorCommand {
     Request(Box<ClientRequest>),
     Notification(ClientNotification),
+    LocalControllerEndpointFailed { reason: String },
 }
 
 enum InProcessOutboundControlEvent {
@@ -307,6 +308,9 @@ enum InProcessOutboundControlEvent {
         opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
     },
     Closed {
+        connection_id: ConnectionId,
+    },
+    DisconnectAndClose {
         connection_id: ConnectionId,
     },
 }
@@ -604,6 +608,12 @@ async fn run_outbound_router(
                     InProcessOutboundControlEvent::Closed { connection_id } => {
                         outbound_connections.remove(&connection_id);
                     }
+                    InProcessOutboundControlEvent::DisconnectAndClose { connection_id } => {
+                        if let Some(connection_state) = outbound_connections.remove(&connection_id)
+                        {
+                            connection_state.request_disconnect();
+                        }
+                    }
                 }
             }
             envelope = outgoing_rx.recv() => {
@@ -645,6 +655,40 @@ fn initialized_connections(
                 .then_some((*connection_id, connection_state.origin))
         })
         .collect()
+}
+
+async fn close_external_controller_connections(
+    processor: &Arc<MessageProcessor>,
+    connections: &mut HashMap<ConnectionId, ConnectionState>,
+    outbound_control_tx: &mpsc::Sender<InProcessOutboundControlEvent>,
+) -> bool {
+    let connection_ids = connections
+        .iter()
+        .filter_map(|(connection_id, connection_state)| {
+            matches!(
+                connection_state.origin,
+                ConnectionOrigin::ExternalController
+            )
+            .then_some(*connection_id)
+        })
+        .collect::<Vec<_>>();
+
+    for connection_id in connection_ids {
+        if outbound_control_tx
+            .send(InProcessOutboundControlEvent::DisconnectAndClose { connection_id })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(connection_state) = connections.remove(&connection_id) {
+            processor
+                .connection_closed(connection_id, &connection_state.session)
+                .await;
+        }
+    }
+
+    true
 }
 
 type PendingControllerParticipationRequests = Arc<
@@ -782,6 +826,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 
     let runtime_handle = tokio::spawn(async move {
         let mut local_controller_endpoint_handle = local_controller_endpoint_handle;
+        let mut local_controller_endpoint_failure_rx = local_controller_endpoint_handle
+            .as_mut()
+            .and_then(codex_app_server_transport::local_controller::LocalControllerEndpointHandle::take_failure_receiver);
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
@@ -898,6 +945,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                             Some(ProcessorCommand::Notification(notification)) => {
                                 processor.process_client_notification(notification).await;
+                            }
+                            Some(ProcessorCommand::LocalControllerEndpointFailed { reason }) => {
+                                warn!(
+                                    %reason,
+                                    "local-controller endpoint failed; closing external controllers"
+                                );
+                                if !close_external_controller_connections(
+                                    &processor,
+                                    &mut connections,
+                                    &outbound_control_tx,
+                                )
+                                .await
+                                {
+                                    break;
+                                }
                             }
                             None => {
                                 break;
@@ -1215,6 +1277,32 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             break;
                         }
                     }
+                }
+                failure = async {
+                    match local_controller_endpoint_failure_rx.as_mut() {
+                        Some(failure_rx) => failure_rx.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    local_controller_endpoint_failure_rx = None;
+                    let reason = match failure {
+                        Ok(failure) => failure.reason,
+                        Err(err) => format!("local-controller endpoint failure channel closed: {err}"),
+                    };
+                    if processor_tx
+                        .send(ProcessorCommand::LocalControllerEndpointFailed {
+                            reason: reason.clone(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if let Some(local_controller_endpoint_handle) =
+                        local_controller_endpoint_handle.take()
+                        && let Err(err) = local_controller_endpoint_handle.shutdown().await {
+                            warn!(%reason, ?err, "failed to join closed local-controller endpoint");
+                        }
                 }
                 status = controller_ownership_status_rx.recv(), if listen_for_controller_ownership_status => {
                     let Some(status) = status else {
@@ -2372,6 +2460,53 @@ mod tests {
             .expect("outbound router should not wait for its retained sender")
             .expect("outbound router should complete successfully");
         assert!(retained_outgoing_tx.is_closed());
+    }
+
+    #[tokio::test]
+    async fn in_process_outbound_router_disconnect_and_close_requests_disconnect() {
+        let (_outgoing_tx, outgoing_rx) = mpsc::channel(/*buffer*/ 1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (control_tx, control_rx) = mpsc::channel(/*buffer*/ 1);
+        let (writer_tx, mut writer_rx) = mpsc::channel(/*buffer*/ 1);
+        let disconnect_token = CancellationToken::new();
+        let connection_id = ConnectionId(42);
+        let outbound_connections = HashMap::from([(
+            connection_id,
+            OutboundConnectionState::new_with_origin(
+                ConnectionOrigin::ExternalController,
+                writer_tx,
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(RwLock::new(HashSet::new())),
+                Some(disconnect_token.clone()),
+            ),
+        )]);
+        let mut outbound_handle = tokio::spawn(run_outbound_router(
+            outgoing_rx,
+            control_rx,
+            outbound_connections,
+            shutdown_rx,
+        ));
+
+        control_tx
+            .send(InProcessOutboundControlEvent::DisconnectAndClose { connection_id })
+            .await
+            .expect("disconnect control event should send");
+
+        timeout(SHUTDOWN_TIMEOUT, disconnect_token.cancelled())
+            .await
+            .expect("disconnect token should be cancelled");
+        assert!(
+            writer_rx.recv().await.is_none(),
+            "outbound writer should be dropped after disconnect-and-close"
+        );
+
+        drop(control_tx);
+        let _ = shutdown_tx.send(());
+        timeout(SHUTDOWN_TIMEOUT, &mut outbound_handle)
+            .await
+            .expect("outbound router should stop")
+            .expect("outbound router should complete successfully");
     }
 
     #[tokio::test(start_paused = true)]

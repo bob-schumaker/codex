@@ -14,6 +14,7 @@ use futures::SinkExt;
 use pretty_assertions::assert_eq;
 #[cfg(unix)]
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 #[cfg(unix)]
 use tokio::time::Duration;
 #[cfg(unix)]
@@ -121,6 +122,25 @@ async fn publish_rejects_foreign_metadata_at_launch_path() {
         .expect_err("foreign metadata should be rejected");
     assert_eq!(err.kind(), ErrorKind::AlreadyExists);
     assert_eq!(read_metadata(paths.metadata_path.as_path()).await, foreign);
+}
+
+#[tokio::test]
+async fn terminal_accept_error_reports_endpoint_failure() {
+    let (failure_tx, failure_rx) = oneshot::channel();
+    let mut failure_tx = Some(failure_tx);
+
+    report_local_controller_acceptor_failure(
+        &mut failure_tx,
+        std::io::Error::new(ErrorKind::AddrNotAvailable, "accept failed"),
+    );
+
+    assert!(failure_tx.is_none());
+    assert_eq!(
+        failure_rx.await.expect("accept failure should be reported"),
+        LocalControllerEndpointFailure {
+            reason: "local-controller socket accept error: accept failed".to_string(),
+        }
+    );
 }
 
 #[tokio::test]

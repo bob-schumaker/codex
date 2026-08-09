@@ -14,9 +14,9 @@ use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
-use tokio::time::Duration;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::ErrorResponse;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
@@ -40,7 +40,6 @@ const LOCAL_CONTROLLER_SOCKET_SUFFIX: &str = ".sock";
 const LOCAL_CONTROLLER_METADATA_MODE: u32 = 0o600;
 #[cfg(unix)]
 const LOCAL_CONTROLLER_SOCKET_MODE: u32 = 0o600;
-const LOCAL_CONTROLLER_ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 
 pub const LOCAL_CONTROLLER_METADATA_VERSION: u32 = 1;
 pub const LOCAL_CONTROLLER_PROTOCOL_VERSION: u32 = 1;
@@ -108,6 +107,11 @@ impl LocalControllerEndpointMetadata {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct LocalControllerEndpointFailure {
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub struct LocalControllerEndpointGuard {
     metadata_path: AbsolutePathBuf,
@@ -146,9 +150,9 @@ pub struct LocalControllerEndpointHandle {
     codex_home: AbsolutePathBuf,
     metadata: LocalControllerEndpointMetadata,
     socket_path: AbsolutePathBuf,
-    _metadata_guard: LocalControllerEndpointGuard,
     shutdown_token: CancellationToken,
     accept_handle: Option<JoinHandle<()>>,
+    failure_rx: Option<oneshot::Receiver<LocalControllerEndpointFailure>>,
 }
 
 impl LocalControllerEndpointHandle {
@@ -164,12 +168,28 @@ impl LocalControllerEndpointHandle {
         if self.metadata.main_thread_id.is_some() {
             return Ok(());
         }
+        if self
+            .accept_handle
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            return Err(io::Error::new(
+                ErrorKind::BrokenPipe,
+                "local-controller endpoint acceptor is closed",
+            ));
+        }
 
         let mut metadata = self.metadata.clone();
         metadata.main_thread_id = Some(main_thread_id);
         write_local_controller_metadata(self.codex_home.as_path(), &metadata).await?;
         self.metadata = metadata;
         Ok(())
+    }
+
+    pub fn take_failure_receiver(
+        &mut self,
+    ) -> Option<oneshot::Receiver<LocalControllerEndpointFailure>> {
+        self.failure_rx.take()
     }
 
     pub async fn shutdown(mut self) -> Result<(), JoinError> {
@@ -246,25 +266,28 @@ pub async fn start_local_controller_acceptor(
     };
     set_socket_permissions(socket_guard.socket_path.as_path()).await?;
 
+    let metadata_guard = match publish_local_controller_metadata(codex_home, &metadata).await {
+        Ok(metadata_guard) => metadata_guard,
+        Err(err) => {
+            drop(socket_guard);
+            return Err(err);
+        }
+    };
+    let metadata_path = metadata_guard.metadata_path().clone();
     let endpoint_shutdown_token = shutdown_token.child_token();
+    let (failure_tx, failure_rx) = oneshot::channel();
     let accept_handle = tokio::spawn(run_local_controller_acceptor(
         listener,
         transport_event_tx,
         endpoint_shutdown_token.clone(),
         socket_guard,
+        metadata_guard,
         metadata.launch_nonce.clone(),
+        failure_tx,
     ));
-    let metadata_guard = match publish_local_controller_metadata(codex_home, &metadata).await {
-        Ok(metadata_guard) => metadata_guard,
-        Err(err) => {
-            endpoint_shutdown_token.cancel();
-            let _ = accept_handle.await;
-            return Err(err);
-        }
-    };
     tracing::info!(
         socket_path = %paths.socket_path.display(),
-        metadata_path = %metadata_guard.metadata_path().display(),
+        metadata_path = %metadata_path.display(),
         "local-controller endpoint listening"
     );
 
@@ -272,9 +295,9 @@ pub async fn start_local_controller_acceptor(
         codex_home: absolute_path(codex_home.to_path_buf())?,
         metadata,
         socket_path: paths.socket_path,
-        _metadata_guard: metadata_guard,
         shutdown_token: endpoint_shutdown_token,
         accept_handle: Some(accept_handle),
+        failure_rx: Some(failure_rx),
     })
 }
 
@@ -383,9 +406,13 @@ async fn run_local_controller_acceptor(
     transport_event_tx: mpsc::Sender<TransportEvent>,
     shutdown_token: CancellationToken,
     socket_guard: LocalControllerSocketFileGuard,
+    metadata_guard: LocalControllerEndpointGuard,
     launch_nonce: String,
+    failure_tx: oneshot::Sender<LocalControllerEndpointFailure>,
 ) {
     let _socket_guard = socket_guard;
+    let _metadata_guard = metadata_guard;
+    let mut failure_tx = Some(failure_tx);
     loop {
         let stream = tokio::select! {
             _ = shutdown_token.cancelled() => {
@@ -402,9 +429,8 @@ async fn run_local_controller_acceptor(
                             tracing::warn!("recoverable local-controller socket accept error: {err}");
                             continue;
                         }
-                        tracing::error!("local-controller socket accept error: {err}");
-                        tokio::time::sleep(LOCAL_CONTROLLER_ACCEPT_ERROR_BACKOFF).await;
-                        continue;
+                        report_local_controller_acceptor_failure(&mut failure_tx, err);
+                        break;
                     }
                 }
             }
@@ -444,6 +470,17 @@ async fn run_local_controller_acceptor(
         });
     }
     tracing::info!("local-controller acceptor shutting down");
+}
+
+fn report_local_controller_acceptor_failure(
+    failure_tx: &mut Option<oneshot::Sender<LocalControllerEndpointFailure>>,
+    err: io::Error,
+) {
+    let reason = format!("local-controller socket accept error: {err}");
+    tracing::error!("{reason}");
+    if let Some(failure_tx) = failure_tx.take() {
+        let _ = failure_tx.send(LocalControllerEndpointFailure { reason });
+    }
 }
 
 fn verify_same_user_peer(stream: &UnixStream) -> io::Result<()> {
