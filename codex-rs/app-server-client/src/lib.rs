@@ -158,19 +158,7 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
-        notification,
-        ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ControllerAuthorizationChanged(_)
-            | ServerNotification::ControllerControlOwnershipChanged(_)
-            | ServerNotification::ItemCompleted(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-            | ServerNotification::AgentMessageDelta(_)
-            | ServerNotification::PlanDelta(_)
-            | ServerNotification::ReasoningSummaryTextDelta(_)
-            | ServerNotification::ReasoningTextDelta(_)
-    )
+    codex_app_server::in_process::server_notification_requires_delivery(notification)
 }
 
 /// Outcome of attempting to forward a single event to the consumer channel.

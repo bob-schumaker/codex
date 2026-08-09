@@ -168,7 +168,14 @@ impl InProcessLocalControllerEndpointStatus {
 
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
-fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
+/// Returns true when an embedded in-process app-server notification must block
+/// for delivery instead of using best-effort `try_send`.
+///
+/// Keep this as the single classifier for both the embedded runtime writer and
+/// the app-server-client bridge so transcript, terminal, and controller
+/// ownership events cannot be dropped before the TUI can reflect canonical
+/// thread state.
+pub fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
