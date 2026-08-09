@@ -15,6 +15,7 @@ use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
 use codex_app_server_protocol::ThreadRealtimeInitialItem;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStartTransport;
@@ -336,6 +337,44 @@ fn controller_realtime_start_allows_input_transport_shape_only() {
             data.code,
             ControllerErrorCode::ControllerNotAllowed,
             "{field_name} must stay TUI-only for external-controller thread/realtime/start"
+        );
+    }
+}
+
+#[test]
+fn controller_realtime_append_text_allows_user_role_only() {
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ThreadRealtimeAppendText {
+            request_id: RequestId::Integer(19),
+            params: ThreadRealtimeAppendTextParams {
+                thread_id: "thread-1".to_string(),
+                text: "user input".to_string(),
+                role: ConversationTextRole::User,
+            },
+        }),
+        Ok(())
+    );
+
+    for role in [
+        ConversationTextRole::Developer,
+        ConversationTextRole::Assistant,
+    ] {
+        let error = reject_controller_tui_only_params(&ClientRequest::ThreadRealtimeAppendText {
+            request_id: RequestId::Integer(20),
+            params: ThreadRealtimeAppendTextParams {
+                thread_id: "thread-1".to_string(),
+                text: "not user input".to_string(),
+                role,
+            },
+        })
+        .expect_err("controller realtime append text roles other than user should be rejected");
+        let data: ControllerErrorData =
+            serde_json::from_value(error.data.expect("controller error should include data"))
+                .expect("controller error data should deserialize");
+        assert_eq!(
+            data.code,
+            ControllerErrorCode::ControllerNotAllowed,
+            "{role:?} must stay TUI-only for external-controller thread/realtime/appendText"
         );
     }
 }

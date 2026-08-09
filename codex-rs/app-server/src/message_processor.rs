@@ -2108,6 +2108,18 @@ fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSON
                 "external controller thread/realtime/start may only start realtime input for the authorized main thread without context or configuration overrides",
             ))
         }
+        ClientRequest::ThreadRealtimeAppendText { params, .. } => {
+            if matches!(
+                params.role,
+                codex_protocol::protocol::ConversationTextRole::User
+            ) {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller thread/realtime/appendText may only append user-role realtime text to the authorized main thread",
+            ))
+        }
         ClientRequest::ReviewStart { params, .. } => {
             if !matches!(
                 params.delivery.as_ref(),
