@@ -22,7 +22,8 @@
   `review/start` stays on the authorized main thread, plus gating
   controller-origin realtime startup context/configuration overrides and
   realtime text role injection, plus fencing controller-origin section moves
-  from ordering the main thread relative to another thread; remaining
+  from ordering the main thread relative to another thread, plus focused TUI
+  reclaim coverage for Guardian-denied approvals; remaining
   Codex-side review is centered on implicit targets, egress transactionality,
   and subscription edges while downstream discovery/display consumes the
   published local-controller metadata contract.
@@ -415,6 +416,13 @@
     after reverting unrelated fixer hunks, `just fmt`, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Added focused TUI reclaim-classifier coverage proving
+    `AppCommand::ApproveGuardianDeniedAction` is treated as a thread-affecting
+    approval reply, matching the controller design's TUI-primary reclaim
+    invariant for approval input.
+  - Validated the TUI reclaim coverage with
+    `just test -p codex-tui controller_reclaim` passing 4/4 focused tests, then
+    ran `just fmt`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
