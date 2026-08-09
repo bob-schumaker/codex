@@ -1458,7 +1458,7 @@ async fn archived_untracked_threads_do_not_appear_in_agent_picker() -> Result<()
 
     let archived_thread_id = ThreadId::new();
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
             ServerNotification::ThreadArchived(ThreadArchivedNotification {
                 thread_id: archived_thread_id.to_string(),
@@ -4147,7 +4147,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
             sentry_config,
         )]))
         .expect("test MCP servers should accept any configuration");
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
@@ -4156,7 +4156,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
     app.active_thread_id = Some(parent_thread_id);
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
             ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                 thread_id: Some(child_thread_id.to_string()),
@@ -4223,7 +4223,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
 async fn app_scoped_mcp_startup_notifications_do_not_render_in_active_thread() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     while app_event_rx.try_recv().is_ok() {}
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let thread_id = ThreadId::new();
@@ -4231,7 +4231,7 @@ async fn app_scoped_mcp_startup_notifications_do_not_render_in_active_thread() {
     app.active_thread_id = Some(thread_id);
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
             ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                 thread_id: None,
@@ -4266,7 +4266,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
             sentry_config,
         )]))
         .expect("test MCP servers should accept any configuration");
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
@@ -4295,7 +4295,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
         McpServerStartupState::Failed,
     ] {
         app.handle_app_server_event(
-            &app_server,
+            &mut app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
                 ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                     thread_id: Some(side_thread_id.to_string()),
@@ -4483,7 +4483,7 @@ async fn background_side_cleanup_removes_local_state_and_ignores_late_events() -
     assert!(!app.thread_event_channels.contains_key(&side_thread_id));
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         codex_app_server_client::AppServerEvent::ServerRequest(Box::new(exec_approval_request(
             side_thread_id,
             "turn-1",
@@ -7017,6 +7017,119 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
 }
 
 #[tokio::test]
+async fn lag_refresh_replays_authoritative_active_thread_snapshot() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    while app_event_rx.try_recv().is_ok() {}
+
+    let thread_id = ThreadId::new();
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/original")),
+        vec![test_turn(
+            "stale-turn",
+            TurnStatus::Completed,
+            vec![ThreadItem::UserMessage {
+                id: "stale-user".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "stale prompt".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            }],
+        )],
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    let authoritative_turns = vec![test_turn(
+        "authoritative-turn",
+        TurnStatus::Completed,
+        vec![
+            ThreadItem::UserMessage {
+                id: "authoritative-user".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "authoritative prompt".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+            ThreadItem::AgentMessage {
+                id: "authoritative-agent".to_string(),
+                text: "authoritative answer".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        ],
+    )];
+    let input_state = app.chat_widget.capture_thread_input_state();
+
+    app.apply_thread_read_after_lag(
+        thread_id,
+        Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "authoritative prompt".to_string(),
+            ephemeral: false,
+            section: None,
+            section_entered_at: None,
+            history_mode: Default::default(),
+            model_provider: "refreshed-provider".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            recency_at: Some(2),
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/refreshed").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            can_accept_direct_input: None,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: Some("refreshed thread".to_string()),
+            turns: authoritative_turns.clone(),
+        },
+        input_state,
+    )
+    .await;
+
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("active thread channel should remain registered")
+        .store
+        .lock()
+        .await;
+    assert_eq!(store.snapshot().turns, authoritative_turns);
+    drop(store);
+
+    let mut rendered_cells = Vec::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            rendered_cells.push(lines_to_single_string(&cell.display_lines(/*width*/ 120)));
+        }
+    }
+    let rendered = rendered_cells.join("\n");
+    assert!(
+        rendered.contains("authoritative prompt"),
+        "expected lag refresh to replay authoritative user text, got {rendered}"
+    );
+    assert!(
+        rendered.contains("authoritative answer"),
+        "expected lag refresh to replay authoritative assistant text, got {rendered}"
+    );
+    assert!(
+        !rendered.contains("stale prompt"),
+        "expected lag refresh replay to omit stale buffered text, got {rendered}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn late_usage_result_can_follow_finalized_plan() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.chat_widget
@@ -7268,7 +7381,7 @@ async fn override_turn_context_sends_thread_settings_update() {
         );
 
         app.handle_app_server_event(
-            &app_server,
+            &mut app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
                 ServerNotification::ThreadSettingsUpdated(notification),
             )),

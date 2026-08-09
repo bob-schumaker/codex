@@ -518,7 +518,7 @@ goals = true
     }
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         AppServerEvent::ServerNotification(Box::new(
             ServerNotification::ModelSafetyBufferingUpdated(
                 ModelSafetyBufferingUpdatedNotification {
@@ -597,7 +597,7 @@ goals = true
         )
         .await;
         app.handle_app_server_event(
-            &app_server,
+            &mut app_server,
             AppServerEvent::ServerNotification(Box::new(
                 ServerNotification::ModelSafetyBufferingUpdated(
                     ModelSafetyBufferingUpdatedNotification {

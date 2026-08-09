@@ -51,7 +51,7 @@ fn account_rate_limits_response(snapshot: RateLimitSnapshot) -> GetAccountRateLi
 
 async fn deliver_rolling_rate_limit_snapshot(
     app: &mut App,
-    app_server: &AppServerSession,
+    app_server: &mut AppServerSession,
     snapshot: RateLimitSnapshot,
 ) {
     app.handle_app_server_event(
@@ -103,7 +103,7 @@ fn deliver_usage_limit_error(app: &mut App) {
 #[tokio::test]
 async fn rolling_workspace_hard_stops_invalidate_older_rate_limit_reads() -> Result<()> {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
 
@@ -137,7 +137,7 @@ async fn rolling_workspace_hard_stops_invalidate_older_rate_limit_reads() -> Res
     for (reached_type, spend_control_reached, invalidates) in cases {
         deliver_rolling_rate_limit_snapshot(
             &mut app,
-            &app_server,
+            &mut app_server,
             rate_limit_snapshot(
                 /*used_percent*/ 95,
                 reached_type,
@@ -226,7 +226,7 @@ async fn stale_rate_limit_reads_preserve_newer_workspace_hard_stop_for_every_ori
         if origin_name == "reset-picker" {
             rolling_snapshot.limit_id = Some("codex_other".to_string());
         }
-        deliver_rolling_rate_limit_snapshot(&mut app, &app_server, rolling_snapshot).await;
+        deliver_rolling_rate_limit_snapshot(&mut app, &mut app_server, rolling_snapshot).await;
         assert_ne!(read_generation, app.rate_limit_hard_stop_generation);
 
         let control = Box::pin(app.handle_event(
@@ -292,7 +292,7 @@ async fn stale_rate_limit_read_does_not_dismiss_visible_workspace_advisory() -> 
 
     deliver_rolling_rate_limit_snapshot(
         &mut app,
-        &app_server,
+        &mut app_server,
         rate_limit_snapshot(
             /*used_percent*/ 95,
             Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached),
@@ -341,7 +341,7 @@ async fn post_hard_stop_rate_limit_read_clears_recovered_workspace_limit() -> Re
     .await?;
     deliver_rolling_rate_limit_snapshot(
         &mut app,
-        &app_server,
+        &mut app_server,
         rate_limit_snapshot(
             /*used_percent*/ 95,
             Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached),

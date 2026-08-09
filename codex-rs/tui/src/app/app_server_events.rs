@@ -47,17 +47,19 @@ impl App {
 
     pub(super) async fn handle_app_server_event(
         &mut self,
-        app_server_client: &AppServerSession,
+        app_server_client: &mut AppServerSession,
         event: AppServerEvent,
     ) {
         match event {
             AppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
                     skipped,
-                    "app-server event consumer lagged; dropping ignored events"
+                    "app-server event consumer lagged; refreshing active thread snapshot"
                 );
                 self.refresh_mcp_startup_expected_servers_from_config();
                 self.chat_widget.finish_mcp_startup_after_lag();
+                self.refresh_current_thread_after_lag(app_server_client)
+                    .await;
             }
             AppServerEvent::ControllerParticipationRequest(request) => {
                 self.chat_widget
@@ -93,6 +95,48 @@ impl App {
                 self.app_event_tx.send(AppEvent::FatalExitRequest(message));
             }
         }
+    }
+
+    async fn refresh_current_thread_after_lag(&mut self, app_server_client: &mut AppServerSession) {
+        let Some(thread_id) = self.current_displayed_thread_id() else {
+            return;
+        };
+        let input_state = self.chat_widget.capture_thread_input_state();
+        let thread = match app_server_client
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await
+        {
+            Ok(thread) => thread,
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to refresh thread snapshot after app-server event lag"
+                );
+                return;
+            }
+        };
+        self.apply_thread_read_after_lag(thread_id, thread, input_state)
+            .await;
+    }
+
+    pub(super) async fn apply_thread_read_after_lag(
+        &mut self,
+        thread_id: codex_protocol::ThreadId,
+        thread: codex_app_server_protocol::Thread,
+        input_state: Option<crate::chatwidget::ThreadInputState>,
+    ) {
+        let session = self.session_state_for_thread_read(thread_id, &thread).await;
+        let turns = thread.turns;
+        let snapshot = {
+            let channel = self.ensure_thread_channel(thread_id);
+            let mut store = channel.store.lock().await;
+            store.set_session(session, turns);
+            store.input_state = input_state;
+            store.rebase_buffer_after_session_refresh();
+            store.snapshot()
+        };
+        self.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
     }
 
     async fn handle_server_notification_event(

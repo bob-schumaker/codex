@@ -20,7 +20,7 @@ fn configure_mcp_servers(app: &mut App) {
 async fn subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     configure_mcp_servers(&mut app);
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
     let root_thread_id = ThreadId::new();
@@ -55,7 +55,7 @@ async fn subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
         ("deferred", McpServerStartupState::Ready, false),
     ] {
         app.handle_app_server_event(
-            &app_server,
+            &mut app_server,
             codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
                 ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
                     thread_id: Some(subagent_thread_id.to_string()),
