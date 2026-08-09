@@ -10,9 +10,15 @@ use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ToolRequestUserInputAnswer;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::UserInput;
+use codex_protocol::approvals::GuardianAssessmentAction;
+use codex_protocol::approvals::GuardianAssessmentEvent;
+use codex_protocol::approvals::GuardianAssessmentStatus;
+use codex_protocol::approvals::GuardianCommandSource;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_utils_absolute_path::test_support::PathBufExt;
+use codex_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 
 use super::ControllerReclaimDecision;
@@ -62,6 +68,9 @@ fn approval_and_user_input_replies_reclaim_control() {
             scope: PermissionGrantScope::Turn,
             strict_auto_review: false,
         },
+    ));
+    assert_thread_affecting(AppCommand::approve_guardian_denied_action(
+        guardian_denied_event(),
     ));
 }
 
@@ -131,5 +140,27 @@ fn user_turn_command() -> AppCommand {
         final_output_json_schema: None,
         collaboration_mode: None,
         personality: None,
+    }
+}
+
+fn guardian_denied_event() -> GuardianAssessmentEvent {
+    GuardianAssessmentEvent {
+        id: "guardian-review".to_string(),
+        target_item_id: None,
+        plugin_id: None,
+        script_path: None,
+        turn_id: "turn-guardian".to_string(),
+        started_at_ms: 0,
+        completed_at_ms: Some(1),
+        status: GuardianAssessmentStatus::Denied,
+        risk_level: None,
+        user_authorization: None,
+        rationale: Some("denied".to_string()),
+        decision_source: None,
+        action: GuardianAssessmentAction::Command {
+            source: GuardianCommandSource::Shell,
+            command: "make test".to_string(),
+            cwd: test_path_buf("/tmp").abs(),
+        },
     }
 }
