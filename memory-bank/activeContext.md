@@ -48,7 +48,8 @@
   rejections back to the external-controller connection without resolving the
   pending prompt, plus adding protocol/export coverage for controller
   notification schemas and all canonical controller error-code wire names, plus
-  TUI app-server lag snapshot recovery;
+  TUI app-server lag snapshot recovery, plus lossless `thread/started`
+  delivery through the in-process TUI bridge;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -717,6 +718,20 @@
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 13.03s with the known `__eh_frame` linker
     warning.
+  - Added `thread/started` to the shared in-process lossless delivery
+    classifier used by the embedded runtime writer and app-server-client bridge,
+    so TUI reflection cannot drop thread activation under backpressure.
+  - Validated the thread-started lossless-delivery slice at commit `4d9b974`
+    with `just fmt` passing,
+    `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+    passing 1/1 focused test,
+    `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+    passing 1/1 focused test after correcting the new fixture's history mode,
+    scoped `just fix` for `codex-app-server` and `codex-app-server-client`
+    passing after unrelated app-server fixer hunks were reverted, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 19.27s with the known `__eh_frame` linker
+    warning.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -746,7 +761,8 @@
     prompt-rejection error surfacing, or controller notification schema
     coverage, or realtime transcript/lifecycle delivery preservation, or TUI
     realtime-error rendering, or TUI realtime transcript rendering, or TUI
-    app-server lag snapshot recovery.
+    app-server lag snapshot recovery, or lossless `thread/started`
+    notification delivery.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -780,9 +796,10 @@
   notification preservation, plus controller prompt-rejection error surfacing,
   plus controller notification schema coverage, plus reasoning-summary-part
   lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
-  transcript rendering, plus TUI app-server lag snapshot recovery.
+  transcript rendering, plus TUI app-server lag snapshot recovery, plus
+  lossless `thread/started` notification delivery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `ff0dd36`.
+  commit `4d9b974`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

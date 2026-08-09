@@ -200,8 +200,12 @@
   thread from an authoritative `thread/read(includeTurns=true)` snapshot and
   replays it through normal history rendering while preserving current input
   state.
+- `thread/started` notifications now use the same lossless in-process delivery
+  tier as other controller-relevant lifecycle/state notifications, so the TUI
+  bridge cannot drop thread activation before reflecting controller-originated
+  work.
 - The latest Codex-side source checkpoint is
-  `ff0dd36` for launch metadata publication, native approval coverage, exact
+  `4d9b974` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -235,7 +239,8 @@
   controller prompt-rejection surfacing and protocol/export schema coverage for
   controller notifications and canonical controller error-code wire names, plus
   TUI realtime-error warning rendering, plus TUI realtime transcript rendering,
-  plus TUI app-server lag snapshot recovery.
+  plus TUI app-server lag snapshot recovery, plus lossless `thread/started`
+  delivery through the in-process TUI bridge.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -254,7 +259,7 @@
   passing, `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 14.53s with the known `__eh_frame` linker
   warning, and `git diff --check` plus `git diff --cached --check` passing.
-- The latest focused validation for commit `ff0dd36` is `just fmt` passing,
+- The focused validation for commit `ff0dd36` was `just fmt` passing,
   `just test -p codex-tui lag_refresh_replays_authoritative_active_thread_snapshot`
   passing 1/1 focused test, `just test -p codex-tui mcp_startup
   app_scoped_mcp_startup_notifications_do_not_render_in_active_thread
@@ -263,6 +268,16 @@
   passing with no pending snapshots, `just fix -p codex-tui` passing, and
   `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in
   13.03s with the known `__eh_frame` linker warning.
+- The latest focused validation for commit `4d9b974` is `just fmt` passing,
+  `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+  passing 1/1 focused test, `just test -p codex-app-server-client
+  event_requires_delivery_marks_transcript_and_terminal_events` passing 1/1
+  focused test after correcting the fixture from nonexistent
+  `ThreadHistoryMode::Full` to the default history mode, scoped
+  `just fix -p codex-app-server` and `just fix -p codex-app-server-client`
+  passing after unrelated app-server fixer hunks were reverted, and
+  `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in
+  19.27s with the known `__eh_frame` linker warning.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
@@ -568,7 +583,8 @@
   plus exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus TUI realtime transcript rendering, plus TUI
-  app-server lag snapshot recovery.
+  app-server lag snapshot recovery, plus lossless `thread/started`
+  notification delivery through the in-process TUI bridge.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
