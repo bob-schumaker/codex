@@ -349,6 +349,15 @@
   after unrelated fixer hunks were reverted, `just fmt` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `2c27d3f` is
+  `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript`
+  passing 1/1 focused test, `just test -p codex-app-server in_process::tests`
+  passing 10/10 in-process tests, `just test -p codex-app-server controller`
+  passing 87/87 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, `just fmt` passing, `git diff
+  --check` and `git diff --cached --check` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -370,7 +379,9 @@
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
   coverage, archive/delete spawned-descendant subtree fencing, delivered
   controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting, plus listener server-request resolution targeting.
+  controller targeting, listener server-request resolution targeting, and
+  embedded in-process transcript/item delivery preservation before the
+  app-server-client lossless bridge.
   There is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
@@ -421,6 +432,10 @@
   Running-thread resume replay now skips prompts that already crossed external
   delivery to a controller, so ownership changes or TUI resume do not duplicate
   delivered controller prompts to another connection.
+  Embedded in-process app-server delivery now preserves transcript deltas,
+  plan/reasoning deltas, item completion, terminal notifications, and controller
+  ownership/status notifications under saturation so the client-side lossless
+  bridge is not bypassed before the TUI can reflect controller-originated work.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -444,6 +459,9 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
+- Keep the embedded app-server and app-server-client lossless delivery
+  classifiers aligned when new canonical TUI transcript or ownership events are
+  added.
 - Continue validating long-lived subscription behavior; exact-thread and
   collection-filtered pagination cursors now have explicit
   connection/main-thread binding coverage, including internal `thread/resume`

@@ -29,7 +29,9 @@
   skipping running-thread resume replay for controller prompts after external
   delivery, plus routing app-server extension fallback goal/warning egress
   through controller-aware recipient computation, plus routing listener-ordered
-  `serverRequest/resolved` egress through the controller-aware thread sender;
+  `serverRequest/resolved` egress through the controller-aware thread sender,
+  plus preserving embedded in-process transcript/item delivery before the
+  client-side lossless bridge sees reflected controller work;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -536,9 +538,10 @@
   thread-goal notification targeting, plus listener-warning targeting and
   extension no-listener goal/warning fallback controller targeting, plus app-server
   thread-goal fallback targeting, plus listener server-request resolution
-  targeting, plus thread-scoped MCP OAuth completion targeting.
+  targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
+  in-process transcript/item delivery preservation.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `e17994d`.
+  commit `2c27d3f`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
