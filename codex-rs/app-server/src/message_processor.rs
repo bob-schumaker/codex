@@ -2085,6 +2085,18 @@ fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSON
                 "external controller turn/steer may only steer the authorized main thread without additional context overrides",
             ))
         }
+        ClientRequest::ReviewStart { params, .. } => {
+            if !matches!(
+                params.delivery.as_ref(),
+                Some(codex_app_server_protocol::ReviewDelivery::Detached)
+            ) {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller review/start may only run inline on the authorized main thread",
+            ))
+        }
         _ => Ok(()),
     }
 }

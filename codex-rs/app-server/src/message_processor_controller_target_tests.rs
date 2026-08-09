@@ -7,6 +7,9 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::McpResourceReadParams;
+use codex_app_server_protocol::ReviewDelivery;
+use codex_app_server_protocol::ReviewStartParams;
+use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
@@ -242,6 +245,39 @@ fn controller_turn_steer_rejects_additional_context_override() {
         serde_json::from_value(error.data.expect("controller error should include data"))
             .expect("controller error data should deserialize");
     assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+}
+
+#[test]
+fn controller_review_start_rejects_detached_delivery() {
+    let mut inline_params = safe_review_start_params("thread-1");
+    inline_params.delivery = Some(ReviewDelivery::Inline);
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ReviewStart {
+            request_id: RequestId::Integer(17),
+            params: inline_params,
+        }),
+        Ok(())
+    );
+
+    let mut detached_params = safe_review_start_params("thread-1");
+    detached_params.delivery = Some(ReviewDelivery::Detached);
+    let error = reject_controller_tui_only_params(&ClientRequest::ReviewStart {
+        request_id: RequestId::Integer(18),
+        params: detached_params,
+    })
+    .expect_err("controller detached review/start should be rejected");
+    let data: ControllerErrorData =
+        serde_json::from_value(error.data.expect("controller error should include data"))
+            .expect("controller error data should deserialize");
+    assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ReviewStart {
+            request_id: RequestId::Integer(19),
+            params: safe_review_start_params("thread-1"),
+        }),
+        Ok(())
+    );
 }
 
 #[test]
@@ -540,5 +576,15 @@ fn safe_turn_steer_params(thread_id: impl Into<String>) -> TurnSteerParams {
         responsesapi_client_metadata: None,
         additional_context: None,
         expected_turn_id: "turn-1".to_string(),
+    }
+}
+
+fn safe_review_start_params(thread_id: impl Into<String>) -> ReviewStartParams {
+    ReviewStartParams {
+        thread_id: thread_id.into(),
+        target: ReviewTarget::Custom {
+            instructions: "review this".to_string(),
+        },
+        delivery: None,
     }
 }
