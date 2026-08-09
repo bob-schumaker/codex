@@ -191,8 +191,17 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                     );
                 }
                 let outgoing = Arc::clone(&self.outgoing);
+                let thread_state_manager = self.thread_state_manager.clone();
                 tokio::spawn(async move {
-                    outgoing
+                    let subscribed_connection_ids = thread_state_manager
+                        .subscribed_connection_ids(thread_id)
+                        .await;
+                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+                        outgoing,
+                        subscribed_connection_ids,
+                        thread_id,
+                    );
+                    thread_outgoing
                         .send_server_notification(ServerNotification::ThreadGoalUpdated(
                             ThreadGoalUpdatedNotification {
                                 thread_id: thread_id.to_string(),
@@ -380,6 +389,73 @@ mod tests {
             panic!("expected warning listener command");
         };
         assert_eq!(message, "🙂".repeat(64));
+    }
+
+    #[tokio::test]
+    async fn app_server_event_sink_targets_goal_subscriber_without_listener() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let subscribed_connection = ConnectionId(1);
+        let unrelated_connection = ConnectionId(2);
+        let thread_state_manager = ThreadStateManager::new();
+        for connection_id in [subscribed_connection, unrelated_connection] {
+            thread_state_manager
+                .connection_initialized(connection_id, ConnectionCapabilities::default())
+                .await;
+        }
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                subscribed_connection,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("connection should be subscribed");
+        let sink = app_server_extension_event_sink(outgoing, thread_state_manager);
+
+        sink.emit(thread_goal_updated_event(thread_id, "turn-1"));
+
+        let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for thread goal update notification")
+            .expect("outgoing channel closed unexpectedly");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx: _,
+        } = envelope
+        else {
+            panic!("expected connection-targeted thread goal update notification");
+        };
+        assert_eq!(connection_id, subscribed_connection);
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected app-server thread goal update notification");
+        };
+        let ServerNotification::ThreadGoalUpdated(notification) = envelope.notification else {
+            panic!("expected thread goal update notification");
+        };
+        assert_eq!(
+            notification,
+            ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: Some("turn-1".to_string()),
+                goal: ThreadGoal {
+                    thread_id: thread_id.to_string(),
+                    objective: "wire extension events".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(123),
+                    tokens_used: 45,
+                    time_used_seconds: 6,
+                    created_at: 7,
+                    updated_at: 8,
+                },
+            }
+        );
+        assert!(outgoing_rx.try_recv().is_err());
     }
 
     #[tokio::test]
