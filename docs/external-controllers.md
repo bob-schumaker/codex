@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `22086cc`
-(`test(app-server): cover primary prompt error reclaim`). The recorded
+Codex-side hardening has continued through commit `aac4b99`
+(`fix(app-server): preserve reasoning summary part delivery`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -295,7 +295,9 @@ seconds (approximately 20h 04m 33s). At the controller control-plane overload
 coverage slice, the cumulative goal cost was 17,786,148 tokens and 73,074
 seconds (approximately 20h 17m 54s). At the primary prompt-reply reclaim slice,
 the cumulative goal cost was 18,050,045 tokens and 73,904 seconds
-(approximately 20h 31m 44s). These costs include implementation,
+(approximately 20h 31m 44s). At the reasoning-summary-part lossless delivery
+slice, the cumulative goal cost was 18,403,089 tokens and 74,556 seconds
+(approximately 20h 42m 36s). These costs include implementation,
 review, validation, and commit preparation across the staged slices; they are
 not limited to build/test subprocess runtime.
 
@@ -303,7 +305,7 @@ The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
 no repository docs build target to run for this page.
 
-Final build and validation evidence:
+Recorded build and validation evidence:
 
 | Check | Result | Reported cost |
 | --- | --- | --- |
@@ -364,6 +366,10 @@ Final build and validation evidence:
 | `just test -p codex-app-server controller_prompt_response_is_bound_to_owner_epoch` | Passed: 1 test run, 1 passed, 1246 skipped after the shared server-request mapping change. | Compile reported 1.52s; nextest reported 0.761s. |
 | `just test -p codex-app-server controller_current_time_request_is_bound_to_owner_epoch` | Passed: 1 test run, 1 passed, 1246 skipped after the shared server-request mapping change. | Compile reported 1.71s; nextest reported 0.710s. |
 | `git diff --check` | Passed after the primary prompt-reply reclaim slice. | Subsecond. |
+| `just fmt` | Passed after the reasoning-summary-part lossless delivery slice. | Shell wall time was 6.429s. |
+| `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications` | Passed: 1 test run, 1 passed, 1246 skipped. This covers the embedded in-process lossless classifier preserving `item/reasoning/summaryPartAdded` with other transcript/reasoning/terminal notifications. | Compile reported 27.13s; nextest reported 0.060s. |
+| `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events` | Passed: 1 test run, 1 passed, 28 skipped. This covers the app-server-client bridge preserving `item/reasoning/summaryPartAdded` through the shared classifier. | Compile reported 15.63s; nextest reported 0.060s. |
+| `git diff --check` and `git diff --cached --check` | Passed after the reasoning-summary-part lossless delivery slice. | Subsecond. |
 
 ## Relevant implementation seams
 

@@ -181,8 +181,11 @@
   preserve controller-relevant thread lifecycle/state notifications under
   backpressure: `thread/status/changed`, `thread/archived`, `thread/deleted`,
   `thread/unarchived`, `thread/closed`, and `thread/name/updated`.
+- The shared in-process lossless delivery classifier now also preserves
+  `item/reasoning/summaryPartAdded`, so reasoning summary section boundaries
+  cannot be dropped before the TUI bridge reflects controller-originated work.
 - The latest Codex-side source checkpoint is
-  `3d96c79` for launch metadata publication, native approval coverage, exact
+  `aac4b99` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -211,7 +214,8 @@
   per-connection external-controller ingress with typed `controller-overloaded`
   retry guidance, plus terminal controller launch closure when the immutable
   main thread closes or unloads, plus lossless in-process delivery for
-  controller-relevant thread lifecycle/state notifications, plus typed
+  controller-relevant thread lifecycle/state notifications and reasoning
+  summary section boundaries, plus typed
   controller prompt-rejection surfacing and protocol/export schema coverage for
   controller notifications and canonical controller error-code wire names.
 - Focused app-server controller tests pass. The latest full
@@ -603,6 +607,8 @@
   Controller-relevant thread lifecycle/state notifications are now also in the
   lossless in-process delivery tier so controller-originated normal-interface
   actions cannot be dropped before the TUI bridge observes them.
+  Reasoning summary part-added notifications are now also in that lossless tier,
+  matching the existing lossless treatment for reasoning summary text deltas.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

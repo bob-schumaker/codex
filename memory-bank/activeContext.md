@@ -42,10 +42,11 @@
   without limit, plus marking the controller launch terminal when the immutable
   main thread is closed or unloaded, plus preserving controller-relevant thread
   lifecycle/state notifications across the in-process TUI delivery bridge under
-  backpressure, plus surfacing typed controller prompt-reply rejections back to
-  the external-controller connection without resolving the pending prompt, plus
-  adding protocol/export coverage for controller notification schemas and all
-  canonical controller error-code wire names;
+  backpressure, plus preserving reasoning summary section boundaries across the
+  same lossless bridge, plus surfacing typed controller prompt-reply rejections
+  back to the external-controller connection without resolving the pending
+  prompt, plus adding protocol/export coverage for controller notification
+  schemas and all canonical controller error-code wire names;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -628,6 +629,18 @@
     only because `.pre-commit-config.yaml` is not present, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Preserved reasoning summary section-boundary notifications across the
+    embedded in-process TUI delivery path and the app-server-client bridge.
+    The shared lossless classifier now includes
+    `item/reasoning/summaryPartAdded`, matching the existing lossless handling
+    for reasoning summary text deltas.
+  - Validated the reasoning-summary-part lossless slice at commit `aac4b99`
+    with `just fmt` passing,
+    `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+    passing 1/1 focused test,
+    `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+    passing 1/1 focused test, `git diff --check` and
+    `git diff --cached --check` passing.
   - Surfaced external-controller server-request reply rejections back to the
     originating controller connection without consuming the pending prompt
     callback. Controller-owned approval prompts now reject `acceptForSession`
@@ -704,15 +717,17 @@
   thread-goal fallback targeting, plus listener server-request resolution
   targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
   in-process transcript/item delivery preservation and centralized lossless
-  delivery classification, plus bounded per-connection external-controller
+  delivery classification, including reasoning summary part-added notifications,
+  plus bounded per-connection external-controller
   ingress overload and separate controller control-plane ingress, plus
   pre-participation initialize-notification suppression coverage, plus
   exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus controller prompt-rejection error surfacing,
-  plus controller notification schema coverage.
+  plus controller notification schema coverage, plus reasoning-summary-part
+  lossless delivery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `3d96c79`.
+  commit `aac4b99`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
