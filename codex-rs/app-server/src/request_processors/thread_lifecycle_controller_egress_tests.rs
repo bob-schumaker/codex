@@ -3,6 +3,8 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::ServerRequestRecipients;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::WarningNotification;
+use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
 
 #[tokio::test]
@@ -60,6 +62,48 @@ async fn listener_goal_update_targets_external_controller_recipients() {
     assert!(rx.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn listener_warning_targets_thread_notification_recipients() {
+    let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        tx,
+        codex_analytics::AnalyticsEventsClient::disabled(),
+    ));
+    let thread_id = ThreadId::new();
+    let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_controller_recipients(
+        outgoing,
+        ServerRequestRecipients::normal(vec![ConnectionId(1), ConnectionId(2)]),
+        vec![ConnectionId(1), ConnectionId(2)],
+        vec![ConnectionId(2)],
+        thread_id,
+    );
+
+    send_thread_warning_notification(&thread_outgoing, thread_id, "extension warning".to_string())
+        .await;
+
+    assert_eq!(
+        recv_targeted_warning(&mut rx).await,
+        (
+            ConnectionId(1),
+            WarningNotification {
+                thread_id: Some(thread_id.to_string()),
+                message: "extension warning".to_string(),
+            },
+        ),
+    );
+    assert_eq!(
+        recv_targeted_warning(&mut rx).await,
+        (
+            ConnectionId(2),
+            WarningNotification {
+                thread_id: Some(thread_id.to_string()),
+                message: "extension warning".to_string(),
+            },
+        ),
+    );
+    assert!(rx.try_recv().is_err());
+}
+
 async fn recv_broadcast_goal_update(
     rx: &mut mpsc::Receiver<OutgoingEnvelope>,
 ) -> ThreadGoalUpdatedNotification {
@@ -98,6 +142,26 @@ async fn recv_targeted_goal_update(
     };
     let ServerNotification::ThreadGoalUpdated(notification) = envelope.notification else {
         panic!("expected thread goal update");
+    };
+    (connection_id, notification)
+}
+
+async fn recv_targeted_warning(
+    rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+) -> (ConnectionId, WarningNotification) {
+    let OutgoingEnvelope::ToConnection {
+        connection_id,
+        message,
+        write_complete_tx: None,
+    } = rx.recv().await.expect("targeted warning should be sent")
+    else {
+        panic!("expected targeted notification");
+    };
+    let OutgoingMessage::AppServerNotification(envelope) = message else {
+        panic!("expected app-server notification");
+    };
+    let ServerNotification::Warning(notification) = envelope.notification else {
+        panic!("expected warning notification");
     };
     (connection_id, notification)
 }

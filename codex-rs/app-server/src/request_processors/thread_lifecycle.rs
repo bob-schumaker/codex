@@ -2,9 +2,9 @@ use super::thread_lifecycle_controller_egress::controller_aware_thread_outgoing;
 use super::thread_lifecycle_controller_egress::send_thread_goal_cleared_notification;
 use super::thread_lifecycle_controller_egress::send_thread_goal_snapshot_notification_to_thread;
 use super::thread_lifecycle_controller_egress::send_thread_goal_updated_notification;
+use super::thread_lifecycle_controller_egress::send_thread_warning_notification;
 use super::*;
 use crate::controller_cursor::bind_controller_thread_resume_response_cursors;
-use crate::extensions::send_thread_warning;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -500,7 +500,14 @@ pub(super) async fn handle_thread_listener_command(
                 .await;
         }
         ThreadListenerCommand::EmitWarning { message } => {
-            send_thread_warning(outgoing, thread_state_manager, conversation_id, message).await;
+            let thread_outgoing = controller_aware_thread_outgoing(
+                conversation_id,
+                thread_state_manager,
+                controller_processor,
+                outgoing,
+            )
+            .await;
+            send_thread_warning_notification(&thread_outgoing, conversation_id, message).await;
         }
         ThreadListenerCommand::EmitThreadGoalCleared => {
             let thread_outgoing = controller_aware_thread_outgoing(

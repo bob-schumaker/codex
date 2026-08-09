@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::WarningNotification;
 
 pub(super) async fn controller_aware_thread_outgoing(
     conversation_id: ThreadId,
@@ -54,6 +55,19 @@ pub(super) async fn send_thread_goal_cleared_notification(
                 thread_id: thread_id.to_string(),
             },
         ))
+        .await;
+}
+
+pub(super) async fn send_thread_warning_notification(
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_id: ThreadId,
+    message: String,
+) {
+    outgoing
+        .send_server_notification(ServerNotification::Warning(WarningNotification {
+            thread_id: Some(thread_id.to_string()),
+            message,
+        }))
         .await;
 }
 
