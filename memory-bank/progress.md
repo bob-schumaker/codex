@@ -118,8 +118,11 @@
   the controller-aware thread sender. Running-thread resume goal snapshots also
   target authorized external-controller recipients while preserving the primary
   broadcast.
+- Live listener-command warning egress now uses the controller-aware thread
+  sender, preserving normal TUI warning delivery while including authorized
+  external-controller recipients and avoiding raw subscriber targeting.
 - The latest Codex-side implementation commit is
-  `6c29759` for launch metadata publication, native approval coverage, exact
+  `0b33c0f` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -133,7 +136,8 @@
   subscription fencing, plus external-controller broadcast filtering and
   targeted main-thread lifecycle delivery, plus targeted main-thread status
   delivery, plus thread-scoped global notification targeting and
-  listener-command thread-goal egress targeting.
+  listener-command thread-goal egress targeting, plus listener-warning
+  targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -201,6 +205,13 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `0b33c0f` is
+  `just test -p codex-app-server listener_warning_targets_thread_notification_recipients listener_goal_update_targets_external_controller_recipients`
+  passing 2/2 focused tests, `just test -p codex-app-server controller`
+  passing 75/75, `just test -p codex-app-server extension` passing 16/16,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -212,8 +223,9 @@
   controller auto-subscribe filtering, and terminal sign-off/disconnect
   subscription fencing, plus generic broadcast filtering and targeted
   main-thread lifecycle and status delivery, plus thread-scoped global
-  notification targeting and listener-command thread-goal egress targeting.
-  There is no known uncommitted Codex-side source diff in this checkpoint.
+  notification targeting, listener-command thread-goal egress targeting, and
+  listener-warning targeting. There is no known uncommitted Codex-side source
+  diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -242,7 +254,8 @@
   to authorized external subscribers. Thread-scoped global notifications now
   add targeted copies for authorized external-controller recipients while
   preserving primary/TUI broadcasts, including live listener-command thread
-  goal update/clear/snapshot paths and running-thread resume goal snapshots.
+  goal update/clear/snapshot paths, running-thread resume goal snapshots, and
+  listener warning notifications.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -279,7 +292,7 @@
   terminal sign-off/disconnect subscription fencing, plus generic broadcast
   filtering and targeted main-thread lifecycle and status delivery, plus
   thread-scoped global notification targeting and listener-command thread-goal
-  egress targeting.
+  egress targeting, plus listener-warning targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

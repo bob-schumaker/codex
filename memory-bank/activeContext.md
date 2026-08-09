@@ -16,10 +16,10 @@
   authorized main-thread lifecycle notifications and status-change
   notifications, and preserving global primary thread notifications while
   targeting external-controller copies, including listener-command thread goal
-  updates and resume snapshots; remaining Codex-side review is centered on
-  implicit targets, egress transactionality, and subscription edges while
-  downstream discovery/display consumes the published local-controller metadata
-  contract.
+  updates, resume snapshots, and listener warning notifications; remaining
+  Codex-side review is centered on implicit targets, egress transactionality,
+  and subscription edges while downstream discovery/display consumes the
+  published local-controller metadata contract.
 
 ## Current Status
 
@@ -319,6 +319,17 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks,
     `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Routed live listener-command warning egress through the controller-aware
+    thread sender so extension warnings keep normal TUI delivery and include
+    authorized external-controller recipients without relying on raw subscriber
+    targeting.
+  - Validated the listener-warning egress slice with
+    `just test -p codex-app-server listener_warning_targets_thread_notification_recipients listener_goal_update_targets_external_controller_recipients`
+    passing 2/2 focused tests, `just test -p codex-app-server controller`
+    passing 75/75, `just test -p codex-app-server extension` passing 16/16,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -330,7 +341,7 @@
     filtering, or terminal sign-off/disconnect subscription fencing, or
     generic broadcast filtering plus targeted main-thread lifecycle and status
     delivery, or thread-scoped global and listener-command thread-goal
-    notification targeting.
+    notification targeting, or listener-warning targeting.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -350,9 +361,9 @@
   auto-subscribe filtering, plus terminal sign-off/disconnect subscription
   fencing, plus generic broadcast filtering and targeted main-thread lifecycle
   and status delivery, plus thread-scoped global and listener-command
-  thread-goal notification targeting.
+  thread-goal notification targeting, plus listener-warning targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `6c29759`.
+  commit `0b33c0f`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
