@@ -1363,8 +1363,13 @@ fn timestamped_server_notification(notification: ServerNotification) -> Outgoing
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::RwLock;
     use std::time::Duration;
 
+    use crate::transport::ConnectionOrigin;
+    use crate::transport::OutboundConnectionState;
+    use crate::transport::route_outgoing_envelope;
     use codex_app_server_protocol::AccountLoginCompletedNotification;
     use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
     use codex_app_server_protocol::AccountUpdatedNotification;
@@ -1390,6 +1395,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
     use super::*;
@@ -2238,6 +2244,117 @@ mod tests {
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.begin_write());
         drop(write_complete_tx);
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(rebound_request),
+            write_complete_tx,
+        } = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("fallback rebind should not time out")
+            .expect("fallback request should be sent")
+        else {
+            panic!("expected fallback request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(rebound_request.id(), &request_id);
+        assert!(write_complete_tx.is_none());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_controller_queue_overflow_rebinds_to_fallback_before_external_delivery() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            ),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let initial_envelope = rx.recv().await.expect("initial request should be sent");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            ..
+        } = &initial_envelope
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(*connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+
+        let (external_writer_tx, mut external_writer_rx) = mpsc::channel(1);
+        external_writer_tx
+            .try_send(QueuedOutgoingMessage::new(OutgoingMessage::Request(
+                initial_request.clone(),
+            )))
+            .expect("external writer should accept its initial buffered request");
+        let external_disconnect_token = CancellationToken::new();
+        let mut connections = HashMap::new();
+        connections.insert(
+            ConnectionId(2),
+            OutboundConnectionState::new_with_origin(
+                ConnectionOrigin::ExternalController,
+                external_writer_tx,
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(RwLock::new(HashSet::new())),
+                Some(external_disconnect_token.clone()),
+            ),
+        );
+
+        route_outgoing_envelope(&mut connections, initial_envelope).await;
+
+        assert!(!connections.contains_key(&ConnectionId(2)));
+        assert!(external_disconnect_token.is_cancelled());
+        let retained_request = external_writer_rx
+            .try_recv()
+            .expect("external queue should retain only its buffered request");
+        assert!(matches!(
+            retained_request.message,
+            OutgoingMessage::Request(request) if request.id() == &request_id
+        ));
+        assert!(external_writer_rx.try_recv().is_err());
 
         let OutgoingEnvelope::ToConnection {
             connection_id,

@@ -576,6 +576,118 @@ async fn targeted_messages_reach_external_controller_connections() {
 }
 
 #[tokio::test]
+async fn external_controller_queue_overflow_disconnects_only_external_connection() {
+    let primary_connection_id = ConnectionId(34);
+    let external_connection_id = ConnectionId(35);
+    let (primary_writer_tx, mut primary_writer_rx) = mpsc::channel(1);
+    let (external_writer_tx, mut external_writer_rx) = mpsc::channel(1);
+    let primary_disconnect_token = CancellationToken::new();
+    let external_disconnect_token = CancellationToken::new();
+
+    external_writer_tx
+        .try_send(QueuedOutgoingMessage::new(app_server_notification(
+            ServerNotification::ConfigWarning(ConfigWarningNotification {
+                summary: "already-buffered".to_string(),
+                details: None,
+                path: None,
+                range: None,
+            }),
+        )))
+        .expect("external writer should accept its initial buffered message");
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        primary_connection_id,
+        OutboundConnectionState::new_with_origin(
+            ConnectionOrigin::WebSocket,
+            primary_writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            Some(primary_disconnect_token.clone()),
+        ),
+    );
+    connections.insert(
+        external_connection_id,
+        OutboundConnectionState::new_with_origin(
+            ConnectionOrigin::ExternalController,
+            external_writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            Some(external_disconnect_token.clone()),
+        ),
+    );
+
+    timeout(
+        Duration::from_millis(100),
+        route_outgoing_envelope(
+            &mut connections,
+            OutgoingEnvelope::ToConnection {
+                connection_id: external_connection_id,
+                message: app_server_notification(ServerNotification::ConfigWarning(
+                    ConfigWarningNotification {
+                        summary: "external-targeted".to_string(),
+                        details: None,
+                        path: None,
+                        range: None,
+                    },
+                )),
+                write_complete_tx: None,
+            },
+        ),
+    )
+    .await
+    .expect("external controller overflow should not block routing");
+
+    assert!(!connections.contains_key(&external_connection_id));
+    assert!(external_disconnect_token.is_cancelled());
+    assert!(connections.contains_key(&primary_connection_id));
+    assert!(!primary_disconnect_token.is_cancelled());
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id: primary_connection_id,
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "primary-targeted".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+            write_complete_tx: None,
+        },
+    )
+    .await;
+
+    let primary_message = primary_writer_rx
+        .recv()
+        .await
+        .expect("primary connection should receive subsequent egress");
+    assert!(matches!(
+        primary_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "primary-targeted"
+    ));
+
+    let retained_external_message = external_writer_rx
+        .try_recv()
+        .expect("external connection should retain only its initial buffered message");
+    assert!(matches!(
+        retained_external_message.message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ConfigWarning(ConfigWarningNotification { summary, .. }),
+            ..
+        }) if summary == "already-buffered"
+    ));
+    assert!(external_writer_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn to_connection_disconnects_slow_socket_connection_without_waiting() {
     let connection_id = ConnectionId(14);
     let (writer_tx, mut writer_rx) = mpsc::channel(1);
