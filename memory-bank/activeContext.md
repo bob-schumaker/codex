@@ -40,7 +40,9 @@
   bounding initialized external-controller ingress per connection and returning
   typed `controller-overloaded` responses before queued app-server work can grow
   without limit, plus marking the controller launch terminal when the immutable
-  main thread is closed or unloaded;
+  main thread is closed or unloaded, plus preserving controller-relevant thread
+  lifecycle/state notifications across the in-process TUI delivery bridge under
+  backpressure;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -604,6 +606,25 @@
     binary was produced because the `v8` build script could not download the
     `rusty_v8` sandbox archive after Python TLS certificate verification
     failed. The existing debug host binary remains present.
+  - Marked thread lifecycle/state notifications as lossless for the embedded
+    in-process TUI delivery path and the app-server-client bridge. The
+    classifier now preserves `thread/status/changed`, `thread/archived`,
+    `thread/deleted`, `thread/unarchived`, `thread/closed`, and
+    `thread/name/updated` under queue pressure so controller-originated normal
+    interface actions are reflected through the same event path the TUI uses.
+  - Validated the lifecycle-lossless slice at commit `3bf6c0d` with
+    `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+    passing 1/1 focused test,
+    `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+    passing 1/1 focused test, `just test -p codex-app-server in_process::tests`
+    passing 12/12 tests, `just test -p codex-app-server-client` passing 29/29
+    tests, `just fmt` passing, scoped `just fix` runs for
+    `codex-app-server` and `codex-app-server-client` completing after the known
+    unrelated app-server fixer hunks were reverted, `git diff --check` and
+    `git diff --cached --check` passing, `pre-commit run --all-files` failing
+    only because `.pre-commit-config.yaml` is not present, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -628,7 +649,8 @@
     endpoint-unavailable TUI reporting, or bounded controller ingress overload,
     or separate controller control-plane ingress, or pre-participation
     initialize-notification suppression, or exhaustive TUI command reclaim
-    classification, or terminal main-thread-close launch handling.
+    classification, or terminal main-thread-close launch handling, or
+    in-process lifecycle/state notification preservation.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -657,9 +679,10 @@
   ingress overload and separate controller control-plane ingress, plus
   pre-participation initialize-notification suppression coverage, plus
   exhaustive TUI command reclaim classification, plus terminal
-  main-thread-close launch handling.
+  main-thread-close launch handling, plus in-process lifecycle/state
+  notification preservation.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `02d3d1c`.
+  commit `3bf6c0d`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

@@ -168,8 +168,12 @@
   `main-thread-closed`, authorization/control notifications are emitted with
   the main-thread-closed reason, and later normal-interface reads receive typed
   `main-thread-closed`.
+- The embedded in-process TUI delivery path and app-server-client bridge now
+  preserve controller-relevant thread lifecycle/state notifications under
+  backpressure: `thread/status/changed`, `thread/archived`, `thread/deleted`,
+  `thread/unarchived`, `thread/closed`, and `thread/name/updated`.
 - The latest Codex-side source checkpoint is
-  `02d3d1c` for launch metadata publication, native approval coverage, exact
+  `3bf6c0d` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -197,7 +201,8 @@
   connection closure through the normal revocation path, and bounded
   per-connection external-controller ingress with typed `controller-overloaded`
   retry guidance, plus terminal controller launch closure when the immutable
-  main thread closes or unloads.
+  main thread closes or unloads, plus lossless in-process delivery for
+  controller-relevant thread lifecycle/state notifications.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -464,6 +469,19 @@
   fresh host because the `v8` build script could not download the
   `rusty_v8` sandbox archive after Python TLS certificate verification failed;
   the existing `codex-rs/target/debug/codex-code-mode-host` remains present.
+- The latest focused validation for commit `3bf6c0d` is
+  `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+  passing 1/1 focused test,
+  `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+  passing 1/1 focused test, `just test -p codex-app-server in_process::tests`
+  passing 12/12 tests, `just test -p codex-app-server-client` passing 29/29
+  tests, `just fmt` passing, scoped `just fix` runs for
+  `codex-app-server` and `codex-app-server-client` completing after the known
+  unrelated app-server fixer hunks were reverted, `git diff --check` and
+  `git diff --cached --check` passing, `pre-commit run --all-files` failing
+  only because `.pre-commit-config.yaml` is not present, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -493,7 +511,8 @@
   external-controller ingress overload, and separate controller control-plane
   ingress, plus pre-participation initialize-notification suppression coverage,
   plus exhaustive TUI command reclaim classification, plus terminal
-  main-thread-close launch handling.
+  main-thread-close launch handling, plus in-process lifecycle/state
+  notification preservation.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -546,7 +565,8 @@
   delivery to a controller, so ownership changes or TUI resume do not duplicate
   delivered controller prompts to another connection.
   Embedded in-process app-server delivery now preserves transcript deltas,
-  plan/reasoning deltas, item completion, terminal notifications, and controller
+  plan/reasoning deltas, item completion, terminal notifications,
+  controller-relevant thread lifecycle/state notifications, and controller
   ownership/status notifications under saturation so the client-side lossless
   bridge is not bypassed before the TUI can reflect controller-originated work.
   The app-server-client bridge now delegates its delivery classifier to the
@@ -569,6 +589,9 @@
   Closing or unloading the immutable main thread now marks the launch terminal
   for native external controllers and cancels pending controller-delivered
   prompts with typed `main-thread-closed`.
+  Controller-relevant thread lifecycle/state notifications are now also in the
+  lossless in-process delivery tier so controller-originated normal-interface
+  actions cannot be dropped before the TUI bridge observes them.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
