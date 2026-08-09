@@ -104,6 +104,49 @@ async fn listener_warning_targets_thread_notification_recipients() {
     assert!(rx.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn listener_server_request_resolved_targets_thread_notification_recipients() {
+    let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        tx,
+        codex_analytics::AnalyticsEventsClient::disabled(),
+    ));
+    let thread_id = ThreadId::new();
+    let request_id = RequestId::Integer(42);
+    let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_controller_recipients(
+        outgoing,
+        ServerRequestRecipients::normal(vec![ConnectionId(1), ConnectionId(2)]),
+        vec![ConnectionId(1), ConnectionId(2)],
+        vec![ConnectionId(2)],
+        thread_id,
+    );
+
+    send_server_request_resolved_notification(&thread_outgoing, thread_id, request_id.clone())
+        .await;
+
+    assert_eq!(
+        recv_targeted_server_request_resolved(&mut rx).await,
+        (
+            ConnectionId(1),
+            ServerRequestResolvedNotification {
+                thread_id: thread_id.to_string(),
+                request_id: request_id.clone(),
+            },
+        ),
+    );
+    assert_eq!(
+        recv_targeted_server_request_resolved(&mut rx).await,
+        (
+            ConnectionId(2),
+            ServerRequestResolvedNotification {
+                thread_id: thread_id.to_string(),
+                request_id,
+            },
+        ),
+    );
+    assert!(rx.try_recv().is_err());
+}
+
 async fn recv_broadcast_goal_update(
     rx: &mut mpsc::Receiver<OutgoingEnvelope>,
 ) -> ThreadGoalUpdatedNotification {
@@ -162,6 +205,29 @@ async fn recv_targeted_warning(
     };
     let ServerNotification::Warning(notification) = envelope.notification else {
         panic!("expected warning notification");
+    };
+    (connection_id, notification)
+}
+
+async fn recv_targeted_server_request_resolved(
+    rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+) -> (ConnectionId, ServerRequestResolvedNotification) {
+    let OutgoingEnvelope::ToConnection {
+        connection_id,
+        message,
+        write_complete_tx: None,
+    } = rx
+        .recv()
+        .await
+        .expect("targeted server-request resolution should be sent")
+    else {
+        panic!("expected targeted notification");
+    };
+    let OutgoingMessage::AppServerNotification(envelope) = message else {
+        panic!("expected app-server notification");
+    };
+    let ServerNotification::ServerRequestResolved(notification) = envelope.notification else {
+        panic!("expected server request resolved notification");
     };
     (connection_id, notification)
 }

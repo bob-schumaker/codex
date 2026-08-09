@@ -1,4 +1,5 @@
 use super::thread_lifecycle_controller_egress::controller_aware_thread_outgoing;
+use super::thread_lifecycle_controller_egress::send_server_request_resolved_notification;
 use super::thread_lifecycle_controller_egress::send_thread_goal_cleared_notification;
 use super::thread_lifecycle_controller_egress::send_thread_goal_snapshot_notification_to_thread;
 use super::thread_lifecycle_controller_egress::send_thread_goal_updated_notification;
@@ -538,10 +539,16 @@ pub(super) async fn handle_thread_listener_command(
             request_id,
             completion_tx,
         } => {
-            resolve_pending_server_request(
+            let thread_outgoing = controller_aware_thread_outgoing(
                 conversation_id,
                 thread_state_manager,
+                controller_processor,
                 outgoing,
+            )
+            .await;
+            send_server_request_resolved_notification(
+                &thread_outgoing,
+                conversation_id,
                 request_id,
             )
             .await;
@@ -818,31 +825,6 @@ pub(crate) fn populate_thread_turns_from_history(
         merge_turn_history_with_active_turn(&mut turns, active_turn.clone());
     }
     thread.turns = turns;
-}
-
-pub(super) async fn resolve_pending_server_request(
-    conversation_id: ThreadId,
-    thread_state_manager: &ThreadStateManager,
-    outgoing: &Arc<OutgoingMessageSender>,
-    request_id: RequestId,
-) {
-    let thread_id = conversation_id.to_string();
-    let subscribed_connection_ids = thread_state_manager
-        .subscribed_connection_ids(conversation_id)
-        .await;
-    let outgoing = ThreadScopedOutgoingMessageSender::new(
-        outgoing.clone(),
-        subscribed_connection_ids,
-        conversation_id,
-    );
-    outgoing
-        .send_server_notification(ServerNotification::ServerRequestResolved(
-            ServerRequestResolvedNotification {
-                thread_id,
-                request_id,
-            },
-        ))
-        .await;
 }
 
 pub(super) fn merge_turn_history_with_active_turn(turns: &mut Vec<Turn>, active_turn: Turn) {

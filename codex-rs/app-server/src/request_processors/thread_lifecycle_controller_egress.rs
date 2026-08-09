@@ -71,6 +71,21 @@ pub(super) async fn send_thread_warning_notification(
         .await;
 }
 
+pub(super) async fn send_server_request_resolved_notification(
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_id: ThreadId,
+    request_id: RequestId,
+) {
+    outgoing
+        .send_server_notification(ServerNotification::ServerRequestResolved(
+            ServerRequestResolvedNotification {
+                thread_id: thread_id.to_string(),
+                request_id,
+            },
+        ))
+        .await;
+}
+
 pub(super) async fn send_thread_goal_snapshot_notification_to_thread(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_id: ThreadId,
