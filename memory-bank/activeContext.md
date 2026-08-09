@@ -18,7 +18,8 @@
   targeting external-controller copies, including listener-command thread goal
   updates, resume snapshots, listener warning notifications, and extension
   no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
-  and snapshot fallbacks, plus fencing controller-origin detached reviews so
+  and snapshot fallbacks, plus thread-scoped MCP OAuth completion
+  notifications, plus fencing controller-origin detached reviews so
   `review/start` stays on the authorized main thread, plus gating
   controller-origin realtime startup context/configuration overrides and
   realtime text role injection, plus fencing controller-origin section moves
@@ -451,6 +452,20 @@
     `just fix -p codex-app-server` completing after unrelated fixer hunks were
     reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Routed thread-scoped MCP OAuth completion notifications through the
+    controller-aware global notification path so authorized main-thread
+    controller subscribers receive targeted copies while normal TUI broadcasts
+    are preserved.
+  - Validated the MCP OAuth completion targeting slice with
+    `just test -p codex-app-server thread_scoped_mcp_oauth_completion_targets_external_controller_subscriber`
+    passing 1/1 focused test,
+    `just test -p codex-app-server auto_attach_filters_external_controller_subscriptions_to_main_thread`
+    passing 1/1 focused test,
+    `just test -p codex-app-server selected_executor_plugin_exposes_its_mcps_only_to_that_thread`
+    passing 1/1 real MCP OAuth integration test,
+    `just fix -p codex-app-server` completing after unrelated fixer hunks were
+    reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -464,7 +479,8 @@
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
     no-listener goal-update fallback targeting, or app-server thread-goal
-    fallback targeting, or controller-origin detached review fencing, or
+    fallback targeting, or thread-scoped MCP OAuth completion targeting, or
+    controller-origin detached review fencing, or
     controller-origin realtime context/configuration override gating, or
     controller-origin realtime text role fencing, or controller-origin
     section-move implicit target fencing, or controller-origin archive/delete
@@ -491,9 +507,10 @@
   and status delivery, plus thread-scoped global and listener-command
   thread-goal notification targeting, plus listener-warning targeting and
   extension no-listener goal-update fallback targeting, plus app-server
-  thread-goal fallback targeting.
+  thread-goal fallback targeting, plus thread-scoped MCP OAuth completion
+  targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `b0ca0bc`.
+  commit `776fa13`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

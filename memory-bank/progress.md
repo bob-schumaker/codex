@@ -312,6 +312,16 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `776fa13` is
+  `just test -p codex-app-server thread_scoped_mcp_oauth_completion_targets_external_controller_subscriber`
+  passing 1/1 focused test,
+  `just test -p codex-app-server auto_attach_filters_external_controller_subscriptions_to_main_thread`
+  passing 1/1 focused test,
+  `just test -p codex-app-server selected_executor_plugin_exposes_its_mcps_only_to_that_thread`
+  passing 1/1 real MCP OAuth integration test,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -326,7 +336,8 @@
   notification targeting, listener-command thread-goal egress targeting, and
   listener-warning targeting, plus extension no-listener goal-update fallback
   targeting and app-server thread-goal fallback targeting, plus
-  controller-origin detached review fencing and realtime
+  thread-scoped MCP OAuth completion targeting, plus controller-origin
+  detached review fencing and realtime
   context/configuration override gating, plus realtime text role fencing and
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
   coverage, archive/delete spawned-descendant subtree fencing, and delivered
@@ -364,7 +375,10 @@
   listener warning notifications. Extension no-listener goal-update fallback now
   targets thread subscribers instead of relying on raw broadcast. App-server
   `thread/goal` update, clear, and snapshot fallbacks now use the
-  controller-aware thread sender. Controller-origin `review/start` now rejects
+  controller-aware thread sender. Thread-scoped MCP OAuth completion
+  notifications now use controller-aware global notification targeting so
+  authorized main-thread controller subscribers receive targeted copies.
+  Controller-origin `review/start` now rejects
   detached delivery so active controllers cannot create secondary review threads
   outside the authorized main-thread scope. Controller-origin
   `thread/realtime/start` now rejects context/configuration overrides while
@@ -416,7 +430,7 @@
   thread-scoped global notification targeting and listener-command thread-goal
   egress targeting, listener-warning targeting, and extension no-listener
   goal-update fallback targeting, plus app-server thread-goal fallback
-  targeting.
+  targeting and thread-scoped MCP OAuth completion targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
