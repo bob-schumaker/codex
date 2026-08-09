@@ -801,6 +801,102 @@ async fn live_app_server_realtime_error_notification_renders_warning() {
 }
 
 #[tokio::test]
+async fn live_app_server_realtime_user_transcript_done_renders_user_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadRealtimeTranscriptDelta(
+            codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                role: "user".to_string(),
+                delta: "transient partial".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "user realtime deltas should wait for final transcript text"
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadRealtimeTranscriptDone(
+            codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification {
+                thread_id: "thread-1".to_string(),
+                role: "user".to_string(),
+                text: "final dictated request".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one realtime user history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("final dictated request"),
+        "expected final realtime user transcript, got {rendered}"
+    );
+    assert!(
+        !rendered.contains("transient partial"),
+        "expected provisional realtime user delta to be omitted, got {rendered}"
+    );
+    insta::assert_snapshot!(rendered, @r"
+› final dictated request
+
+");
+}
+
+#[tokio::test]
+async fn live_app_server_realtime_assistant_transcript_done_consolidates_agent_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadRealtimeTranscriptDelta(
+            codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                role: "assistant".to_string(),
+                delta: "partial response\n".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    chat.run_commit_tick();
+    let streamed = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(streamed, @r"
+• partial response
+");
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadRealtimeTranscriptDone(
+            codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification {
+                thread_id: "thread-1".to_string(),
+                role: "assistant".to_string(),
+                text: "partial response".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let mut consolidated_source = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::ConsolidateAgentMessage { source, .. } = event {
+            consolidated_source = Some(source);
+            break;
+        }
+    }
+    assert_eq!(consolidated_source, Some("partial response".to_string()));
+    insta::assert_snapshot!(
+        consolidated_source.expect("consolidated realtime assistant source"),
+        @"partial response"
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_config_warning_prefixes_summary() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

@@ -88,6 +88,12 @@ impl ChatWidget {
                 }
             }
             ServerNotification::ReasoningSummaryPartAdded(_) => self.on_reasoning_section_break(),
+            ServerNotification::ThreadRealtimeTranscriptDelta(notification) => {
+                self.on_realtime_transcript_delta(notification.role, notification.delta);
+            }
+            ServerNotification::ThreadRealtimeTranscriptDone(notification) => {
+                self.on_realtime_transcript_done(notification.role, notification.text);
+            }
             ServerNotification::TerminalInteraction(notification) => {
                 self.on_terminal_interaction(notification.process_id, notification.stdin)
             }
@@ -229,8 +235,6 @@ impl ChatWidget {
             | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
             | ServerNotification::ThreadRealtimeClosed(_)
             | ServerNotification::ThreadRealtimeSdp(_)
-            | ServerNotification::ThreadRealtimeTranscriptDelta(_)
-            | ServerNotification::ThreadRealtimeTranscriptDone(_)
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
