@@ -2588,6 +2588,76 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn local_controller_main_thread_publish_updates_discovery_metadata() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let codex_home_path = codex_home.path().to_path_buf();
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        assert_eq!(metadata.main_thread_id, None);
+        let paths = codex_app_server_transport::local_controller::local_controller_endpoint_paths(
+            codex_home_path.as_path(),
+            metadata.launch_id.as_str(),
+        )
+        .expect("local-controller endpoint paths should resolve");
+        let stored_before: LocalControllerEndpointMetadata = serde_json::from_slice(
+            &tokio::fs::read(paths.metadata_path.as_path())
+                .await
+                .expect("local-controller metadata should read before main thread publish"),
+        )
+        .expect("local-controller metadata should deserialize before main thread publish");
+        assert_eq!(stored_before, metadata);
+
+        client
+            .publish_local_controller_main_thread_id("main-thread".to_string())
+            .await
+            .expect("main thread metadata should publish through in-process runtime");
+
+        let mut expected = metadata;
+        expected.main_thread_id = Some("main-thread".to_string());
+        let stored_after: LocalControllerEndpointMetadata = serde_json::from_slice(
+            &tokio::fs::read(paths.metadata_path.as_path())
+                .await
+                .expect("local-controller metadata should read after main thread publish"),
+        )
+        .expect("local-controller metadata should deserialize after main thread publish");
+        assert_eq!(stored_after, expected);
+
+        client
+            .publish_local_controller_main_thread_id("other-thread".to_string())
+            .await
+            .expect("second main thread metadata publish should be a no-op");
+        let stored_second: LocalControllerEndpointMetadata = serde_json::from_slice(
+            &tokio::fs::read(paths.metadata_path.as_path())
+                .await
+                .expect("local-controller metadata should read after second main thread publish"),
+        )
+        .expect("local-controller metadata should deserialize after second main thread publish");
+        assert_eq!(stored_second, expected);
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn local_controller_initialize_suppresses_pre_participation_notifications() {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
         let mut args = build_test_start_args(
