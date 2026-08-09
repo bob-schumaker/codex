@@ -154,13 +154,16 @@
 - TUI reclaim-classifier tests now cover Guardian-denied approval input as a
   thread-affecting approval path, so the documented TUI-primary reclaim
   invariant includes `AppCommand::ApproveGuardianDeniedAction`.
+- TUI command reclaim classification is now exhaustive for all current
+  `AppCommand` variants, so adding a coordinator-facing command requires an
+  explicit thread-affecting or display-only decision during compilation.
 - Late local-controller endpoint failure now reaches the TUI through a
   lossless in-process event after established controller connections are closed
   through the normal revocation path. The TUI reports
   `embedded-unavailable`; onboarding and `codex exec` ignore the event as
   non-interactive controller state.
 - The latest Codex-side source checkpoint is
-  `0e9b265` for launch metadata publication, native approval coverage, exact
+  `ae608c3` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -180,13 +183,14 @@
   completion targeting, plus controller-origin detached review fencing, realtime
   context/configuration override gating, and realtime text role fencing, plus
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
-  coverage, archive/delete spawned-descendant subtree fencing, delivered
-  controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting, plus listener server-request resolution targeting, plus
-  terminal local-controller acceptor failure reporting, metadata/socket cleanup,
-  external-controller connection closure through the normal revocation path, and
-  bounded per-connection external-controller ingress with typed
-  `controller-overloaded` retry guidance.
+  coverage, exhaustive TUI command reclaim classification, archive/delete
+  spawned-descendant subtree fencing, delivered controller prompt replay
+  fencing, and extension fallback goal/warning controller targeting, plus
+  listener server-request resolution targeting, plus terminal local-controller
+  acceptor failure reporting, metadata/socket cleanup, external-controller
+  connection closure through the normal revocation path, and bounded
+  per-connection external-controller ingress with typed `controller-overloaded`
+  retry guidance.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -430,6 +434,13 @@
   `git diff --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 21.75s.
+- The latest focused validation for commit `ae608c3` is
+  `just test -p codex-tui controller_reclaim` passing 4/4 focused tests,
+  `just fix -p codex-tui` passing, `just fmt` passing, `git diff --check`
+  passing, `pre-commit run --files codex-rs/tui/src/app_command.rs` failing
+  only because `.pre-commit-config.yaml` is not present, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 15.25s.
 
 ## In Flight
 
@@ -457,7 +468,8 @@
   classification shared by the embedded runtime writer and app-server-client,
   terminal local-controller acceptor failure handling, bounded
   external-controller ingress overload, and separate controller control-plane
-  ingress, plus pre-participation initialize-notification suppression coverage.
+  ingress, plus pre-participation initialize-notification suppression coverage,
+  plus exhaustive TUI command reclaim classification.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex

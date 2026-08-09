@@ -24,7 +24,8 @@
   controller-origin realtime startup context/configuration overrides and
   realtime text role injection, plus fencing controller-origin section moves
   from ordering the main thread relative to another thread, plus focused TUI
-  reclaim coverage for Guardian-denied approvals, plus fencing
+  reclaim coverage for Guardian-denied approvals, plus making TUI command
+  reclaim classification exhaustive, plus fencing
   controller-origin archive/delete from spawned-descendant subtree targets, plus
   skipping running-thread resume replay for controller prompts after external
   delivery, plus routing app-server extension fallback goal/warning egress
@@ -567,6 +568,16 @@
     `git diff --check` and `git diff --cached --check` passing, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 21.75s.
+  - Made the TUI reclaim classifier exhaustive for all current
+    `AppCommand` variants, so newly added coordinator-facing commands require
+    an explicit reclaim decision instead of inheriting a wildcard default.
+  - Validated the exhaustive reclaim classifier at commit `ae608c3` with
+    `just test -p codex-tui controller_reclaim` passing 4/4 focused tests,
+    `just fix -p codex-tui` passing, `just fmt` passing, `git diff --check`
+    passing, `pre-commit run --files codex-rs/tui/src/app_command.rs` failing
+    only because `.pre-commit-config.yaml` is not present, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 15.25s.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -590,7 +601,8 @@
     fencing, or terminal local-controller acceptor failure handling, or late
     endpoint-unavailable TUI reporting, or bounded controller ingress overload,
     or separate controller control-plane ingress, or pre-participation
-    initialize-notification suppression.
+    initialize-notification suppression, or exhaustive TUI command reclaim
+    classification.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -617,9 +629,10 @@
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification, plus bounded per-connection external-controller
   ingress overload and separate controller control-plane ingress, plus
-  pre-participation initialize-notification suppression coverage.
+  pre-participation initialize-notification suppression coverage, plus
+  exhaustive TUI command reclaim classification.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `251372e`.
+  commit `ae608c3`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
