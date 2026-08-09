@@ -520,6 +520,7 @@ impl MessageProcessor {
             thread_state_manager.clone(),
             state_db.clone(),
             Arc::clone(&goal_service),
+            controller_processor.clone(),
         );
         let thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),

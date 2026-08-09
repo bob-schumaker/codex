@@ -808,41 +808,6 @@ pub(super) async fn handle_pending_thread_resume_request(
         .await;
 }
 
-pub(super) async fn send_thread_goal_snapshot_notification(
-    outgoing: &Arc<OutgoingMessageSender>,
-    thread_id: ThreadId,
-    state_db: &StateDbHandle,
-) {
-    match state_db.thread_goals().get_thread_goal(thread_id).await {
-        Ok(Some(goal)) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: thread_id.to_string(),
-                        turn_id: None,
-                        goal: api_thread_goal_from_state(goal),
-                    },
-                ))
-                .await;
-        }
-        Ok(None) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: thread_id.to_string(),
-                    },
-                ))
-                .await;
-        }
-        Err(err) => {
-            tracing::warn!(
-                thread_id = %thread_id,
-                "failed to read thread goal for resume snapshot: {err}"
-            );
-        }
-    }
-}
-
 pub(crate) fn populate_thread_turns_from_history(
     thread: &mut Thread,
     items: &[RolloutItem],

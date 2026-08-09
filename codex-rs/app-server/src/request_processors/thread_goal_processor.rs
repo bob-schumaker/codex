@@ -1,3 +1,7 @@
+use super::thread_lifecycle_controller_egress::controller_aware_thread_outgoing;
+use super::thread_lifecycle_controller_egress::send_thread_goal_cleared_notification;
+use super::thread_lifecycle_controller_egress::send_thread_goal_snapshot_notification_to_thread;
+use super::thread_lifecycle_controller_egress::send_thread_goal_updated_notification;
 use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
@@ -15,6 +19,7 @@ pub(crate) struct ThreadGoalRequestProcessor {
     thread_state_manager: ThreadStateManager,
     state_db: Option<StateDbHandle>,
     goal_service: Arc<GoalService>,
+    controller_processor: ControllerRequestProcessor,
 }
 
 impl ThreadGoalRequestProcessor {
@@ -25,6 +30,7 @@ impl ThreadGoalRequestProcessor {
         thread_state_manager: ThreadStateManager,
         state_db: Option<StateDbHandle>,
         goal_service: Arc<GoalService>,
+        controller_processor: ControllerRequestProcessor,
     ) -> Self {
         Self {
             thread_manager,
@@ -33,6 +39,7 @@ impl ThreadGoalRequestProcessor {
             thread_state_manager,
             state_db,
             goal_service,
+            controller_processor,
         }
     }
 
@@ -374,7 +381,15 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal snapshot for {thread_id}: listener command channel is closed"
             );
         }
-        send_thread_goal_snapshot_notification(&self.outgoing, thread_id, &state_db).await;
+        let thread_outgoing = controller_aware_thread_outgoing(
+            thread_id,
+            &self.thread_state_manager,
+            &self.controller_processor,
+            &self.outgoing,
+        )
+        .await;
+        send_thread_goal_snapshot_notification_to_thread(&thread_outgoing, thread_id, &state_db)
+            .await;
     }
 
     async fn emit_thread_goal_updated_ordered(
@@ -395,15 +410,14 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal update for {thread_id}: listener command channel is closed"
             );
         }
-        self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                ThreadGoalUpdatedNotification {
-                    thread_id: thread_id.to_string(),
-                    turn_id: None,
-                    goal,
-                },
-            ))
-            .await;
+        emit_thread_goal_updated_fallback(
+            &self.outgoing,
+            &self.thread_state_manager,
+            &self.controller_processor,
+            thread_id,
+            goal,
+        )
+        .await;
     }
 
     async fn emit_thread_goal_cleared_ordered(
@@ -420,14 +434,47 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal clear for {thread_id}: listener command channel is closed"
             );
         }
-        self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalCleared(
-                ThreadGoalClearedNotification {
-                    thread_id: thread_id.to_string(),
-                },
-            ))
-            .await;
+        emit_thread_goal_cleared_fallback(
+            &self.outgoing,
+            &self.thread_state_manager,
+            &self.controller_processor,
+            thread_id,
+        )
+        .await;
     }
+}
+
+async fn emit_thread_goal_updated_fallback(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_state_manager: &ThreadStateManager,
+    controller_processor: &ControllerRequestProcessor,
+    thread_id: ThreadId,
+    goal: ThreadGoal,
+) {
+    let thread_outgoing = controller_aware_thread_outgoing(
+        thread_id,
+        thread_state_manager,
+        controller_processor,
+        outgoing,
+    )
+    .await;
+    send_thread_goal_updated_notification(&thread_outgoing, thread_id, None, goal).await;
+}
+
+async fn emit_thread_goal_cleared_fallback(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_state_manager: &ThreadStateManager,
+    controller_processor: &ControllerRequestProcessor,
+    thread_id: ThreadId,
+) {
+    let thread_outgoing = controller_aware_thread_outgoing(
+        thread_id,
+        thread_state_manager,
+        controller_processor,
+        outgoing,
+    )
+    .await;
+    send_thread_goal_cleared_notification(&thread_outgoing, thread_id).await;
 }
 
 fn thread_settings_applied_item(thread_settings: ThreadSettingsSnapshot) -> RolloutItem {
@@ -471,3 +518,7 @@ fn parse_thread_id_for_request(thread_id: &str) -> Result<ThreadId, JSONRPCError
     ThreadId::from_string(thread_id)
         .map_err(|err| invalid_request(format!("invalid thread id: {err}")))
 }
+
+#[cfg(test)]
+#[path = "thread_goal_processor_tests.rs"]
+mod tests;
