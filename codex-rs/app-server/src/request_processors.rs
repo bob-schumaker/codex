@@ -663,6 +663,7 @@ mod request_errors;
 mod thread_delete;
 mod thread_goal_processor;
 mod thread_lifecycle;
+mod thread_lifecycle_controller_egress;
 mod thread_resume_redaction;
 mod thread_summary;
 

@@ -1,3 +1,7 @@
+use super::thread_lifecycle_controller_egress::controller_aware_thread_outgoing;
+use super::thread_lifecycle_controller_egress::send_thread_goal_cleared_notification;
+use super::thread_lifecycle_controller_egress::send_thread_goal_snapshot_notification_to_thread;
+use super::thread_lifecycle_controller_egress::send_thread_goal_updated_notification;
 use super::*;
 use crate::controller_cursor::bind_controller_thread_resume_response_cursors;
 use crate::extensions::send_thread_warning;
@@ -300,6 +304,7 @@ pub(super) async fn ensure_listener_task_running(
                         &thread_watch_manager,
                         &outgoing_for_task,
                         &pending_thread_unloads,
+                        &controller_processor,
                         listener_command,
                     )
                     .await;
@@ -328,31 +333,13 @@ pub(super) async fn ensure_listener_task_running(
                     {
                         continue;
                     }
-                    let subscribed_connection_ids = thread_state_manager
-                        .subscribed_connection_ids(conversation_id)
-                        .await;
-                    let request_recipients = controller_processor.prompt_request_recipients(
+                    let thread_outgoing = controller_aware_thread_outgoing(
                         conversation_id,
-                        subscribed_connection_ids.clone(),
-                    );
-                    let notification_connection_ids =
-                        controller_processor.thread_notification_recipients(
-                            conversation_id,
-                            subscribed_connection_ids.clone(),
-                        );
-                    let external_notification_connection_ids = controller_processor
-                        .external_controller_thread_notification_recipients(
-                            conversation_id,
-                            subscribed_connection_ids,
-                        );
-                    let thread_outgoing =
-                        ThreadScopedOutgoingMessageSender::new_with_controller_recipients(
-                            outgoing_for_task.clone(),
-                            request_recipients,
-                            notification_connection_ids,
-                            external_notification_connection_ids,
-                            conversation_id,
-                        );
+                        &thread_state_manager,
+                        &controller_processor,
+                        &outgoing_for_task,
+                    )
+                    .await;
 
                     apply_bespoke_event_handling(
                         event.clone(),
@@ -482,6 +469,7 @@ pub(super) async fn handle_thread_listener_command(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    controller_processor: &ControllerRequestProcessor,
     listener_command: ThreadListenerCommand,
 ) {
     match listener_command {
@@ -495,35 +483,49 @@ pub(super) async fn handle_thread_listener_command(
                 thread_watch_manager,
                 outgoing,
                 pending_thread_unloads,
+                controller_processor,
                 *resume_request,
             )
             .await;
         }
         ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, goal } => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: conversation_id.to_string(),
-                        turn_id,
-                        goal,
-                    },
-                ))
+            let thread_outgoing = controller_aware_thread_outgoing(
+                conversation_id,
+                thread_state_manager,
+                controller_processor,
+                outgoing,
+            )
+            .await;
+            send_thread_goal_updated_notification(&thread_outgoing, conversation_id, turn_id, goal)
                 .await;
         }
         ThreadListenerCommand::EmitWarning { message } => {
             send_thread_warning(outgoing, thread_state_manager, conversation_id, message).await;
         }
         ThreadListenerCommand::EmitThreadGoalCleared => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: conversation_id.to_string(),
-                    },
-                ))
-                .await;
+            let thread_outgoing = controller_aware_thread_outgoing(
+                conversation_id,
+                thread_state_manager,
+                controller_processor,
+                outgoing,
+            )
+            .await;
+            send_thread_goal_cleared_notification(&thread_outgoing, conversation_id).await;
         }
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+            let thread_outgoing = controller_aware_thread_outgoing(
+                conversation_id,
+                thread_state_manager,
+                controller_processor,
+                outgoing,
+            )
+            .await;
+            send_thread_goal_snapshot_notification_to_thread(
+                &thread_outgoing,
+                conversation_id,
+                &state_db,
+            )
+            .await;
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -555,6 +557,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    controller_processor: &ControllerRequestProcessor,
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
     let active_turn = {
@@ -768,7 +771,19 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
     if pending.emit_thread_goal_update {
         if let Some(state_db) = pending.thread_goal_state_db {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+            let thread_outgoing = controller_aware_thread_outgoing(
+                conversation_id,
+                thread_state_manager,
+                controller_processor,
+                outgoing,
+            )
+            .await;
+            send_thread_goal_snapshot_notification_to_thread(
+                &thread_outgoing,
+                conversation_id,
+                &state_db,
+            )
+            .await;
         } else {
             tracing::warn!(
                 thread_id = %conversation_id,
