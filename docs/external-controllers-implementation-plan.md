@@ -392,14 +392,21 @@ TUI event stream only.
       or creating an active transcript cell; and
     - the related validation set covers that path with the existing JSON-RPC
       controller control-plane history exclusion and lag snapshot recovery tests
-  - open checkpoint after `55c979b`:
-    - the production implementation currently provides lossless in-process
-      event classes, `Lagged` signaling, and active-thread
-      `thread/read(includeTurns=true)` recovery, but does not expose the formal
+  - implemented checkpoint `dd2c93e`:
+    - the TUI `ThreadEventStore` now snapshots a local monotonic
+      `last_sequence`, advancing it for session refreshes, inbound
+      notifications, inbound requests, and controller-ownership status updates;
+    - snapshots retain the latest typed controller-ownership status alongside
+      normal thread state; and
+    - replay logging records the recovered sequence and whether ownership state
+      was present without adding ownership/status data to transcript history.
+  - open checkpoint after `dd2c93e`:
+    - this is a TUI-side snapshot bookkeeping step only. The production
+      implementation still does not expose the formal app-server
       `threadSequence` / `lastSequence` surface or an atomic
-      snapshot-at-sequence containing interactive owner and prompt-binding
-      state; do not mark this commit complete until that gap is implemented or
-      the design is explicitly amended
+      app-server-owned snapshot-at-sequence containing interactive owner and
+      prompt-binding state; do not mark this commit complete until that gap is
+      implemented or the design is explicitly amended.
 
 Commit 18: Start the endpoint from embedded TUI launches only, after admission,
 ownership, enrollment, prompt fencing, reclaim, and reflection are in place.

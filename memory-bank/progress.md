@@ -229,8 +229,12 @@
   `ControllerOwnershipStatus` events do not enter transcript history or create
   an active transcript cell; this complements the existing JSON-RPC controller
   control-plane history-exclusion coverage.
+- TUI `ThreadEventStore` snapshots now retain a local monotonic
+  `last_sequence` and the latest controller-ownership status, advancing the
+  local sequence for session refreshes, inbound notifications, inbound
+  requests, and ownership-status updates.
 - The latest Codex-side source checkpoint is
-  `55c979b` for launch metadata publication, native approval coverage, exact
+  `dd2c93e` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -269,7 +273,8 @@
   delivery through the in-process TUI bridge, plus controller prompt egress
   fencing at begin-write, controller egress-overflow isolation/fallback
   coverage, and explicit controller `thread/unsubscribe` target/mutation
-  fencing, plus TUI in-process ownership-status history-exclusion coverage.
+  fencing, plus TUI in-process ownership-status history-exclusion coverage,
+  plus TUI snapshot-local sequence/ownership-state bookkeeping.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -317,21 +322,21 @@
   `git diff --cached --check` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex` in 41.15s with the known
   `__eh_frame` linker warning.
-- The latest focused validation for commit `9bdbda6` is `just fmt` passing,
+- The focused validation for commit `9bdbda6` is `just fmt` passing,
   `just test -p codex-app-server external_controller_queue_overflow` passing
   2/2, `just test -p codex-app-server outgoing_message transport` passing
   58/58, `just fix -p codex-app-server` completing after unrelated app-server
   fixer hunks were reverted, `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 24.24s with the known `__eh_frame` linker
   warning, and `git diff --check` plus `git diff --cached --check` passing.
-- The latest focused validation for commit `c267e17` is
+- The focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
   passing 61/61 controller tests, `just fix -p codex-app-server` passing for
   the source slice after reverting known unrelated fixer hunks, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `2bce609` is
+- The focused validation for commit `2bce609` is
   `just test -p codex-app-server request_serialization` passing 9/9 focused
   tests,
   `just test -p codex-app-server queued_primary_thread_input_reclaims_after_controller_reacquires`
@@ -340,7 +345,7 @@
   after unrelated fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `93cd090` is
+- The focused validation for commit `93cd090` is
   `just test -p codex-app-server auto_attach_filters_external_controller_subscriptions_to_main_thread`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 67/67 controller tests with one flaky retry in
@@ -348,14 +353,14 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `354c4dc` is
+- The focused validation for commit `354c4dc` is
   `just test -p codex-app-server controller_signoff_unsubscribes_before_terminal_notification`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 68/68 controller tests, `just fix -p codex-app-server` completing
   after unrelated fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `5d54a58` is
+- The focused validation for commit `5d54a58` is
   `just test -p codex-app-server lifecycle_notification_recipients_include_only_authorized_main_thread_controllers`
   passing 1/1 focused test, the focused transport filter tests
   `broadcast_skips_external_controller_connections` and
@@ -365,35 +370,35 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `280c679` is
+- The focused validation for commit `280c679` is
   `just test -p codex-app-server status_change_targets_authorized_main_thread_external_controller`
   passing 1/1 focused test, `just test -p codex-app-server thread_status`
   passing 15/15, `just test -p codex-app-server controller` passing 72/72,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `bc9abac` is
+- The focused validation for commit `bc9abac` is
   `just test -p codex-app-server thread_scoped_global_notifications_target_external_controllers`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 73/73, `just test -p codex-app-server thread_goal` passing 7/7,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `6c29759` is
+- The focused validation for commit `6c29759` is
   `just test -p codex-app-server listener_goal_update_targets_external_controller_recipients`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 74/74, `just test -p codex-app-server thread_goal` passing 7/7,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `0b33c0f` is
+- The focused validation for commit `0b33c0f` is
   `just test -p codex-app-server listener_warning_targets_thread_notification_recipients listener_goal_update_targets_external_controller_recipients`
   passing 2/2 focused tests, `just test -p codex-app-server controller`
   passing 75/75, `just test -p codex-app-server extension` passing 16/16,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `9b59a8c` is
+- The focused validation for commit `9b59a8c` is
   `just test -p codex-app-server app_server_event_sink_targets_goal_subscriber_without_listener`
   passing 1/1 focused test, `just test -p codex-app-server extensions::tests`
   passing 7/7, `just test -p codex-app-server controller` passing 75/75,
@@ -403,14 +408,14 @@
   `just test -p codex-app-server extension` run timed out in
   `suite::v2::imagegen_extension::standalone_image_edit_uses_attached_model_visible_image`
   after sandbox image-read failure, outside the controller egress slice.
-- The latest focused validation for commit `e5d3141` is
+- The focused validation for commit `e5d3141` is
   `just test -p codex-app-server thread_goal_update_fallback_targets_external_controller_recipients thread_goal_clear_fallback_targets_external_controller_recipients`
   passing 2/2 focused tests, `just test -p codex-app-server controller`
   passing 77/77, `just test -p codex-app-server thread_goal` passing 9/9,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `af4d172` is
+- The focused validation for commit `af4d172` is
   `just test -p codex-app-server controller_review_start_rejects_detached_delivery`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 78/78, `just test -p codex-app-server review` passing 36/36 after
@@ -418,21 +423,21 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `e436e75` is
+- The focused validation for commit `e436e75` is
   `just test -p codex-app-server controller_realtime_start_allows_input_transport_shape_only`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 79/79, `just test -p codex-app-server realtime` passing 31/31,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `ea756d4` is
+- The focused validation for commit `ea756d4` is
   `just test -p codex-app-server controller_realtime_append_text_allows_user_role_only`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 80/80, `just test -p codex-app-server realtime` passing 32/32,
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `9b6d3a2` is
+- The focused validation for commit `9b6d3a2` is
   `just test -p codex-app-server controller_thread_section_move_rejects_before_thread_target`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 81/81 with one unrelated flaky retry in
@@ -442,10 +447,10 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `002f2cd` is
+- The focused validation for commit `002f2cd` is
   `just test -p codex-tui controller_reclaim` passing 4/4 focused tests, and
   `just fmt` passing.
-- The latest focused validation for commit `45806b1` is
+- The focused validation for commit `45806b1` is
   `just test -p codex-app-server active_controller_archive_delete_reject_spawned_descendant_targets`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 82/82 controller tests,
@@ -454,7 +459,7 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `b0ca0bc` is
+- The focused validation for commit `b0ca0bc` is
   `just test -p codex-app-server external_controller_request_is_not_replayed_after_external_delivery`
   passing 1/1 focused test,
   `just test -p codex-app-server external_controller_request` passing 3/3,
@@ -464,7 +469,7 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `776fa13` is
+- The focused validation for commit `776fa13` is
   `just test -p codex-app-server thread_scoped_mcp_oauth_completion_targets_external_controller_subscriber`
   passing 1/1 focused test,
   `just test -p codex-app-server auto_attach_filters_external_controller_subscriptions_to_main_thread`
@@ -474,7 +479,7 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `09768dc` is
+- The focused validation for commit `09768dc` is
   `just test -p codex-app-server controller_targeted_goal_fallback` passing
   2/2 focused tests, `just test -p codex-app-server extensions::tests` passing
   9/9 in-crate extension tests, `just test -p codex-app-server controller`
@@ -482,7 +487,7 @@
   after unrelated fixer hunks were reverted, `just fmt` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `e17994d` is
+- The focused validation for commit `e17994d` is
   `just test -p codex-app-server listener_server_request_resolved_targets_thread_notification_recipients`
   passing 1/1 focused test, `just test -p codex-app-server listener_` passing
   8/8 listener-filtered tests, `just test -p codex-app-server controller`
@@ -490,7 +495,7 @@
   after unrelated fixer hunks were reverted, `just fmt` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `2c27d3f` is
+- The focused validation for commit `2c27d3f` is
   `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript`
   passing 1/1 focused test, `just test -p codex-app-server in_process::tests`
   passing 10/10 in-process tests, `just test -p codex-app-server controller`
@@ -499,7 +504,7 @@
   --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `c1b4a2a` is
+- The focused validation for commit `c1b4a2a` is
   `just test -p codex-app-server-client event_requires_delivery_marks_transcript`
   passing 1/1 focused client test,
   `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript`
@@ -510,7 +515,7 @@
   `just fmt` passing, `git diff --check` and `git diff --cached --check`
   passing, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `cfa8ea6` is
+- The focused validation for commit `cfa8ea6` is
   `just test -p codex-app-server-transport terminal_accept_error_reports_endpoint_failure`
   passing 1/1 focused transport test,
   `just test -p codex-app-server in_process_outbound_router_disconnect_and_close_requests_disconnect`
@@ -526,7 +531,7 @@
   filesystem had 823 MiB free; removing `codex-rs/target/debug/incremental`
   freed enough cache space while preserving debug binaries, and the rerun
   rebuilt `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `6e69a87` is
+- The focused validation for commit `6e69a87` is
   `just test -p codex-app-server in_process::tests` passing 11/11,
   `just test -p codex-tui external_controller_availability` passing 5/5,
   `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
@@ -538,7 +543,7 @@
   upstream `rusty_v8` archive download due Python TLS certificate verification,
   so the successful host build used the repo wrapper `just build-code-mode-host`
   and the successful CLI build used `cargo build -p codex-cli -j 4`.
-- The latest focused validation for commit `0e9b265` is
+- The focused validation for commit `0e9b265` is
   `just test -p codex-app-server connection_rpc_gate request_serialization controller_overload saturated_external_controller_ingress_returns_typed_overload`
   passing 19/19 focused tests, `just test -p codex-app-server` reaching 1227
   passed, 2 zsh-fork timeout fixture failures after retry, and 1 skipped,
@@ -546,7 +551,7 @@
   reverted, `just fmt` passing, `git diff --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `bcdbdff` is
+- The focused validation for commit `bcdbdff` is
   `just test -p codex-app-server connection_rpc_gate saturated_external_controller`
   passing 10/10 focused tests, `just test -p codex-app-server controller`
   passing 93/93 controller tests, `just fix -p codex-app-server` completing
@@ -554,7 +559,7 @@
   --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 1.47s.
-- The latest focused validation for commit `251372e` is
+- The focused validation for commit `251372e` is
   `just test -p codex-app-server local_controller_initialize_suppresses_pre_participation_notifications in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim`
   passing 2/2 focused tests, `just test -p codex-app-server controller`
   passing 94/94 controller-filtered tests, `just fix -p codex-app-server`
@@ -562,14 +567,14 @@
   `git diff --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 21.75s.
-- The latest focused validation for commit `ae608c3` is
+- The focused validation for commit `ae608c3` is
   `just test -p codex-tui controller_reclaim` passing 4/4 focused tests,
   `just fix -p codex-tui` passing, `just fmt` passing, `git diff --check`
   passing, `pre-commit run --files codex-rs/tui/src/app_command.rs` failing
   only because `.pre-commit-config.yaml` is not present, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 15.25s.
-- The latest focused validation for commit `02d3d1c` is
+- The focused validation for commit `02d3d1c` is
   `just test -p codex-app-server controller_main_thread_close_marks_launch_closed`
   passing 1/1 focused test, `just test -p codex-app-server controller`
   passing 95/95 controller-filtered tests, `just test -p codex-app-server`
@@ -585,7 +590,7 @@
   fresh host because the `v8` build script could not download the
   `rusty_v8` sandbox archive after Python TLS certificate verification failed;
   the existing `codex-rs/target/debug/codex-code-mode-host` remains present.
-- The latest focused validation for commit `3bf6c0d` is
+- The focused validation for commit `3bf6c0d` is
   `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
   passing 1/1 focused test,
   `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
@@ -598,7 +603,15 @@
   only because `.pre-commit-config.yaml` is not present, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `55c979b` is `just fmt` passing,
+- The latest focused validation for commit `dd2c93e` is `git diff --check`
+  passing before the source commit,
+  `just test -p codex-tui thread_event_store_snapshots_monotonic_sequence thread_event_store_snapshots_controller_ownership_status controller_ownership_status_event_does_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot`
+  passing 4/4 focused tests, `just fmt` passing, `just fix -p codex-tui`
+  passing after narrowing a test-only `MutexGuard` lifetime flagged by the
+  first fixer run, and `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 21.35s with the known `__eh_frame` linker
+  warning.
+- The focused validation for commit `55c979b` was `just fmt` passing,
   `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history`
   passing 1/1 focused test, `just fix -p codex-tui` passing,
   `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history controller_control_plane_notifications_do_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot`
@@ -618,7 +631,8 @@
 
 - Codex-side normal-interface parity audit: no confirmed remaining
   subscription/implicit-target gap after explicit `thread/unsubscribe` coverage
-  and TUI in-process ownership-status history-exclusion coverage. Prior reviewed
+  and TUI in-process ownership-status history-exclusion coverage, plus TUI
+  snapshot-local sequence/ownership-state bookkeeping. Prior reviewed
   areas include the committed cleanup,
   resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
@@ -650,14 +664,17 @@
   notification delivery through the in-process TUI bridge, plus controller
   prompt egress-fencing at begin-write, plus controller egress-overflow
   isolation/fallback coverage, plus TUI in-process ownership-status
-  history-exclusion coverage.
+  history-exclusion coverage, plus TUI snapshot-local sequence/ownership-state
+  bookkeeping.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Commit 17 sequence/recovery drift is open: the source currently uses lossless
-  in-process event delivery, `Lagged` signaling, and active-thread
-  `thread/read(includeTurns=true)` recovery. It does not expose the spec's
-  formal `threadSequence` / `lastSequence` surface or an atomic
-  snapshot-at-sequence containing interactive owner and prompt-binding state.
+  in-process event delivery, `Lagged` signaling, active-thread
+  `thread/read(includeTurns=true)` recovery, and TUI-side snapshot-local
+  `last_sequence` plus ownership status. It does not expose the spec's formal
+  app-server `threadSequence` / `lastSequence` surface or an atomic
+  app-server-owned snapshot-at-sequence containing interactive owner and
+  prompt-binding state.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -755,12 +772,13 @@
   an exact-thread, standing-session subscription operation: main-thread
   unsubscribe works after release, and wrong-thread unsubscribe is rejected
   before subscription mutation. Typed in-process `ControllerOwnershipStatus`
-  events are covered through the real TUI event handler and remain out of
-  transcript/model-visible history.
-- The formal `threadSequence` / `lastSequence` plus owner/prompt-binding
-  snapshot-at-sequence requirement remains unresolved. Either implement that
-  contract or explicitly amend the design before declaring Codex-side Commit 17
-  complete.
+  events are covered through the real TUI event handler, remain out of
+  transcript/model-visible history, and are retained in TUI snapshots with a
+  local monotonic snapshot sequence.
+- The formal app-server `threadSequence` / `lastSequence` plus
+  owner/prompt-binding snapshot-at-sequence requirement remains unresolved.
+  Either implement that contract or explicitly amend the design before
+  declaring Codex-side Commit 17 complete.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

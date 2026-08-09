@@ -53,13 +53,15 @@
   controller-visible lifecycle/state notifications through the embedded
   runtime and app-server-client bridge, plus explicit controller
   `thread/unsubscribe` target-binding coverage, plus TUI in-process
-  ownership-status history-exclusion coverage;
+  ownership-status history-exclusion coverage, plus TUI snapshot-local
+  sequence/ownership-state bookkeeping;
   current source audit has no confirmed remaining Codex-side
   subscription/implicit-target gap while downstream discovery/display consumes
   the published local-controller metadata contract, but it did find one larger
   Commit 17 drift item: the source uses lossless in-process events, `Lagged`
-  signaling, and active-thread `thread/read(includeTurns=true)` recovery rather
-  than the formal `threadSequence` / `lastSequence` and atomic
+  signaling, active-thread `thread/read(includeTurns=true)` recovery, and
+  TUI-side snapshot-local `last_sequence` plus ownership status rather than the
+  formal app-server `threadSequence` / `lastSequence` and atomic
   owner/prompt-binding snapshot-at-sequence described by the spec.
 
 ## Current Status
@@ -803,7 +805,8 @@
     app-server lag snapshot recovery, or lossless `thread/started`
     notification delivery, or controller prompt egress-fencing at begin-write,
     or controller egress-overflow isolation/fallback coverage, or TUI
-    in-process ownership-status history-exclusion coverage.
+    in-process ownership-status history-exclusion coverage, or TUI
+    snapshot-local sequence/ownership-state bookkeeping.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -845,7 +848,7 @@
 - Resolve the Commit 17 sequence/recovery gap before calling the Codex-side
   implementation complete.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `55c979b`.
+  commit `dd2c93e`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

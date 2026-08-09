@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `9bdbda6`
-(`test(app-server): cover controller egress overflow`). The recorded
+Codex-side hardening has continued through commit `dd2c93e`
+(`tui: snapshot controller ownership state`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -316,7 +316,9 @@ seconds (approximately 24h 19m 40s). At the explicit controller
 `thread/unsubscribe` coverage slice, the cumulative goal cost was 21,794,287
 tokens and 88,185 seconds (approximately 24h 29m 45s). At the TUI
 ownership-status history-exclusion slice, the cumulative goal cost was
-22,166,703 tokens and 88,906 seconds (approximately 24h 41m 46s).
+22,166,703 tokens and 88,906 seconds (approximately 24h 41m 46s). At the TUI
+snapshot sequence/ownership-state slice, the cumulative goal cost was
+22,555,737 tokens and 89,939 seconds (approximately 24h 58m 59s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -449,14 +451,21 @@ Recorded build and validation evidence:
 | `just fix -p codex-tui` | Passed after the TUI ownership-status history-exclusion slice. | Cargo reported 49.82s. |
 | `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history controller_control_plane_notifications_do_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 3 test runs, 3 passed, 3461 skipped. This covers the new typed ownership-status history exclusion, existing JSON-RPC controller control-plane history exclusion, and lag snapshot recovery together. | Compile reported 1.07s; nextest reported 0.340s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI ownership-status history-exclusion slice. | Cargo reported 0.85s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` | Passed before committing the TUI snapshot sequence/ownership-state source slice. | Subsecond. |
+| `just test -p codex-tui thread_event_store_snapshots_monotonic_sequence thread_event_store_snapshots_controller_ownership_status controller_ownership_status_event_does_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 4 test runs, 4 passed, 3462 skipped. This covers local TUI snapshot sequence advancement, controller-ownership status snapshotting, ownership-status non-history handling, and lag snapshot recovery together. | Compile reported 36.80s; nextest reported 0.372s. |
+| `just fmt` | Passed after the TUI snapshot sequence/ownership-state slice. | Shell wall time was 6.495s. |
+| `just fix -p codex-tui` | Final run passed after narrowing a test-only `MutexGuard` lifetime that the first fixer run reported as `await_holding_invalid_type`. | Final cargo run reported 13.13s; the initial diagnostic fixer run reported 25.69s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI snapshot sequence/ownership-state slice. | Cargo reported 21.35s with the known `__eh_frame section too large` linker warning. |
 
-Implementation audit note: as of checkpoint `55c979b`, the code has lossless
-in-process event delivery, `Lagged` markers, and active-thread
-`thread/read(includeTurns=true)` recovery, but it does not expose a formal
-`threadSequence` / `lastSequence` field or an atomic snapshot-at-sequence that
-includes interactive owner and prompt-binding state. Treat the formal sequence
-snapshot wording above as an unresolved implementation/design gap until a later
-slice either implements it or explicitly amends the design.
+Implementation audit note: as of checkpoint `dd2c93e`, the code has lossless
+in-process event delivery, `Lagged` markers, active-thread
+`thread/read(includeTurns=true)` recovery, and TUI-side snapshot-local
+`last_sequence` plus latest controller-ownership status. It still does not
+expose a formal app-server `threadSequence` / `lastSequence` surface or an
+atomic app-server-owned snapshot-at-sequence that includes interactive owner and
+prompt-binding state. Treat the formal sequence snapshot wording above as an
+unresolved implementation/design gap until a later slice either implements it
+or explicitly amends the design.
 
 ## Relevant implementation seams
 
