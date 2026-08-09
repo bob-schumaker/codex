@@ -358,6 +358,17 @@
   --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `c1b4a2a` is
+  `just test -p codex-app-server-client event_requires_delivery_marks_transcript`
+  passing 1/1 focused client test,
+  `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript`
+  passing 1/1 focused app-server test,
+  `just test -p codex-app-server-client` passing 29/29 client tests,
+  `just fix -p codex-app-server-client` passing, `just fix -p
+  codex-app-server` completing after unrelated fixer hunks were reverted,
+  `just fmt` passing, `git diff --check` and `git diff --cached --check`
+  passing, and `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -381,7 +392,8 @@
   controller prompt replay fencing, and extension fallback goal/warning
   controller targeting, listener server-request resolution targeting, and
   embedded in-process transcript/item delivery preservation before the
-  app-server-client lossless bridge.
+  app-server-client lossless bridge, plus centralized lossless delivery
+  classification shared by the embedded runtime writer and app-server-client.
   There is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
@@ -436,6 +448,9 @@
   plan/reasoning deltas, item completion, terminal notifications, and controller
   ownership/status notifications under saturation so the client-side lossless
   bridge is not bypassed before the TUI can reflect controller-originated work.
+  The app-server-client bridge now delegates its delivery classifier to the
+  embedded app-server classifier, avoiding future drift between the producer and
+  bridge lossless sets.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -459,9 +474,6 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
-- Keep the embedded app-server and app-server-client lossless delivery
-  classifiers aligned when new canonical TUI transcript or ownership events are
-  added.
 - Continue validating long-lived subscription behavior; exact-thread and
   collection-filtered pagination cursors now have explicit
   connection/main-thread binding coverage, including internal `thread/resume`
