@@ -19,10 +19,11 @@
   updates, resume snapshots, listener warning notifications, and extension
   no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
   and snapshot fallbacks, plus fencing controller-origin detached reviews so
-  `review/start` stays on the authorized main thread; remaining Codex-side
-  review is centered on implicit targets, egress transactionality, and
-  subscription edges while downstream discovery/display consumes the published
-  local-controller metadata contract.
+  `review/start` stays on the authorized main thread, plus gating
+  controller-origin realtime startup context/configuration overrides; remaining
+  Codex-side review is centered on implicit targets, egress transactionality,
+  and subscription edges while downstream discovery/display consumes the
+  published local-controller metadata contract.
 
 ## Current Status
 
@@ -372,6 +373,20 @@
     one unrelated flaky retry, `just fix -p codex-app-server` after reverting
     unrelated fixer hunks, `just fmt`, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Rejected controller-origin `thread/realtime/start` context/configuration
+    overrides before dispatch while keeping the realtime input/transport shape
+    available to an active controller. Realtime controller startup may still
+    provide the granted main-thread ID, output modality, transport,
+    realtime-session ID, and voice, but not model, prompt, startup-context,
+    initial-item, instruction, protocol-version, transcript-tail, or Codex
+    response-handoff overrides.
+  - Validated the realtime-start gate with
+    `just test -p codex-app-server controller_realtime_start_allows_input_transport_shape_only`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 79/79, `just test -p codex-app-server realtime` passing 31/31,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -385,7 +400,8 @@
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
     no-listener goal-update fallback targeting, or app-server thread-goal
-    fallback targeting, or controller-origin detached review fencing.
+    fallback targeting, or controller-origin detached review fencing, or
+    controller-origin realtime context/configuration override gating.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -409,7 +425,7 @@
   extension no-listener goal-update fallback targeting, plus app-server
   thread-goal fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `af4d172`.
+  commit `e436e75`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
