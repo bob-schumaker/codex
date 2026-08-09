@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `220b0cb`
-(`fix(app-server): let primary prompt replies reclaim controller ownership`). The recorded
+Codex-side hardening has continued through commit `22086cc`
+(`test(app-server): cover primary prompt error reclaim`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -294,8 +294,8 @@ rejection slice, the cumulative goal cost was 17,496,049 tokens and 72,273
 seconds (approximately 20h 04m 33s). At the controller control-plane overload
 coverage slice, the cumulative goal cost was 17,786,148 tokens and 73,074
 seconds (approximately 20h 17m 54s). At the primary prompt-reply reclaim slice,
-the cumulative goal cost was 18,023,827 tokens and 73,735 seconds
-(approximately 20h 28m 55s). These costs include implementation,
+the cumulative goal cost was 18,050,045 tokens and 73,904 seconds
+(approximately 20h 31m 44s). These costs include implementation,
 review, validation, and commit preparation across the staged slices; they are
 not limited to build/test subprocess runtime.
 
@@ -359,8 +359,8 @@ Final build and validation evidence:
 | `just test -p codex-app-server saturated_external_controller_control_ingress_returns_typed_overload` | Passed: 1 test run, 1 passed, 1245 skipped. This covers an initialized external controller receiving typed `controller-overloaded` data when the controller control-plane ingress reservation pool is exhausted before `controller/requestParticipation` dispatch. | Compile reported 1m 03s; nextest reported 0.546s. |
 | `just test -p codex-app-server saturated_external_controller` | Passed: 3 test runs, 3 passed, 1243 skipped across normal ingress overload, control-plane ingress overload, and normal-saturation allowing release/acquire/sign-off control-plane dispatch. | Compile reported 1.06s; nextest reported 1.212s. |
 | `git diff --check` | Passed after the controller control-plane overload coverage slice. | Subsecond. |
-| `just fmt` | Passed after the primary prompt-reply reclaim slice. | Shell wall time was 6.393s on the final run. |
-| `just test -p codex-app-server primary_prompt_response_reclaims_controller_owned_prompt` | First attempt failed to compile because the new implementation tried to call a non-existent `ServerRequest::method()` helper; the server-request method mapping was moved into the controller admission module and reused from both call sites. Final run passed: 1 test run, 1 passed, 1246 skipped. This covers a primary/TUI prompt response to an externally delivered controller-owned prompt reclaiming ownership, resolving the prompt, and leaving subsequent controller mutations stale. | Final compile reported 25.56s; nextest reported 0.601s. |
+| `just fmt` | Passed after the primary prompt-reply reclaim slice. | Shell wall time was 6.454s on the final run. |
+| `just test -p codex-app-server primary_prompt_response_reclaims_controller_owned_prompt` | Initial attempts caught a compile-time integration issue: the implementation first tried to call a non-existent `ServerRequest::method()` helper, then the expanded test needed an explicit `JSONRPCErrorError` import. Final run passed: 1 test run, 1 passed, 1246 skipped. This covers primary/TUI prompt responses and errors to externally delivered controller-owned prompts reclaiming ownership, resolving or rejecting the prompt, and leaving subsequent controller mutations stale. | Final compile reported 9.72s; nextest reported 0.634s. |
 | `just test -p codex-app-server controller_prompt_response_is_bound_to_owner_epoch` | Passed: 1 test run, 1 passed, 1246 skipped after the shared server-request mapping change. | Compile reported 1.52s; nextest reported 0.761s. |
 | `just test -p codex-app-server controller_current_time_request_is_bound_to_owner_epoch` | Passed: 1 test run, 1 passed, 1246 skipped after the shared server-request mapping change. | Compile reported 1.71s; nextest reported 0.710s. |
 | `git diff --check` | Passed after the primary prompt-reply reclaim slice. | Subsecond. |
