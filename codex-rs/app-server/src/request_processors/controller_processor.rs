@@ -954,6 +954,8 @@ fn reject_controller_session_scoped_response(
             matches!(
                 response.decision,
                 CommandExecutionApprovalDecision::AcceptForSession
+                    | CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
+                    | CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment { .. }
             )
         }
         ServerResponse::FileChangeRequestApproval { response, .. } => {
@@ -976,7 +978,7 @@ fn reject_controller_session_scoped_response(
     };
     if reject {
         return Err(controller_error(
-            "external controller cannot grant session-scoped approval",
+            "external controller cannot grant session-scoped or persistent approval",
             error_data(
                 ControllerErrorCode::ControllerNotAllowed,
                 ControllerRetryDisposition::DoNotRetry,

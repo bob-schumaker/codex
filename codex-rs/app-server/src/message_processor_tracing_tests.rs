@@ -22,7 +22,9 @@ use app_test_support::write_mock_responses_config_toml;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
 use codex_app_server_protocol::ControllerAuthorizationChangedNotification;
@@ -39,6 +41,7 @@ use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ControllerSignOffResponse;
 use codex_app_server_protocol::CurrentTimeReadParams;
 use codex_app_server_protocol::CurrentTimeReadResponse;
+use codex_app_server_protocol::ExecPolicyAmendment;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
@@ -50,6 +53,8 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
+use codex_app_server_protocol::NetworkPolicyAmendment;
+use codex_app_server_protocol::NetworkPolicyRuleAction;
 use codex_app_server_protocol::PermissionGrantScope;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
@@ -2741,6 +2746,170 @@ fn controller_rejects_session_scoped_permission_approval() -> Result<()> {
                     .expect("permissions waiter should receive response")
                     .expect("turn-scoped permissions approval should resolve successfully");
             assert_eq!(permissions_result, turn_scoped_response);
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_rejects_persistent_command_approval_decisions() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_rejects_persistent_command_approval_decisions",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_161),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 40_162, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_163),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let prompt_recipients = harness
+                .processor
+                .controller_processor
+                .prompt_request_recipients(
+                    main_thread_id,
+                    vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                );
+            let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                Arc::clone(&harness.processor.outgoing),
+                prompt_recipients,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                main_thread_id,
+            );
+            for decision in [
+                CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                    execpolicy_amendment: ExecPolicyAmendment {
+                        command: vec!["echo".to_string(), "hi".to_string()],
+                    },
+                },
+                CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+                    network_policy_amendment: NetworkPolicyAmendment {
+                        host: "example.com".to_string(),
+                        action: NetworkPolicyRuleAction::Allow,
+                    },
+                },
+            ] {
+                let (command_request_id, mut wait_for_command) = thread_outgoing
+                    .send_request(command_execution_approval_payload(
+                        started.thread.id.clone(),
+                    ))
+                    .await;
+                let delivered_request = read_server_request_for_connection(
+                    &mut harness.outgoing_rx,
+                    EXTERNAL_CONNECTION_ID,
+                    &command_request_id,
+                )
+                .await;
+                assert!(matches!(
+                    delivered_request,
+                    ServerRequest::CommandExecutionRequestApproval { .. }
+                ));
+
+                harness
+                    .processor
+                    .process_response(
+                        EXTERNAL_CONNECTION_ID,
+                        ConnectionOrigin::ExternalController,
+                        JSONRPCResponse {
+                            id: command_request_id.clone(),
+                            result: serde_json::to_value(
+                                CommandExecutionRequestApprovalResponse { decision },
+                            )?,
+                        },
+                    )
+                    .await;
+                let persistent_approval_error = match &command_request_id {
+                    RequestId::Integer(request_id) => {
+                        read_error_for_connection(
+                            &mut harness.outgoing_rx,
+                            EXTERNAL_CONNECTION_ID,
+                            *request_id,
+                        )
+                        .await
+                    }
+                    request_id => panic!("expected integer server request id, got {request_id:?}"),
+                };
+                assert_eq!(persistent_approval_error.id, command_request_id);
+                let persistent_approval_error_data: ControllerErrorData = serde_json::from_value(
+                    persistent_approval_error
+                        .error
+                        .data
+                        .expect("typed controller error"),
+                )?;
+                assert_eq!(
+                    persistent_approval_error_data.code,
+                    ControllerErrorCode::ControllerNotAllowed
+                );
+                assert_eq!(
+                    persistent_approval_error_data.retry,
+                    ControllerRetryDisposition::DoNotRetry
+                );
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(10), &mut wait_for_command)
+                        .await
+                        .is_err()
+                );
+
+                let decline_response =
+                    serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                        decision: CommandExecutionApprovalDecision::Decline,
+                    })?;
+                harness
+                    .processor
+                    .process_response(
+                        EXTERNAL_CONNECTION_ID,
+                        ConnectionOrigin::ExternalController,
+                        JSONRPCResponse {
+                            id: command_request_id,
+                            result: decline_response.clone(),
+                        },
+                    )
+                    .await;
+                let command_result = tokio::time::timeout(Duration::from_secs(1), wait_for_command)
+                    .await
+                    .expect("command approval decline should not time out")
+                    .expect("command approval waiter should receive response")
+                    .expect("command approval decline should resolve successfully");
+                assert_eq!(command_result, decline_response);
+            }
 
             harness.shutdown().await;
             Ok(())
