@@ -1143,6 +1143,25 @@ impl OutgoingMessageSender {
             .await;
     }
 
+    pub(crate) async fn send_error_to_connection(
+        &self,
+        connection_id: ConnectionId,
+        request_id: RequestId,
+        error: impl Into<JSONRPCErrorError>,
+    ) {
+        let outgoing_message = OutgoingMessage::Error(OutgoingError {
+            id: request_id,
+            error: error.into(),
+        });
+        self.send_outgoing_message_to_connection(
+            None,
+            connection_id,
+            outgoing_message,
+            "connection-scoped error",
+        )
+        .await;
+    }
+
     pub(crate) async fn send_result<T, E>(
         &self,
         request_id: ConnectionRequestId,

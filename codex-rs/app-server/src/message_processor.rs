@@ -916,13 +916,20 @@ impl MessageProcessor {
     ) {
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
-        if self
+        match self
             .authorize_server_request_response(connection_id, connection_origin, &id, &result)
             .await
         {
-            self.outgoing
-                .notify_client_response_from_connection(connection_id, id, result)
-                .await;
+            Ok(()) => {
+                self.outgoing
+                    .notify_client_response_from_connection(connection_id, id, result)
+                    .await;
+            }
+            Err(error) => {
+                self.outgoing
+                    .send_error_to_connection(connection_id, id, error)
+                    .await;
+            }
         }
     }
 
@@ -934,13 +941,21 @@ impl MessageProcessor {
         err: JSONRPCError,
     ) {
         tracing::error!("<- error: {:?}", err);
-        if self
-            .authorize_server_request_error(connection_id, connection_origin, &err.id)
+        let JSONRPCError { id, error } = err;
+        match self
+            .authorize_server_request_error(connection_id, connection_origin, &id)
             .await
         {
-            self.outgoing
-                .notify_client_error_from_connection(connection_id, err.id, err.error)
-                .await;
+            Ok(()) => {
+                self.outgoing
+                    .notify_client_error_from_connection(connection_id, id, error)
+                    .await;
+            }
+            Err(rejection) => {
+                self.outgoing
+                    .send_error_to_connection(connection_id, id, rejection)
+                    .await;
+            }
         }
     }
 
@@ -950,13 +965,13 @@ impl MessageProcessor {
         connection_origin: ConnectionOrigin,
         request_id: &RequestId,
         result: &codex_app_server_protocol::Result,
-    ) -> bool {
+    ) -> Result<(), JSONRPCErrorError> {
         if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
-            return true;
+            return Ok(());
         }
 
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
-            return true;
+            return Ok(());
         };
         let response = match pending_request.request.response_from_result(result.clone()) {
             Ok(response) => response,
@@ -966,7 +981,9 @@ impl MessageProcessor {
                     ?request_id,
                     "dropping invalid external-controller server-request response: {err}"
                 );
-                return false;
+                return Err(invalid_request(format!(
+                    "invalid external-controller server-request response: {err}"
+                )));
             }
         };
         if let Err(err) = self
@@ -985,10 +1002,10 @@ impl MessageProcessor {
                 error = ?err,
                 "dropping unauthorized external-controller server-request response"
             );
-            return false;
+            return Err(err);
         }
 
-        true
+        Ok(())
     }
 
     async fn authorize_server_request_error(
@@ -996,13 +1013,13 @@ impl MessageProcessor {
         connection_id: ConnectionId,
         connection_origin: ConnectionOrigin,
         request_id: &RequestId,
-    ) -> bool {
+    ) -> Result<(), JSONRPCErrorError> {
         if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
-            return true;
+            return Ok(());
         }
 
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
-            return true;
+            return Ok(());
         };
         if let Err(err) = self
             .controller_processor
@@ -1020,10 +1037,10 @@ impl MessageProcessor {
                 error = ?err,
                 "dropping unauthorized external-controller server-request error"
             );
-            return false;
+            return Err(err);
         }
 
-        true
+        Ok(())
     }
 
     async fn handle_client_request(

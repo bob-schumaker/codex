@@ -2088,6 +2088,32 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
                     },
                 )
                 .await;
+            let session_scoped_error = match &session_scoped_request_id {
+                RequestId::Integer(request_id) => {
+                    read_error_for_connection(
+                        &mut harness.outgoing_rx,
+                        EXTERNAL_CONNECTION_ID,
+                        *request_id,
+                    )
+                    .await
+                }
+                request_id => panic!("expected integer server request id, got {request_id:?}"),
+            };
+            assert_eq!(session_scoped_error.id, session_scoped_request_id);
+            let session_scoped_error_data: ControllerErrorData = serde_json::from_value(
+                session_scoped_error
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                session_scoped_error_data.code,
+                ControllerErrorCode::ControllerNotAllowed
+            );
+            assert_eq!(
+                session_scoped_error_data.retry,
+                ControllerRetryDisposition::DoNotRetry
+            );
             assert!(
                 tokio::time::timeout(Duration::from_millis(10), &mut wait_for_session_scoped)
                     .await
