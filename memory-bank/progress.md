@@ -114,8 +114,12 @@
 - Thread-scoped global notifications now preserve the existing primary/TUI
   broadcast while also targeting authorized external-controller recipients for
   the same main-thread events.
+- Live listener-command thread goal update, clear, and snapshot egress now uses
+  the controller-aware thread sender. Running-thread resume goal snapshots also
+  target authorized external-controller recipients while preserving the primary
+  broadcast.
 - The latest Codex-side implementation commit is
-  `bc9abac` for launch metadata publication, native approval coverage, exact
+  `6c29759` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -128,7 +132,8 @@
   controller auto-subscribe filtering, plus terminal sign-off/disconnect
   subscription fencing, plus external-controller broadcast filtering and
   targeted main-thread lifecycle delivery, plus targeted main-thread status
-  delivery, plus thread-scoped global notification targeting.
+  delivery, plus thread-scoped global notification targeting and
+  listener-command thread-goal egress targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -189,6 +194,13 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `6c29759` is
+  `just test -p codex-app-server listener_goal_update_targets_external_controller_recipients`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 74/74, `just test -p codex-app-server thread_goal` passing 7/7,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -200,8 +212,8 @@
   controller auto-subscribe filtering, and terminal sign-off/disconnect
   subscription fencing, plus generic broadcast filtering and targeted
   main-thread lifecycle and status delivery, plus thread-scoped global
-  notification targeting. There is no known uncommitted Codex-side source diff
-  in this checkpoint.
+  notification targeting and listener-command thread-goal egress targeting.
+  There is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -229,7 +241,8 @@
   notifications plus `thread/status/changed` notifications are retargeted only
   to authorized external subscribers. Thread-scoped global notifications now
   add targeted copies for authorized external-controller recipients while
-  preserving primary/TUI broadcasts.
+  preserving primary/TUI broadcasts, including live listener-command thread
+  goal update/clear/snapshot paths and running-thread resume goal snapshots.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -265,7 +278,8 @@
   primary-reclaim paths, plus automatic subscription attach filtering and
   terminal sign-off/disconnect subscription fencing, plus generic broadcast
   filtering and targeted main-thread lifecycle and status delivery, plus
-  thread-scoped global notification targeting.
+  thread-scoped global notification targeting and listener-command thread-goal
+  egress targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
