@@ -51,6 +51,7 @@ use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
@@ -3929,13 +3930,107 @@ fn primary_prompt_response_reclaims_controller_owned_prompt() -> Result<()> {
                 .expect("primary prompt response should resolve successfully");
             assert_eq!(prompt_result, serde_json::json!({ "decision": "accept" }));
 
+            let reacquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 42_104,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(reacquired.session.active_lease.is_some());
+
+            let prompt_recipients = harness
+                .processor
+                .controller_processor
+                .prompt_request_recipients(
+                    main_thread_id,
+                    vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                );
+            assert_eq!(
+                prompt_recipients.connection_ids(),
+                &[EXTERNAL_CONNECTION_ID]
+            );
+            let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                Arc::clone(&harness.processor.outgoing),
+                prompt_recipients,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                main_thread_id,
+            );
+            let (error_prompt_request_id, wait_for_error_prompt) = thread_outgoing
+                .send_request(command_execution_approval_payload(
+                    started.thread.id.clone(),
+                ))
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &error_prompt_request_id,
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if harness
+                        .processor
+                        .outgoing
+                        .request_has_external_delivery(
+                            &error_prompt_request_id,
+                            EXTERNAL_CONNECTION_ID,
+                        )
+                        .await
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("external delivery should be recorded");
+
+            harness
+                .processor
+                .process_error(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCError {
+                        id: error_prompt_request_id,
+                        error: JSONRPCErrorError {
+                            code: crate::error_code::INVALID_REQUEST_ERROR_CODE,
+                            message: "primary cancelled prompt".to_string(),
+                            data: None,
+                        },
+                    },
+                )
+                .await;
+
+            let error_reclaimed = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                error_reclaimed.reason,
+                ControllerControlOwnershipChangedReason::ReclaimedByTui
+            );
+            assert_eq!(error_reclaimed.active_lease, None);
+
+            let prompt_error = tokio::time::timeout(Duration::from_secs(1), wait_for_error_prompt)
+                .await
+                .expect("primary prompt error should not time out")
+                .expect("approval waiter should receive error")
+                .expect_err("primary prompt error should reject the prompt");
+            assert_eq!(prompt_error.message, "primary cancelled prompt");
+
             let stale_controller_mutation = harness
                 .request_error_for_connection(
                     EXTERNAL_CONNECTION_ID,
                     ConnectionOrigin::ExternalController,
                     Arc::clone(&external_session),
                     thread_set_name_request(
-                        /*request_id*/ 42_104,
+                        /*request_id*/ 42_105,
                         started.thread.id,
                         "stale controller input",
                     ),
