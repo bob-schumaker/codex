@@ -204,8 +204,14 @@
   tier as other controller-relevant lifecycle/state notifications, so the TUI
   bridge cannot drop thread activation before reflecting controller-originated
   work.
+- Controller-visible lifecycle/state notifications now also share the lossless
+  embedded runtime/app-server-client delivery classifier. This preserves prompt
+  resolution, warnings, goal/token status, MCP startup status, turn
+  start/diff/plan state, hook state, item start, Guardian review state,
+  terminal interaction echo, and model safety/verification status before the
+  TUI bridge can drop them under backpressure.
 - The latest Codex-side source checkpoint is
-  `4d9b974` for launch metadata publication, native approval coverage, exact
+  `a040081` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -234,8 +240,9 @@
   per-connection external-controller ingress with typed `controller-overloaded`
   retry guidance, plus terminal controller launch closure when the immutable
   main thread closes or unloads, plus lossless in-process delivery for
-  controller-relevant thread lifecycle/state notifications and reasoning
-  summary section boundaries and realtime transcript/lifecycle events, plus typed
+  controller-relevant thread lifecycle/state notifications, controller-visible
+  lifecycle/state notifications, reasoning summary section boundaries, and
+  realtime transcript/lifecycle events, plus typed
   controller prompt-rejection surfacing and protocol/export schema coverage for
   controller notifications and canonical controller error-code wire names, plus
   TUI realtime-error warning rendering, plus TUI realtime transcript rendering,
@@ -664,6 +671,10 @@
   Controller-relevant thread lifecycle/state notifications are now also in the
   lossless in-process delivery tier so controller-originated normal-interface
   actions cannot be dropped before the TUI bridge observes them.
+  Controller-visible lifecycle/state notifications now also share that lossless
+  tier through the embedded runtime writer and app-server-client bridge,
+  preserving prompt resolution and visible turn/status transitions before TUI
+  reflection can fall behind under backpressure.
   Reasoning summary part-added notifications are now also in that lossless tier,
   matching the existing lossless treatment for reasoning summary text deltas.
   Realtime transcript delta/done notifications are now also reflected by the

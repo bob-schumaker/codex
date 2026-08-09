@@ -359,6 +359,8 @@ TUI event stream only.
 - Validation:
   - end-to-end controller turn reflected in TUI state
   - deterministic reducer/recovery tests for gapped-stream resynchronization
+  - embedded runtime and app-server-client lossless-delivery classifier tests
+    for controller-visible lifecycle/state notifications
   - tests or code review evidence that ownership/provenance/status events do not
     mutate model-visible history
 

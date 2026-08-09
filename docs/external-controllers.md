@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `4d9b974`
-(`fix(app-server): preserve thread-started in TUI bridge`). The recorded
+Codex-side hardening has continued through commit `a040081`
+(`fix(app-server): preserve controller-visible state events`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -306,7 +306,9 @@ the TUI realtime-transcript rendering slice, the cumulative goal cost was
 app-server lag recovery slice, the cumulative goal cost was 19,860,366 tokens
 and 82,340 seconds (approximately 22h 52m 20s). At the thread-started
 lossless-delivery slice, the cumulative goal cost was 20,165,824 tokens and
-83,365 seconds (approximately 23h 09m 25s).
+83,365 seconds (approximately 23h 09m 25s). At the controller-visible state
+lossless-delivery slice, the cumulative goal cost was 20,492,362 tokens and
+84,213 seconds (approximately 23h 23m 33s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -408,6 +410,13 @@ Recorded build and validation evidence:
 | `just fix -p codex-app-server-client` | Passed after the thread-started lossless-delivery slice. | Cargo reported 2m 41s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the thread-started lossless-delivery slice. | Cargo reported 19.27s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` and `git diff --cached --check` | Passed after the thread-started lossless-delivery source slice. | Subsecond. |
+| `just fmt` | Passed after the controller-visible state lossless-delivery slice; rerun after correcting the initially omitted `turn/diff/updated` classifier arm. | Final shell wall time was 6.766s. |
+| `just test -p codex-app-server guaranteed_delivery_helpers_cover` | Final run passed: 2 test runs, 2 passed, 1246 skipped. This covers the embedded in-process lossless classifier preserving transcript/reasoning/realtime notifications plus controller-visible lifecycle/state notifications such as prompt resolution, warnings, goal/token status, MCP startup, turn start/diff/plan, hooks, item start, Guardian review, terminal interaction, and model safety/verification state. The first run failed because the new `turn/diff/updated` assertion exposed a missing classifier arm; the arm was added and the focused test was rerun. | Final compile reported 20.71s; nextest reported 0.043s. |
+| `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events` | Passed: 1 test run, 1 passed, 28 skipped. This covers the app-server-client bridge preserving representative controller-visible lifecycle/state notifications through the shared classifier. | Compile reported 12.09s; nextest reported 0.036s. |
+| `just fix -p codex-app-server` | Passed after the controller-visible state lossless-delivery slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the source commit stayed scoped. | Cargo reported 30.99s. |
+| `just fix -p codex-app-server-client` | Passed after the controller-visible state lossless-delivery slice. | Cargo reported 6.74s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the controller-visible state lossless-delivery slice. | Cargo reported 21.47s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` | Passed after the controller-visible state lossless-delivery source slice. | Subsecond. |
 
 ## Relevant implementation seams
 

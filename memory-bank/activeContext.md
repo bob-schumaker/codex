@@ -49,7 +49,9 @@
   pending prompt, plus adding protocol/export coverage for controller
   notification schemas and all canonical controller error-code wire names, plus
   TUI app-server lag snapshot recovery, plus lossless `thread/started`
-  delivery through the in-process TUI bridge;
+  delivery through the in-process TUI bridge, plus lossless
+  controller-visible lifecycle/state notifications through the embedded
+  runtime and app-server-client bridge;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
