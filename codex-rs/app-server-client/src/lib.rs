@@ -2543,6 +2543,85 @@ mod tests {
         ));
         assert!(event_requires_delivery(
             &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ServerRequestResolved(
+                    codex_app_server_protocol::ServerRequestResolvedNotification {
+                        thread_id: "thread".to_string(),
+                        request_id: RequestId::String("request".to_string()),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::Error(
+                    codex_app_server_protocol::ErrorNotification {
+                        error: codex_app_server_protocol::TurnError {
+                            message: "turn failed".to_string(),
+                            codex_error_info: None,
+                            additional_details: None,
+                        },
+                        will_retry: false,
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadGoalUpdated(
+                    codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                        thread_id: "thread".to_string(),
+                        turn_id: Some("turn".to_string()),
+                        goal: test_thread_goal("thread"),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::TurnStarted(
+                    codex_app_server_protocol::TurnStartedNotification {
+                        thread_id: "thread".to_string(),
+                        turn: test_notification_turn(
+                            codex_app_server_protocol::TurnStatus::InProgress
+                        ),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::TurnPlanUpdated(
+                    codex_app_server_protocol::TurnPlanUpdatedNotification {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        explanation: Some("updated".to_string()),
+                        plan: vec![codex_app_server_protocol::TurnPlanStep {
+                            step: "reflect controller work".to_string(),
+                            status: codex_app_server_protocol::TurnPlanStepStatus::InProgress,
+                        }],
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ModelSafetyBufferingUpdated(
+                    codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        model: "gpt-5.4".to_string(),
+                        use_cases: vec!["cyber".to_string()],
+                        reasons: vec!["policy".to_string()],
+                        show_buffering_ui: true,
+                        faster_model: Some("gpt-5.4-mini".to_string()),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
                 codex_app_server_protocol::ServerNotification::AgentMessageDelta(
                     codex_app_server_protocol::AgentMessageDeltaNotification {
                         thread_id: "thread".to_string(),
@@ -2751,6 +2830,34 @@ mod tests {
             git_info: None,
             name: None,
             turns: Vec::new(),
+        }
+    }
+
+    fn test_notification_turn(
+        status: codex_app_server_protocol::TurnStatus,
+    ) -> codex_app_server_protocol::Turn {
+        codex_app_server_protocol::Turn {
+            id: "turn".to_string(),
+            items: Vec::new(),
+            items_view: codex_app_server_protocol::TurnItemsView::NotLoaded,
+            status,
+            error: None,
+            started_at: Some(0),
+            completed_at: None,
+            duration_ms: None,
+        }
+    }
+
+    fn test_thread_goal(thread_id: &str) -> codex_app_server_protocol::ThreadGoal {
+        codex_app_server_protocol::ThreadGoal {
+            thread_id: thread_id.to_string(),
+            objective: "reflect controller work".to_string(),
+            status: codex_app_server_protocol::ThreadGoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            created_at: 0,
+            updated_at: 0,
         }
     }
 

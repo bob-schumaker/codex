@@ -27,11 +27,11 @@
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
 //! fanout may drop non-lossless notifications under saturation. Transcript,
-//! terminal, and controller ownership events block for delivery so the TUI does
-//! not render a corrupt or stale thread. Server requests are never silently
-//! abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do not
-//! hang indefinitely.
+//! lifecycle, prompt-resolution, and controller ownership events block for
+//! delivery so the TUI does not render a corrupt or stale thread. Server
+//! requests are never silently abandoned: if they cannot be queued they are
+//! failed back into `MessageProcessor` with overload or internal errors so
+//! approval flows do not hang indefinitely.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -172,15 +172,19 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 /// for delivery instead of using best-effort `try_send`.
 ///
 /// Keep this as the single classifier for both the embedded runtime writer and
-/// the app-server-client bridge so transcript, terminal, and controller
-/// ownership events cannot be dropped before the TUI can reflect canonical
-/// thread state. Realtime audio, SDP, and raw item payloads stay best-effort;
-/// realtime transcript and session lifecycle notifications are small enough
-/// and stateful enough to preserve.
+/// the app-server-client bridge so transcript, lifecycle, prompt-resolution,
+/// and controller ownership events cannot be dropped before the TUI can reflect
+/// canonical thread state. Realtime audio, SDP, raw item payloads, and process
+/// output streams stay best-effort; realtime transcript and session lifecycle
+/// notifications are small enough and stateful enough to preserve.
 pub fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::Error(_)
+            | ServerNotification::ServerRequestResolved(_)
+            | ServerNotification::Warning(_)
+            | ServerNotification::GuardianWarning(_)
+            | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadStarted(_)
             | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::ThreadArchived(_)
@@ -188,16 +192,31 @@ pub fn server_notification_requires_delivery(notification: &ServerNotification) 
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::ThreadClosed(_)
             | ServerNotification::ThreadNameUpdated(_)
+            | ServerNotification::ThreadTokenUsageUpdated(_)
+            | ServerNotification::ThreadGoalUpdated(_)
+            | ServerNotification::ThreadGoalCleared(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ControllerAuthorizationChanged(_)
             | ServerNotification::ControllerControlOwnershipChanged(_)
+            | ServerNotification::McpServerStatusUpdated(_)
+            | ServerNotification::TurnStarted(_)
+            | ServerNotification::HookStarted(_)
+            | ServerNotification::HookCompleted(_)
+            | ServerNotification::TurnDiffUpdated(_)
+            | ServerNotification::TurnPlanUpdated(_)
+            | ServerNotification::ItemStarted(_)
+            | ServerNotification::ItemGuardianApprovalReviewStarted(_)
+            | ServerNotification::ItemGuardianApprovalReviewCompleted(_)
             | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::AgentMessageDelta(_)
             | ServerNotification::PlanDelta(_)
+            | ServerNotification::TerminalInteraction(_)
             | ServerNotification::ReasoningSummaryPartAdded(_)
             | ServerNotification::ReasoningSummaryTextDelta(_)
             | ServerNotification::ReasoningTextDelta(_)
+            | ServerNotification::ModelVerification(_)
+            | ServerNotification::ModelSafetyBufferingUpdated(_)
             | ServerNotification::ThreadRealtimeStarted(_)
             | ServerNotification::ThreadRealtimeTranscriptDelta(_)
             | ServerNotification::ThreadRealtimeTranscriptDone(_)
@@ -1520,6 +1539,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ControllerAcquireControlResponse;
@@ -1534,15 +1554,44 @@ mod tests {
     use codex_app_server_protocol::ControllerRequestParticipationResponse;
     use codex_app_server_protocol::ControllerRetryDisposition;
     use codex_app_server_protocol::ControllerSignOffResponse;
+    use codex_app_server_protocol::ErrorNotification;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::GuardianApprovalReview;
+    use codex_app_server_protocol::GuardianApprovalReviewAction;
+    use codex_app_server_protocol::GuardianApprovalReviewStatus;
+    use codex_app_server_protocol::GuardianCommandSource;
+    use codex_app_server_protocol::GuardianWarningNotification;
+    use codex_app_server_protocol::HookCompletedNotification;
+    use codex_app_server_protocol::HookEventName;
+    use codex_app_server_protocol::HookExecutionMode;
+    use codex_app_server_protocol::HookHandlerType;
+    use codex_app_server_protocol::HookRunStatus;
+    use codex_app_server_protocol::HookRunSummary;
+    use codex_app_server_protocol::HookScope;
+    use codex_app_server_protocol::HookSource;
+    use codex_app_server_protocol::HookStartedNotification;
     use codex_app_server_protocol::ItemCompletedNotification;
+    use codex_app_server_protocol::ItemGuardianApprovalReviewCompletedNotification;
+    use codex_app_server_protocol::ItemGuardianApprovalReviewStartedNotification;
+    use codex_app_server_protocol::ItemStartedNotification;
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
+    use codex_app_server_protocol::McpServerStartupState;
+    use codex_app_server_protocol::McpServerStatusUpdatedNotification;
+    use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
+    use codex_app_server_protocol::ModelVerification;
+    use codex_app_server_protocol::ModelVerificationNotification;
     use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
+    use codex_app_server_protocol::ServerRequestResolvedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::TerminalInteractionNotification;
     use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
     use codex_app_server_protocol::ThreadDeletedNotification;
+    use codex_app_server_protocol::ThreadGoal;
+    use codex_app_server_protocol::ThreadGoalClearedNotification;
+    use codex_app_server_protocol::ThreadGoalStatus;
+    use codex_app_server_protocol::ThreadGoalUpdatedNotification;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ThreadListResponse;
     use codex_app_server_protocol::ThreadLoadedListParams;
@@ -1564,11 +1613,21 @@ mod tests {
     use codex_app_server_protocol::ThreadStartedNotification;
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::ThreadStatusChangedNotification;
+    use codex_app_server_protocol::ThreadTokenUsage;
+    use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
     use codex_app_server_protocol::ThreadUnarchivedNotification;
+    use codex_app_server_protocol::TokenUsageBreakdown;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
+    use codex_app_server_protocol::TurnDiffUpdatedNotification;
+    use codex_app_server_protocol::TurnError;
     use codex_app_server_protocol::TurnItemsView;
+    use codex_app_server_protocol::TurnPlanStep;
+    use codex_app_server_protocol::TurnPlanStepStatus;
+    use codex_app_server_protocol::TurnPlanUpdatedNotification;
+    use codex_app_server_protocol::TurnStartedNotification;
     use codex_app_server_protocol::TurnStatus;
+    use codex_app_server_protocol::WarningNotification;
     use codex_core::config::ConfigBuilder;
     use codex_utils_absolute_path::AbsolutePathBuf;
     #[cfg(unix)]
@@ -4285,6 +4344,172 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn guaranteed_delivery_helpers_cover_controller_visible_state_notifications() {
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::Error(ErrorNotification {
+                error: test_turn_error(),
+                will_retry: false,
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
+                thread_id: "thread-1".to_string(),
+                request_id: RequestId::String("request-1".to_string()),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::Warning(WarningNotification {
+                thread_id: Some("thread-1".to_string()),
+                message: "warning".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::GuardianWarning(GuardianWarningNotification {
+                thread_id: "thread-1".to_string(),
+                message: "guardian warning".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadTokenUsageUpdated(ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                token_usage: test_token_usage(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                goal: test_thread_goal(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
+                thread_id: Some("thread-1".to_string()),
+                name: "filesystem".to_string(),
+                status: McpServerStartupState::Ready,
+                error: None,
+                failure_reason: None,
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::TurnStarted(TurnStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: test_turn(TurnStatus::InProgress),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::HookStarted(HookStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                run: test_hook_run(HookRunStatus::Running),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::HookCompleted(HookCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                run: test_hook_run(HookRunStatus::Completed),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::TurnPlanUpdated(TurnPlanUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                explanation: Some("updated".to_string()),
+                plan: vec![TurnPlanStep {
+                    step: "ship controller reflection".to_string(),
+                    status: TurnPlanStepStatus::InProgress,
+                }],
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::TurnDiffUpdated(TurnDiffUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                diff: "diff --git a/file b/file".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ItemStarted(ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                started_at_ms: 1,
+                item: ThreadItem::AgentMessage {
+                    id: "item-1".to_string(),
+                    text: "working".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ItemGuardianApprovalReviewStarted(
+                ItemGuardianApprovalReviewStartedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 1,
+                    review_id: "review-1".to_string(),
+                    target_item_id: Some("item-1".to_string()),
+                    review: test_guardian_review(GuardianApprovalReviewStatus::InProgress),
+                    action: test_guardian_action(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ItemGuardianApprovalReviewCompleted(
+                ItemGuardianApprovalReviewCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 1,
+                    completed_at_ms: 2,
+                    review_id: "review-1".to_string(),
+                    target_item_id: Some("item-1".to_string()),
+                    decision_source: AutoReviewDecisionSource::Agent,
+                    review: test_guardian_review(GuardianApprovalReviewStatus::Approved),
+                    action: test_guardian_action(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::TerminalInteraction(TerminalInteractionNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                process_id: "process-1".to_string(),
+                stdin: "y\n".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ModelVerification(ModelVerificationNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                verifications: vec![ModelVerification::TrustedAccessForCyber],
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ModelSafetyBufferingUpdated(
+                ModelSafetyBufferingUpdatedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    model: "gpt-5.4".to_string(),
+                    use_cases: vec!["cyber".to_string()],
+                    reasons: vec!["policy".to_string()],
+                    show_buffering_ui: true,
+                    faster_model: Some("gpt-5.4-mini".to_string()),
+                },
+            )
+        ));
+    }
+
     fn test_notification_thread(thread_id: &str) -> codex_app_server_protocol::Thread {
         let cwd = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
         codex_app_server_protocol::Thread {
@@ -4314,6 +4539,92 @@ mod tests {
             git_info: None,
             name: None,
             turns: Vec::new(),
+        }
+    }
+
+    fn test_turn(status: TurnStatus) -> Turn {
+        Turn {
+            id: "turn-1".to_string(),
+            items: Vec::new(),
+            items_view: TurnItemsView::NotLoaded,
+            status,
+            error: None,
+            started_at: Some(0),
+            completed_at: None,
+            duration_ms: None,
+        }
+    }
+
+    fn test_turn_error() -> TurnError {
+        TurnError {
+            message: "turn failed".to_string(),
+            codex_error_info: None,
+            additional_details: None,
+        }
+    }
+
+    fn test_thread_goal() -> ThreadGoal {
+        ThreadGoal {
+            thread_id: "thread-1".to_string(),
+            objective: "finish controller reflection".to_string(),
+            status: ThreadGoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn test_token_usage() -> ThreadTokenUsage {
+        let usage = TokenUsageBreakdown {
+            total_tokens: 10,
+            input_tokens: 4,
+            cached_input_tokens: 1,
+            cache_write_input_tokens: 0,
+            output_tokens: 6,
+            reasoning_output_tokens: 2,
+        };
+        ThreadTokenUsage {
+            total: usage.clone(),
+            last: usage,
+            model_context_window: Some(128_000),
+        }
+    }
+
+    fn test_hook_run(status: HookRunStatus) -> HookRunSummary {
+        HookRunSummary {
+            id: "hook-1".to_string(),
+            event_name: HookEventName::PreToolUse,
+            handler_type: HookHandlerType::Command,
+            execution_mode: HookExecutionMode::Sync,
+            scope: HookScope::Turn,
+            source_path: AbsolutePathBuf::current_dir().expect("current directory should exist"),
+            source: HookSource::User,
+            display_order: 0,
+            status,
+            status_message: None,
+            started_at: 0,
+            completed_at: None,
+            duration_ms: None,
+            entries: Vec::new(),
+        }
+    }
+
+    fn test_guardian_review(status: GuardianApprovalReviewStatus) -> GuardianApprovalReview {
+        GuardianApprovalReview {
+            status,
+            risk_level: None,
+            user_authorization: None,
+            rationale: None,
+        }
+    }
+
+    fn test_guardian_action() -> GuardianApprovalReviewAction {
+        GuardianApprovalReviewAction::Command {
+            source: GuardianCommandSource::Shell,
+            command: "echo hi".to_string(),
+            cwd: AbsolutePathBuf::current_dir().expect("current directory should exist"),
         }
     }
 }
