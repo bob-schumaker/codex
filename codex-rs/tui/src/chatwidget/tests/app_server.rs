@@ -778,6 +778,29 @@ async fn live_app_server_guardian_warning_notification_renders_message() {
 }
 
 #[tokio::test]
+async fn live_app_server_realtime_error_notification_renders_warning() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ThreadRealtimeError(
+            codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                thread_id: "thread-1".to_string(),
+                message: "microphone stream disconnected".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one realtime warning history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Realtime session error: microphone stream disconnected"),
+        "expected realtime error warning, got {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_config_warning_prefixes_summary() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

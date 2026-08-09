@@ -156,6 +156,9 @@ impl ChatWidget {
             ServerNotification::GuardianWarning(notification) => {
                 self.on_warning(notification.message)
             }
+            ServerNotification::ThreadRealtimeError(notification) => {
+                self.on_warning(format!("Realtime session error: {}", notification.message));
+            }
             ServerNotification::DeprecationNotice(notification) => {
                 self.on_deprecation_notice(notification.summary, notification.details)
             }
@@ -224,7 +227,6 @@ impl ChatWidget {
             | ServerNotification::ThreadRealtimeStarted(_)
             | ServerNotification::ThreadRealtimeItemAdded(_)
             | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
-            | ServerNotification::ThreadRealtimeError(_)
             | ServerNotification::ThreadRealtimeClosed(_)
             | ServerNotification::ThreadRealtimeSdp(_)
             | ServerNotification::ThreadRealtimeTranscriptDelta(_)
