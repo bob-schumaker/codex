@@ -188,8 +188,12 @@
   notifications so controller-originated realtime sessions cannot lose the live
   transcript/lifecycle events the TUI/app-server-client bridge needs to stay
   current.
+- The TUI now renders app-server `thread/realtime/error` notifications as
+  warning history cells, so controller-originated realtime failures are visible
+  to the user instead of being silently ignored by the live app-server
+  notification handler.
 - The latest Codex-side source checkpoint is
-  `b2738fb` for launch metadata publication, native approval coverage, exact
+  `b773bfe` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -221,12 +225,19 @@
   controller-relevant thread lifecycle/state notifications and reasoning
   summary section boundaries and realtime transcript/lifecycle events, plus typed
   controller prompt-rejection surfacing and protocol/export schema coverage for
-  controller notifications and canonical controller error-code wire names.
+  controller notifications and canonical controller error-code wire names, plus
+  TUI realtime-error warning rendering.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
   zsh-fork fixture failures; those failures remain separate fixture health
   issues outside the controller slice.
+- The latest focused validation for commit `b773bfe` is `just fmt` passing,
+  `just test -p codex-tui live_app_server_realtime_error_notification_renders_warning`
+  passing 1/1 focused test after a cold rebuild, `just fix -p codex-tui`
+  passing, `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 1m34s with the known `__eh_frame` linker
+  warning, and `git diff --check` passing.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,

@@ -676,6 +676,16 @@
     `git diff --cached --check` passing. No schema regeneration or debug binary
     rebuild was required because the protocol shape and production code did not
     change.
+  - Rendered app-server `thread/realtime/error` notifications as visible TUI
+    warning history cells instead of dropping them in the live app-server
+    notification handler.
+  - Validated the TUI realtime-error rendering slice at commit `b773bfe` with
+    `just fmt` passing,
+    `just test -p codex-tui live_app_server_realtime_error_notification_renders_warning`
+    passing 1/1 focused test after a cold rebuild, `just fix -p codex-tui`
+    passing, `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 1m34s with the known `__eh_frame` linker
+    warning, and `git diff --check` passing.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -703,7 +713,8 @@
     classification, or terminal main-thread-close launch handling, or
     in-process lifecycle/state notification preservation, or controller
     prompt-rejection error surfacing, or controller notification schema
-    coverage, or realtime transcript/lifecycle delivery preservation.
+    coverage, or realtime transcript/lifecycle delivery preservation, or TUI
+    realtime-error rendering.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -736,9 +747,9 @@
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus controller prompt-rejection error surfacing,
   plus controller notification schema coverage, plus reasoning-summary-part
-  lossless delivery.
+  lossless delivery, plus TUI realtime-error rendering.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `b2738fb`.
+  commit `b773bfe`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

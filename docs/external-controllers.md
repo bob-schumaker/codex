@@ -299,9 +299,10 @@ the cumulative goal cost was 18,050,045 tokens and 73,904 seconds
 slice, the cumulative goal cost was 18,403,089 tokens and 74,556 seconds
 (approximately 20h 42m 36s). At the realtime controller delivery slice, the
 cumulative goal cost was 18,710,228 tokens and 75,136 seconds (approximately
-20h 52m 16s). These costs include implementation, review, validation, and
-commit preparation across the staged slices; they are not limited to build/test
-subprocess runtime.
+20h 52m 16s). At the TUI realtime-error rendering slice, the cumulative goal
+cost was 19,227,569 tokens and 80,402 seconds (approximately 22h 20m 02s).
+These costs include implementation, review, validation, and commit preparation
+across the staged slices; they are not limited to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -376,6 +377,11 @@ Recorded build and validation evidence:
 | `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications` | Passed: 1 test run, 1 passed, 1246 skipped. This covers the embedded in-process lossless classifier preserving realtime started, transcript delta/done, error, and closed notifications with other transcript/reasoning/terminal notifications. | Compile reported 45.55s; nextest reported 0.047s. |
 | `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events` | Passed: 1 test run, 1 passed, 28 skipped. This covers the app-server-client bridge preserving the same realtime transcript/lifecycle notifications through the shared classifier. | Compile reported 13.85s; nextest reported 0.044s. |
 | `git diff --check` and `git diff --cached --check` | Passed after the realtime controller delivery source slice. | Subsecond. |
+| `just fmt` | Passed after the TUI realtime-error rendering slice. | Shell wall time was 7.242s. |
+| `just test -p codex-tui live_app_server_realtime_error_notification_renders_warning` | Passed: 1 test run, 1 passed, 3459 skipped. This covers rendering `thread/realtime/error` as a visible TUI warning instead of dropping it in the app-server notification handler. | Cargo reported 3m 45s after a cold rebuild; nextest reported the focused test passed. |
+| `just fix -p codex-tui` | Passed after the TUI realtime-error rendering slice. | Cargo reported 2m 18s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI realtime-error rendering slice. | Cargo reported 1m 34s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` | Passed after the TUI realtime-error rendering source slice. | Subsecond. |
 
 ## Relevant implementation seams
 
