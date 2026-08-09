@@ -700,6 +700,26 @@ impl OutgoingMessageSender {
             })
     }
 
+    pub(crate) async fn rebind_request_resolution_to_connection(
+        &self,
+        id: &RequestId,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+        let Some(entry) = request_id_to_callback.get_mut(id) else {
+            return false;
+        };
+        if entry.thread_id != Some(thread_id) {
+            return false;
+        }
+
+        entry.recipient_connection_ids = Some(vec![connection_id]);
+        entry.external_delivery_fallback_connection_id = None;
+        entry.external_controller_owner_epoch = None;
+        true
+    }
+
     async fn send_pending_requests_to_connection(
         &self,
         connection_id: ConnectionId,

@@ -11,6 +11,7 @@ use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::ServerRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AdmissionRule {
@@ -314,6 +315,30 @@ pub(crate) fn server_request_response_rule(method: &str) -> Option<AdmissionRule
         .iter()
         .find(|entry| entry.method == method)
         .map(|entry| entry.rule)
+}
+
+pub(crate) fn server_request_response_rule_for_request(
+    request: &ServerRequest,
+) -> Option<AdmissionRule> {
+    server_request_response_rule(server_request_method(request))
+}
+
+pub(crate) fn server_request_method(request: &ServerRequest) -> &'static str {
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { .. } => {
+            "item/commandExecution/requestApproval"
+        }
+        ServerRequest::FileChangeRequestApproval { .. } => "item/fileChange/requestApproval",
+        ServerRequest::ToolRequestUserInput { .. } => "item/tool/requestUserInput",
+        ServerRequest::McpServerElicitationRequest { .. } => "mcpServer/elicitation/request",
+        ServerRequest::PermissionsRequestApproval { .. } => "item/permissions/requestApproval",
+        ServerRequest::DynamicToolCall { .. } => "item/tool/call",
+        ServerRequest::ChatgptAuthTokensRefresh { .. } => "account/chatgptAuthTokens/refresh",
+        ServerRequest::AttestationGenerate { .. } => "attestation/generate",
+        ServerRequest::CurrentTimeRead { .. } => "currentTime/read",
+        ServerRequest::ApplyPatchApproval { .. } => "applyPatchApproval",
+        ServerRequest::ExecCommandApproval { .. } => "execCommandApproval",
+    }
 }
 
 pub(crate) fn continuation_rule_for(kind: ContinuationKind) -> AdmissionRule {

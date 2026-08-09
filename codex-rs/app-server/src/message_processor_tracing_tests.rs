@@ -3810,6 +3810,156 @@ fn controller_prompt_response_is_bound_to_owner_epoch() -> Result<()> {
 
 #[test]
 #[serial(app_server_tracing)]
+fn primary_prompt_response_reclaims_controller_owned_prompt() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "primary_prompt_response_reclaims_controller_owned_prompt",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 42_101),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let started = harness
+                .start_thread(/*request_id*/ 42_102, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 42_103),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let prompt_recipients = harness
+                .processor
+                .controller_processor
+                .prompt_request_recipients(
+                    main_thread_id,
+                    vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                );
+            assert_eq!(
+                prompt_recipients.connection_ids(),
+                &[EXTERNAL_CONNECTION_ID]
+            );
+            let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                Arc::clone(&harness.processor.outgoing),
+                prompt_recipients,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                main_thread_id,
+            );
+            let (prompt_request_id, wait_for_prompt) = thread_outgoing
+                .send_request(command_execution_approval_payload(
+                    started.thread.id.clone(),
+                ))
+                .await;
+            let _ = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &prompt_request_id,
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if harness
+                        .processor
+                        .outgoing
+                        .request_has_external_delivery(&prompt_request_id, EXTERNAL_CONNECTION_ID)
+                        .await
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("external delivery should be recorded");
+
+            harness
+                .processor
+                .process_response(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    JSONRPCResponse {
+                        id: prompt_request_id,
+                        result: serde_json::json!({ "decision": "accept" }),
+                    },
+                )
+                .await;
+
+            let reclaimed = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                reclaimed.reason,
+                ControllerControlOwnershipChangedReason::ReclaimedByTui
+            );
+            assert_eq!(reclaimed.active_lease, None);
+
+            let prompt_result = tokio::time::timeout(Duration::from_secs(1), wait_for_prompt)
+                .await
+                .expect("primary prompt response should not time out")
+                .expect("approval waiter should receive response")
+                .expect("primary prompt response should resolve successfully");
+            assert_eq!(prompt_result, serde_json::json!({ "decision": "accept" }));
+
+            let stale_controller_mutation = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    thread_set_name_request(
+                        /*request_id*/ 42_104,
+                        started.thread.id,
+                        "stale controller input",
+                    ),
+                )
+                .await;
+            let stale_controller_mutation_data: ControllerErrorData = serde_json::from_value(
+                stale_controller_mutation
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                stale_controller_mutation_data.code,
+                ControllerErrorCode::StaleOwnership
+            );
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
 fn controller_disconnect_rebinds_prompts_before_rpc_drain() -> Result<()> {
     run_current_thread_test_with_stack(
         "controller_disconnect_rebinds_prompts_before_rpc_drain",

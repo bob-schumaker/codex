@@ -25,6 +25,7 @@ use codex_protocol::ThreadId;
 use crate::controller_admission::AdmissionRule;
 use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
+use crate::controller_admission::server_request_method;
 use crate::controller_admission::server_request_response_rule;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerDisplayClaims;
@@ -926,24 +927,6 @@ fn prompt_rebind_after_transition(
         fallback_connection_id: None,
         owner_epoch: None,
     })
-}
-
-fn server_request_method(request: &ServerRequest) -> &'static str {
-    match request {
-        ServerRequest::CommandExecutionRequestApproval { .. } => {
-            "item/commandExecution/requestApproval"
-        }
-        ServerRequest::FileChangeRequestApproval { .. } => "item/fileChange/requestApproval",
-        ServerRequest::ToolRequestUserInput { .. } => "item/tool/requestUserInput",
-        ServerRequest::McpServerElicitationRequest { .. } => "mcpServer/elicitation/request",
-        ServerRequest::PermissionsRequestApproval { .. } => "item/permissions/requestApproval",
-        ServerRequest::DynamicToolCall { .. } => "item/tool/call",
-        ServerRequest::ChatgptAuthTokensRefresh { .. } => "account/chatgptAuthTokens/refresh",
-        ServerRequest::AttestationGenerate { .. } => "attestation/generate",
-        ServerRequest::CurrentTimeRead { .. } => "currentTime/read",
-        ServerRequest::ApplyPatchApproval { .. } => "applyPatchApproval",
-        ServerRequest::ExecCommandApproval { .. } => "execCommandApproval",
-    }
 }
 
 fn reject_controller_session_scoped_response(

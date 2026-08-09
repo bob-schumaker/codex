@@ -16,6 +16,7 @@ use crate::controller_admission::controller_experimental_not_enabled;
 use crate::controller_admission::controller_not_allowed;
 use crate::controller_admission::controller_overloaded;
 use crate::controller_admission::controller_transport_closing;
+use crate::controller_admission::server_request_response_rule_for_request;
 use crate::controller_cursor::bind_controller_response_cursors;
 use crate::controller_cursor::unbind_controller_request_cursors;
 use crate::controller_enrollment::ControllerCredentialProof;
@@ -968,6 +969,8 @@ impl MessageProcessor {
         result: &codex_app_server_protocol::Result,
     ) -> Result<(), JSONRPCErrorError> {
         if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
+            self.reclaim_for_primary_server_request_resolution(connection_id, request_id)
+                .await?;
             return Ok(());
         }
 
@@ -1016,6 +1019,8 @@ impl MessageProcessor {
         request_id: &RequestId,
     ) -> Result<(), JSONRPCErrorError> {
         if !matches!(connection_origin, ConnectionOrigin::ExternalController) {
+            self.reclaim_for_primary_server_request_resolution(connection_id, request_id)
+                .await?;
             return Ok(());
         }
 
@@ -1041,6 +1046,33 @@ impl MessageProcessor {
             return Err(err);
         }
 
+        Ok(())
+    }
+
+    async fn reclaim_for_primary_server_request_resolution(
+        &self,
+        connection_id: ConnectionId,
+        request_id: &RequestId,
+    ) -> Result<(), JSONRPCErrorError> {
+        let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
+            return Ok(());
+        };
+        let Some(rule) = server_request_response_rule_for_request(&pending_request.request) else {
+            return Ok(());
+        };
+        if !matches!(rule.required_authority, RequiredAuthority::ActiveOwner) {
+            return Ok(());
+        }
+        let Some(thread_id) = pending_request.thread_id else {
+            return Ok(());
+        };
+
+        self.controller_processor
+            .reclaim_for_primary_thread_input(thread_id.to_string().as_str())
+            .await?;
+        self.outgoing
+            .rebind_request_resolution_to_connection(request_id, thread_id, connection_id)
+            .await;
         Ok(())
     }
 
