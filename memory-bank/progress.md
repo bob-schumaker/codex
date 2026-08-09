@@ -302,6 +302,16 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `b0ca0bc` is
+  `just test -p codex-app-server external_controller_request_is_not_replayed_after_external_delivery`
+  passing 1/1 focused test,
+  `just test -p codex-app-server external_controller_request` passing 3/3,
+  `just test -p codex-app-server outgoing_message` passing 26/26,
+  `just test -p codex-app-server controller` passing 83/83,
+  `just test -p codex-app-server thread_resume` passing 59/59,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -319,8 +329,9 @@
   controller-origin detached review fencing and realtime
   context/configuration override gating, plus realtime text role fencing and
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
-  coverage, and archive/delete spawned-descendant subtree fencing. There is no
-  known uncommitted Codex-side source diff in this checkpoint.
+  coverage, archive/delete spawned-descendant subtree fencing, and delivered
+  controller prompt replay fencing. There is no known uncommitted Codex-side
+  source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -364,6 +375,9 @@
   spawned-descendant subtree targets before handler dispatch, preserving normal
   TUI subtree behavior while preventing controller implicit secondary-thread
   mutation.
+  Running-thread resume replay now skips prompts that already crossed external
+  delivery to a controller, so ownership changes or TUI resume do not duplicate
+  delivered controller prompts to another connection.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
