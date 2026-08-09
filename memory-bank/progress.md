@@ -96,8 +96,11 @@
 - Thread-scoped primary input now rechecks TUI reclaim immediately before a
   queued request executes, so a controller that reacquires while TUI input is
   waiting cannot keep ownership after that TUI input runs.
+- Automatic thread-created listener attachment now preserves normal initialized
+  client behavior while filtering external controllers to their authorized main
+  thread only, preventing controller subscription bleed to secondary threads.
 - The latest Codex-side implementation commit is
-  `2bce609` for launch metadata publication, native approval coverage, exact
+  `93cd090` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -106,7 +109,8 @@
   terminal native TUI-unavailable launch handling, main-thread egress fencing,
   early controller disconnect revocation, and early disconnect subscription
   cleanup, plus controller authorization/control-ownership notification
-  emission, plus serialized-request priority and dequeue-time TUI reclaim.
+  emission, plus serialized-request priority, dequeue-time TUI reclaim, and
+  controller auto-subscribe filtering.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -128,6 +132,14 @@
   after unrelated fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `93cd090` is
+  `just test -p codex-app-server auto_attach_filters_external_controller_subscriptions_to_main_thread`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 67/67 controller tests with one flaky retry in
+  `controller_control_plane_round_trips_after_enrollment`,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, and `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -135,8 +147,9 @@
   implicit targets, egress transactionality, and long-lived subscription edges
   not covered by the committed cleanup, resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
-  controller notification work, and serialized-request priority/dequeue reclaim.
-  There is no known uncommitted Codex-side source diff in this checkpoint.
+  controller notification work, serialized-request priority/dequeue reclaim,
+  and controller auto-subscribe filtering. There is no known uncommitted
+  Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -157,6 +170,8 @@
   ownership notifications now emit from the coordinator transition boundary.
   Primary/TUI serialized requests now preempt queued controller work, and
   queued primary thread input reclaims ownership again at dequeue time.
+  Automatic subscription attach now filters external controllers to the
+  authorized main thread.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -189,7 +204,7 @@
   remaining subscription work is outside the committed sign-off,
   authorization-expiry cleanup, terminal TUI-unavailable,
   disconnect-revocation, disconnect-subscription-cleanup, and queued
-  primary-reclaim paths.
+  primary-reclaim paths, plus automatic subscription attach filtering.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
