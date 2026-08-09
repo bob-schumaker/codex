@@ -3056,6 +3056,208 @@ mod tests {
             .expect("second in-process runtime should shutdown cleanly");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_reconnect_requires_new_participation() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(13_001),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 25_001,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let initialize_response: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 25_001).await;
+        assert!(initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 25_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+        let participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 25_002).await;
+        assert_eq!(
+            participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let session = participation.session.expect("approved session");
+        assert!(session.active_lease.is_some());
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        drop(websocket);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Tui,
+            /*expected_owner_epoch*/ 2,
+            ControllerControlOwnershipChangedReason::ControllerDisconnected,
+        )
+        .await;
+
+        let mut reconnected_websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut reconnected_websocket,
+            /*request_id*/ 26_001,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let reinitialize_response: serde_json::Value =
+            read_websocket_response(&mut reconnected_websocket, /*expected_id*/ 26_001).await;
+        assert!(reinitialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut reconnected_websocket,
+            /*request_id*/ 26_002,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let pre_participation_error =
+            read_websocket_error(&mut reconnected_websocket, /*expected_id*/ 26_002).await;
+        let pre_participation_error_data: ControllerErrorData = serde_json::from_value(
+            pre_participation_error
+                .error
+                .data
+                .expect("participation-required error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            pre_participation_error_data.code,
+            ControllerErrorCode::ParticipationRequired
+        );
+
+        send_websocket_typed_request(
+            &mut reconnected_websocket,
+            /*request_id*/ 26_003,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+        let renewed_participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut reconnected_websocket, /*expected_id*/ 26_003).await;
+        assert_eq!(
+            renewed_participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let renewed_session = renewed_participation
+            .session
+            .expect("renewed approved session");
+        assert_ne!(renewed_session.session_id, session.session_id);
+        assert!(renewed_session.active_lease.is_some());
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: renewed_session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 3,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut reconnected_websocket,
+            /*request_id*/ 26_004,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "controller-reconnected".to_string(),
+            },
+        )
+        .await;
+        let _: ThreadSetNameResponse =
+            read_websocket_response(&mut reconnected_websocket, /*expected_id*/ 26_004).await;
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn in_process_outbound_router_shutdown_does_not_wait_for_retained_sender() {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(/*buffer*/ 1);
