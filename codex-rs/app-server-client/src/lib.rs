@@ -2544,6 +2544,18 @@ mod tests {
         ));
         assert!(event_requires_delivery(
             &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ReasoningSummaryPartAdded(
+                    codex_app_server_protocol::ReasoningSummaryPartAddedNotification {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        summary_index: 1,
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
                 codex_app_server_protocol::ServerNotification::ItemCompleted(
                     codex_app_server_protocol::ItemCompletedNotification {
                         thread_id: "thread".to_string(),

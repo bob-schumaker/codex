@@ -192,6 +192,7 @@ pub fn server_notification_requires_delivery(notification: &ServerNotification) 
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::AgentMessageDelta(_)
             | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryPartAdded(_)
             | ServerNotification::ReasoningSummaryTextDelta(_)
             | ServerNotification::ReasoningTextDelta(_)
     )
@@ -1529,6 +1530,7 @@ mod tests {
     use codex_app_server_protocol::ItemCompletedNotification;
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
+    use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
@@ -4183,6 +4185,14 @@ mod tests {
                     summary_index: 0,
                 },
             )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ReasoningSummaryPartAdded(ReasoningSummaryPartAddedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                summary_index: 1,
+            },)
         ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::ReasoningTextDelta(
