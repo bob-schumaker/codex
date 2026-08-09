@@ -899,7 +899,8 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id)).then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id) && !entry.has_external_delivery())
+                    .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
@@ -2209,6 +2210,90 @@ mod tests {
 
         outgoing
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("authorized response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_controller_request_is_not_replayed_after_external_delivery() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing.clone(),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                None,
+                /*owner_epoch*/ 1,
+            ),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(initial_request),
+            write_complete_tx,
+        } = rx.recv().await.expect("initial request should be sent")
+        else {
+            panic!("expected initial request envelope");
+        };
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(initial_request.id(), &request_id);
+        write_complete_tx
+            .expect("external controller request should track write completion")
+            .send(())
+            .expect("write completion receiver should be waiting");
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if outgoing
+                    .request_has_external_delivery(&request_id, ConnectionId(2))
+                    .await
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("external delivery should be recorded");
+
+        outgoing
+            .replay_requests_to_connection_for_thread(ConnectionId(1), thread_id)
             .await;
         assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
 
