@@ -204,7 +204,7 @@ The runtime retains the app-server's existing request policy:
 
 Serialization orders competing operations; it does not by itself define product ownership. The controller-role and control-lease policy above supplies that ownership boundary.
 
-External ingress is quota-limited per connection and uses reserved control capacity for overload responses before shared runtime admission. External fanout uses isolated bounded egress queues and never awaits controller I/O on the TUI/runtime dispatcher path. Every sensitive egress envelope carries connection, owner epoch, and prompt binding; it is revalidated immediately before socket write, and revocation closes or write-fences the connection before publishing the change. Frames already written are already disclosed. On egress overflow, the server may drop only existing app-server notifications that are explicitly designated lossy; otherwise it disconnects that controller. A failed response delivery is recorded as a terminal transport-closed result for that connection; it is not silently dropped. A controller-owned interactive request is externally delivered only at the pre-write/write boundary defined in the prompt lifecycle above; enqueue failure, stale pre-write validation, or write failure first runs the disconnect/revocation or stale-egress path and then rebinds the request to the TUI. The in-process TUI has independently reserved capacity.
+External ingress is quota-limited per connection before shared runtime admission. Normal controller app-server RPCs and controller control-plane RPCs use separate bounded reservations, so saturated normal controller traffic returns typed overload errors without preventing `controller/requestParticipation`, `controller/acquireControl`, `controller/releaseControl`, or `controller/signOff` from reaching dispatch. External fanout uses isolated bounded egress queues and never awaits controller I/O on the TUI/runtime dispatcher path. Every sensitive egress envelope carries connection, owner epoch, and prompt binding; it is revalidated immediately before socket write, and revocation closes or write-fences the connection before publishing the change. Frames already written are already disclosed. On egress overflow, the server may drop only existing app-server notifications that are explicitly designated lossy; otherwise it disconnects that controller. A failed response delivery is recorded as a terminal transport-closed result for that connection; it is not silently dropped. A controller-owned interactive request is externally delivered only at the pre-write/write boundary defined in the prompt lifecycle above; enqueue failure, stale pre-write validation, or write failure first runs the disconnect/revocation or stale-egress path and then rebinds the request to the TUI. The in-process TUI has independently reserved capacity.
 
 ## Compatibility and failure behavior
 
@@ -260,7 +260,7 @@ External ingress is quota-limited per connection and uses reserved control capac
 - Prompt redelivery uses coordinator-owned pending/resolved/cancelled state, and TUI ownership-status changes are typed in-process events ordered with `threadSequence`.
 - Schema/golden tests cover every controller response, error, and notification; deterministic tests cover acquire-versus-TUI-input, prompt rebinding, and terminal-revocation egress fencing.
 - Participation rejection, `controller/signOff`, and unexpected disconnect revoke every connection-bound lease and restore TUI prompt ownership.
-- Saturated controller ingress returns `-32001`; a slow or disconnected controller cannot block the TUI.
+- Saturated normal controller ingress returns `-32001` with typed overload data; a slow, saturated, or disconnected controller cannot block the TUI or prevent controller participation, acquire, release, or sign-off requests from using their separate bounded control-plane ingress.
 - Controller prompt `externalDelivery` is recorded only after pre-write validation succeeds and the WebSocket writer successfully writes the frame. Enqueue failure, stale pre-write validation, or write failure before `externalDelivery` records a terminal controller-path result and rebinds the still-pending prompt to the TUI before any controller resolver can act. Revocation after `externalDelivery` does not redeliver the prompt; the later resolver path accepts or rejects by request ID, recipient connection, prompt binding, and owner epoch.
 - The authorization gate is ready before any endpoint accepts connections; every controller is default-denied from its first byte.
 - The public experimental surface enumerates canonical error codes for pre-participation denial, enrollment denial, main-thread readiness/closure, TUI unavailability, ownership conflicts, stale ownership, forbidden controller decisions, transport teardown, target mismatch, expiry, and overload, with typed retryability data.
@@ -276,12 +276,14 @@ External ingress is quota-limited per connection and uses reserved control capac
 ## Build and test validation
 
 Validation for the staged implementation was recorded on branch
-`cobblers/control-is-mine` through commit `a36bf85`
-(`refactor(app-server): centralize controller thread list filtering`). The
-recorded implementation goal cost was 7,828,188 tokens and 44,738 seconds
-(approximately 12h 25m 38s). This cost includes implementation, review,
-validation, and commit preparation across the staged slices; it is not limited
-to build/test subprocess runtime.
+`cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
+(`refactor(app-server): centralize controller thread list filtering`). Later
+Codex-side hardening has continued through commit `bcdbdff`
+(`fix(app-server): reserve controller control-plane ingress`). The recorded
+implementation goal cost at the broad checkpoint was 7,828,188 tokens and
+44,738 seconds (approximately 12h 25m 38s). This cost includes implementation,
+review, validation, and commit preparation across the staged slices; it is not
+limited to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -298,6 +300,9 @@ Final build and validation evidence:
 | `just fix -p codex-app-server` | Passed. It auto-fixed two unrelated lint sites; those hunks were reviewed and reverted so the cleanup commit remained scoped to controller routing. | Cargo reported 30.18s. |
 | `git diff --check` and `git diff --cached --check` | Passed. | Subsecond. |
 | `pre-commit run --all-files` | Could not run repository hooks because `.pre-commit-config.yaml` is absent. | Failed fast with `InvalidConfigError`. |
+| `just test -p codex-app-server connection_rpc_gate saturated_external_controller` | Passed: 10/10 focused tests after the separate control-plane ingress hardening. | Prior run reported 35.07s compile and 0.781s nextest. |
+| `just test -p codex-app-server controller` | Passed: 93/93 controller-filtered tests after the separate control-plane ingress hardening. | Prior run reported 23.363s nextest. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the separate control-plane ingress hardening. | Cargo reported 1.47s. |
 
 ## Relevant implementation seams
 

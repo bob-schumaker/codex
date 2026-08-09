@@ -249,6 +249,8 @@ Commit 12: Add controller egress delivery and backpressure semantics.
   - post-`externalDelivery` stale response rejection without redelivery
   - isolated controller egress queues and reserved TUI capacity
   - saturated controller ingress overload responses
+  - separate bounded controller control-plane ingress so saturated normal
+    controller traffic cannot block participation, acquire, release, or sign-off
 - Primary files:
   - `codex-rs/app-server/src/outgoing_message.rs`
   - `codex-rs/app-server/src/transport.rs`
@@ -257,6 +259,9 @@ Commit 12: Add controller egress delivery and backpressure semantics.
   - write-failure and pre-/post-`externalDelivery` tests
   - saturated controller ingress returns `-32001` or typed
     `controller-overloaded` according to the design path being exercised
+  - saturated normal controller ingress still allows `controller/releaseControl`
+    and `controller/signOff` to reach dispatch through their separate bounded
+    control-plane reservation
   - slow or disconnected controller cannot block TUI ingress, TUI egress, or the
     runtime dispatcher
   - isolated egress queue overflow disconnects or drops only explicitly lossy
