@@ -128,8 +128,12 @@
 - App-server `thread/goal` update, clear, and snapshot fallbacks now use the
   controller-aware thread sender, preserving primary/TUI broadcasts while adding
   targeted copies for authorized external-controller recipients.
+- Controller-origin `review/start` now stays inside the authorized main-thread
+  controller contract: inline/default review delivery remains allowed, while
+  `delivery: detached` is rejected before dispatch so an active controller
+  cannot create a secondary detached review thread.
 - The latest Codex-side implementation commit is
-  `e5d3141` for launch metadata publication, native approval coverage, exact
+  `af4d172` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -145,7 +149,8 @@
   delivery, plus thread-scoped global notification targeting and
   listener-command thread-goal egress targeting, plus listener-warning
   targeting, extension no-listener goal-update fallback targeting, and
-  app-server thread-goal fallback targeting.
+  app-server thread-goal fallback targeting, plus controller-origin detached
+  review fencing.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -237,6 +242,14 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `af4d172` is
+  `just test -p codex-app-server controller_review_start_rejects_detached_delivery`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 78/78, `just test -p codex-app-server review` passing 36/36 after
+  one unrelated flaky retry,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -250,8 +263,9 @@
   main-thread lifecycle and status delivery, plus thread-scoped global
   notification targeting, listener-command thread-goal egress targeting, and
   listener-warning targeting, plus extension no-listener goal-update fallback
-  targeting and app-server thread-goal fallback targeting. There is no known
-  uncommitted Codex-side source diff in this checkpoint.
+  targeting and app-server thread-goal fallback targeting, plus
+  controller-origin detached review fencing. There is no known uncommitted
+  Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -284,7 +298,9 @@
   listener warning notifications. Extension no-listener goal-update fallback now
   targets thread subscribers instead of relying on raw broadcast. App-server
   `thread/goal` update, clear, and snapshot fallbacks now use the
-  controller-aware thread sender.
+  controller-aware thread sender. Controller-origin `review/start` now rejects
+  detached delivery so active controllers cannot create secondary review threads
+  outside the authorized main-thread scope.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

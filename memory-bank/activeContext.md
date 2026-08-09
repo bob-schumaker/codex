@@ -18,9 +18,11 @@
   targeting external-controller copies, including listener-command thread goal
   updates, resume snapshots, listener warning notifications, and extension
   no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
-  and snapshot fallbacks; remaining Codex-side review is centered on implicit
-  targets, egress transactionality, and subscription edges while downstream
-  discovery/display consumes the published local-controller metadata contract.
+  and snapshot fallbacks, plus fencing controller-origin detached reviews so
+  `review/start` stays on the authorized main thread; remaining Codex-side
+  review is centered on implicit targets, egress transactionality, and
+  subscription edges while downstream discovery/display consumes the published
+  local-controller metadata contract.
 
 ## Current Status
 
@@ -358,6 +360,18 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks,
     `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Rejected controller-origin `review/start` requests with
+    `delivery: detached` before dispatch. Approved active controllers may still
+    use the normal inline/default `review/start` shape on the authorized main
+    thread, but cannot create a detached secondary review thread outside the
+    single-main-thread controller scope.
+  - Validated the review-start gate with
+    `just test -p codex-app-server controller_review_start_rejects_detached_delivery`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 78/78, `just test -p codex-app-server review` passing 36/36 after
+    one unrelated flaky retry, `just fix -p codex-app-server` after reverting
+    unrelated fixer hunks, `just fmt`, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -371,7 +385,7 @@
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
     no-listener goal-update fallback targeting, or app-server thread-goal
-    fallback targeting.
+    fallback targeting, or controller-origin detached review fencing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -395,7 +409,7 @@
   extension no-listener goal-update fallback targeting, plus app-server
   thread-goal fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `e5d3141`.
+  commit `af4d172`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
