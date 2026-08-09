@@ -26,10 +26,12 @@
 //! # Backpressure
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
-//! fanout may drop notifications under saturation. Server requests are never
-//! silently abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do
-//! not hang indefinitely.
+//! fanout may drop non-lossless notifications under saturation. Transcript,
+//! terminal, and controller ownership events block for delivery so the TUI does
+//! not render a corrupt or stale thread. Server requests are never silently
+//! abandoned: if they cannot be queued they are failed back into
+//! `MessageProcessor` with overload or internal errors so approval flows do not
+//! hang indefinitely.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -173,7 +175,12 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ControllerAuthorizationChanged(_)
             | ServerNotification::ControllerControlOwnershipChanged(_)
+            | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::AgentMessageDelta(_)
+            | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryTextDelta(_)
+            | ServerNotification::ReasoningTextDelta(_)
     )
 }
 
@@ -1387,9 +1394,11 @@ mod tests {
     use codex_app_server_protocol::ControllerRequestParticipationResponse;
     use codex_app_server_protocol::ControllerSignOffResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::ItemCompletedNotification;
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ThreadListResponse;
     use codex_app_server_protocol::ThreadLoadedListParams;
     use codex_app_server_protocol::ThreadLoadedListResponse;
@@ -2389,7 +2398,7 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
+    fn guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications() {
         assert!(server_notification_requires_delivery(
             &ServerNotification::TurnCompleted(TurnCompletedNotification {
                 thread_id: "thread-1".to_string(),
@@ -2402,6 +2411,59 @@ mod tests {
                     started_at: None,
                     completed_at: Some(0),
                     duration_ms: None,
+                },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::AgentMessageDelta(
+                codex_app_server_protocol::AgentMessageDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    delta: "hello".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "plan".to_string(),
+            },)
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ReasoningSummaryTextDelta(
+                codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    delta: "summary".to_string(),
+                    summary_index: 0,
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ReasoningTextDelta(
+                codex_app_server_protocol::ReasoningTextDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    delta: "reasoning".to_string(),
+                    content_index: 0,
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+                item: ThreadItem::AgentMessage {
+                    id: "item-1".to_string(),
+                    text: "hello".to_string(),
+                    phase: None,
+                    memory_citation: None,
                 },
             })
         ));
