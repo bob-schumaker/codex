@@ -23,6 +23,7 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSectionListParams;
+use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
@@ -251,6 +252,47 @@ fn controller_turn_steer_rejects_additional_context_override() {
         params: unsafe_params,
     })
     .expect_err("controller turn/steer additional context should be rejected");
+    let data: ControllerErrorData =
+        serde_json::from_value(error.data.expect("controller error should include data"))
+            .expect("controller error data should deserialize");
+    assert_eq!(data.code, ControllerErrorCode::ControllerNotAllowed);
+}
+
+#[test]
+fn controller_thread_section_move_rejects_before_thread_target() {
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ThreadSectionMove {
+            request_id: RequestId::Integer(17),
+            params: ThreadSectionMoveParams {
+                thread_id: "thread-1".to_string(),
+                section_id: Some("section-1".to_string()),
+                before_thread_id: None,
+            },
+        }),
+        Ok(())
+    );
+
+    assert_eq!(
+        reject_controller_tui_only_params(&ClientRequest::ThreadSectionMove {
+            request_id: RequestId::Integer(18),
+            params: ThreadSectionMoveParams {
+                thread_id: "thread-1".to_string(),
+                section_id: None,
+                before_thread_id: None,
+            },
+        }),
+        Ok(())
+    );
+
+    let error = reject_controller_tui_only_params(&ClientRequest::ThreadSectionMove {
+        request_id: RequestId::Integer(19),
+        params: ThreadSectionMoveParams {
+            thread_id: "thread-1".to_string(),
+            section_id: Some("section-1".to_string()),
+            before_thread_id: Some("thread-2".to_string()),
+        },
+    })
+    .expect_err("controller section move must not target another thread");
     let data: ControllerErrorData =
         serde_json::from_value(error.data.expect("controller error should include data"))
             .expect("controller error data should deserialize");

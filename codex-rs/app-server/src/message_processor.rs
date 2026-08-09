@@ -2085,6 +2085,15 @@ fn reject_controller_tui_only_params(request: &ClientRequest) -> Result<(), JSON
                 "external controller turn/steer may only steer the authorized main thread without additional context overrides",
             ))
         }
+        ClientRequest::ThreadSectionMove { params, .. } => {
+            if params.before_thread_id.is_none() {
+                return Ok(());
+            }
+
+            Err(controller_not_allowed(
+                "external controller thread/section/move may not order the authorized main thread relative to another thread",
+            ))
+        }
         ClientRequest::ThreadRealtimeStart { params, .. } => {
             if params.client_managed_handoffs.is_none()
                 && params.delegation_ack_filler.is_none()
