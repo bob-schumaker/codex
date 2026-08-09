@@ -1655,6 +1655,22 @@ mod tests {
     async fn connect_local_controller_websocket(
         metadata: &LocalControllerEndpointMetadata,
     ) -> tokio_tungstenite::WebSocketStream<UnixStream> {
+        connect_local_controller_websocket_with_nonce(
+            metadata,
+            Some(metadata.launch_nonce.as_str()),
+        )
+        .await
+        .expect("local-controller websocket should upgrade")
+    }
+
+    #[cfg(unix)]
+    async fn connect_local_controller_websocket_with_nonce(
+        metadata: &LocalControllerEndpointMetadata,
+        launch_nonce: Option<&str>,
+    ) -> std::result::Result<
+        tokio_tungstenite::WebSocketStream<UnixStream>,
+        tokio_tungstenite::tungstenite::Error,
+    > {
         let socket_path = metadata
             .endpoint_uri
             .strip_prefix("unix://")
@@ -1665,15 +1681,15 @@ mod tests {
         let mut request = "ws://codex-local-controller/"
             .into_client_request()
             .expect("websocket request should build");
-        request.headers_mut().insert(
-            LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER,
-            HeaderValue::from_str(metadata.launch_nonce.as_str())
-                .expect("launch nonce should be a valid header"),
-        );
+        if let Some(launch_nonce) = launch_nonce {
+            request.headers_mut().insert(
+                LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER,
+                HeaderValue::from_str(launch_nonce).expect("launch nonce should be a valid header"),
+            );
+        }
         client_async(request, stream)
             .await
-            .expect("local-controller websocket should upgrade")
-            .0
+            .map(|(websocket, _)| websocket)
     }
 
     #[cfg(unix)]
@@ -2649,6 +2665,46 @@ mod tests {
         )
         .expect("local-controller metadata should deserialize after second main thread publish");
         assert_eq!(stored_second, expected);
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_endpoint_rejects_missing_or_wrong_launch_nonce() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        for launch_nonce in [None, Some("wrong-nonce")] {
+            let err = connect_local_controller_websocket_with_nonce(&metadata, launch_nonce)
+                .await
+                .expect_err("local-controller websocket should reject invalid launch nonce");
+            assert!(
+                !err.to_string().is_empty(),
+                "nonce rejection should return an observable websocket error"
+            );
+        }
+
+        let _websocket = connect_local_controller_websocket(&metadata).await;
 
         client
             .shutdown()
