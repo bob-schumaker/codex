@@ -416,7 +416,11 @@ impl MessageProcessor {
 
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
         let thread_watch_manager =
-            crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
+            crate::thread_status::ThreadWatchManager::new_with_outgoing_and_controller_targeting(
+                outgoing.clone(),
+                thread_state_manager.clone(),
+                controller_processor.clone(),
+            );
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
         let workspace_settings_cache =
             Arc::new(workspace_settings::WorkspaceSettingsCache::default());

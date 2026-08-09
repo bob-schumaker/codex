@@ -3,6 +3,8 @@ use crate::outgoing_message::OutgoingEnvelope;
 #[cfg(test)]
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::request_processors::ControllerRequestProcessor;
+use crate::thread_state::ThreadStateManager;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadActiveFlag;
 use codex_app_server_protocol::ThreadStatus;
@@ -19,7 +21,14 @@ use tokio::sync::watch;
 pub(crate) struct ThreadWatchManager {
     state: Arc<Mutex<ThreadWatchState>>,
     outgoing: Option<Arc<OutgoingMessageSender>>,
+    controller_targeting: Option<ControllerThreadStatusTargeting>,
     running_turn_count_tx: watch::Sender<usize>,
+}
+
+#[derive(Clone)]
+struct ControllerThreadStatusTargeting {
+    thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
 }
 
 pub(crate) struct ThreadWatchActiveGuard {
@@ -75,15 +84,35 @@ impl ThreadWatchManager {
         Self {
             state: Arc::new(Mutex::new(ThreadWatchState::default())),
             outgoing: None,
+            controller_targeting: None,
             running_turn_count_tx,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_outgoing(outgoing: Arc<OutgoingMessageSender>) -> Self {
         let (running_turn_count_tx, _running_turn_count_rx) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(ThreadWatchState::default())),
             outgoing: Some(outgoing),
+            controller_targeting: None,
+            running_turn_count_tx,
+        }
+    }
+
+    pub(crate) fn new_with_outgoing_and_controller_targeting(
+        outgoing: Arc<OutgoingMessageSender>,
+        thread_state_manager: ThreadStateManager,
+        controller_processor: ControllerRequestProcessor,
+    ) -> Self {
+        let (running_turn_count_tx, _running_turn_count_rx) = watch::channel(0);
+        Self {
+            state: Arc::new(Mutex::new(ThreadWatchState::default())),
+            outgoing: Some(outgoing),
+            controller_targeting: Some(ControllerThreadStatusTargeting {
+                thread_state_manager,
+                controller_processor,
+            }),
             running_turn_count_tx,
         }
     }
@@ -246,9 +275,43 @@ impl ThreadWatchManager {
         if let Some(notification) = notification
             && let Some(outgoing) = &self.outgoing
         {
+            let external_controller_connection_ids = match (
+                &self.controller_targeting,
+                ThreadId::from_string(&notification.thread_id),
+            ) {
+                (Some(targeting), Ok(thread_id)) => {
+                    let subscribed_connection_ids = targeting
+                        .thread_state_manager
+                        .subscribed_connection_ids(thread_id)
+                        .await;
+                    targeting
+                        .controller_processor
+                        .external_controller_thread_notification_recipients(
+                            thread_id,
+                            subscribed_connection_ids,
+                        )
+                }
+                (Some(_), Err(err)) => {
+                    tracing::warn!(
+                        thread_id = notification.thread_id.as_str(),
+                        "failed to parse thread/status/changed thread id for controller targeting: {err}"
+                    );
+                    Vec::new()
+                }
+                (None, _) => Vec::new(),
+            };
+            let notification = ServerNotification::ThreadStatusChanged(notification);
             outgoing
-                .send_server_notification(ServerNotification::ThreadStatusChanged(notification))
+                .send_server_notification(notification.clone())
                 .await;
+            if !external_controller_connection_ids.is_empty() {
+                outgoing
+                    .send_server_notification_to_connections(
+                        external_controller_connection_ids.as_slice(),
+                        notification,
+                    )
+                    .await;
+            }
         }
     }
 
@@ -462,6 +525,15 @@ fn loaded_thread_status(runtime: &RuntimeFacts) -> ThreadStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controller_enrollment::ControllerEnrollmentPolicy;
+    use crate::controller_enrollment::EmptyControllerEnrollmentSource;
+    use crate::controller_native_approval::NativeControllerParticipationDecision;
+    use crate::controller_session::ControllerSessionClock;
+    use crate::controller_session::ControllerSessionConfig;
+    use crate::outgoing_message::ConnectionId;
+    use crate::transport::ConnectionOrigin;
+    use codex_app_server_protocol::ControllerParticipationStatus;
+    use codex_app_server_protocol::ControllerRequestParticipationParams;
     use pretty_assertions::assert_eq;
     use tokio::time::Duration;
     use tokio::time::timeout;
@@ -761,6 +833,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_change_targets_authorized_main_thread_external_controller() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_state_manager = ThreadStateManager::new();
+        let controller_processor = ControllerRequestProcessor::new(
+            Arc::clone(&outgoing),
+            Arc::new(EmptyControllerEnrollmentSource),
+            Some(Arc::new(|_request| {
+                Box::pin(async { NativeControllerParticipationDecision::Approved })
+            })),
+            None,
+            ControllerEnrollmentPolicy::BestEffort,
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(/*secs*/ 300),
+            },
+        );
+        let manager = ThreadWatchManager::new_with_outgoing_and_controller_targeting(
+            Arc::clone(&outgoing),
+            thread_state_manager.clone(),
+            controller_processor.clone(),
+        );
+        let tui_connection_id = ConnectionId(1);
+        let controller_connection_id = ConnectionId(2);
+        let unrelated_connection_id = ConnectionId(3);
+        let main_thread_id =
+            ThreadId::from_string(INTERACTIVE_THREAD_ID).expect("main thread id should parse");
+
+        controller_processor.register_main_thread(main_thread_id, tui_connection_id);
+        thread_state_manager
+            .connection_initialized(tui_connection_id, Default::default())
+            .await;
+        thread_state_manager
+            .connection_initialized(controller_connection_id, Default::default())
+            .await;
+        thread_state_manager
+            .connection_initialized(unrelated_connection_id, Default::default())
+            .await;
+        for connection_id in [
+            tui_connection_id,
+            controller_connection_id,
+            unrelated_connection_id,
+        ] {
+            thread_state_manager
+                .try_ensure_connection_subscribed(
+                    main_thread_id,
+                    connection_id,
+                    /*experimental_raw_events*/ false,
+                )
+                .await
+                .expect("test connection should subscribe to main thread");
+        }
+        let participation = controller_processor
+            .request_participation(
+                controller_connection_id,
+                ConnectionOrigin::ExternalController,
+                /*credential_proof*/ None,
+                ControllerRequestParticipationParams {
+                    controller_name: "codex-waveshare".to_string(),
+                    description: "external test controller".to_string(),
+                },
+            )
+            .await
+            .expect("native approval should create a controller session");
+        assert_eq!(
+            participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        while outgoing_rx.try_recv().is_ok() {}
+
+        manager.upsert_thread(INTERACTIVE_THREAD_ID).await;
+
+        assert_eq!(
+            recv_status_changed_notification(&mut outgoing_rx).await,
+            ThreadStatusChangedNotification {
+                thread_id: INTERACTIVE_THREAD_ID.to_string(),
+                status: ThreadStatus::Idle,
+            },
+        );
+        let (target_connection_id, targeted_notification) =
+            recv_targeted_status_changed_notification(&mut outgoing_rx).await;
+        assert_eq!(target_connection_id, controller_connection_id);
+        assert_eq!(
+            targeted_notification,
+            ThreadStatusChangedNotification {
+                thread_id: INTERACTIVE_THREAD_ID.to_string(),
+                status: ThreadStatus::Idle,
+            },
+        );
+
+        assert!(
+            timeout(Duration::from_millis(100), outgoing_rx.recv())
+                .await
+                .is_err(),
+            "only the authorized external controller should receive a targeted status notification"
+        );
+    }
+
+    #[tokio::test]
     async fn silent_upsert_skips_initial_notification() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
         let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
@@ -869,5 +1043,29 @@ mod tests {
             panic!("expected thread/status/changed notification");
         };
         notification
+    }
+
+    async fn recv_targeted_status_changed_notification(
+        outgoing_rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+    ) -> (ConnectionId, ThreadStatusChangedNotification) {
+        let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for outgoing notification")
+            .expect("outgoing channel closed unexpectedly");
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx: None,
+        } = envelope
+        else {
+            panic!("expected targeted notification");
+        };
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected thread/status/changed notification");
+        };
+        let ServerNotification::ThreadStatusChanged(notification) = envelope.notification else {
+            panic!("expected thread/status/changed notification");
+        };
+        (connection_id, notification)
     }
 }
