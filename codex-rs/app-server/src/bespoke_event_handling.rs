@@ -2115,6 +2115,7 @@ mod tests {
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::ServerRequest;
+    use codex_app_server_protocol::ServerRequestEnvelope;
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_login::CodexAuth;
     use codex_protocol::AgentPath;
@@ -3553,9 +3554,19 @@ mod tests {
         assert_eq!(payload.item.id(), "dynamic-1");
 
         let request = recv_broadcast_message(&mut rx).await?;
-        let OutgoingMessage::Request(ServerRequest::DynamicToolCall { params, .. }) = request
-        else {
-            bail!("unexpected message: {request:?}");
+        let params = match request {
+            OutgoingMessage::Request(ServerRequest::DynamicToolCall { params, .. })
+            | OutgoingMessage::SequencedRequest(ServerRequestEnvelope {
+                request: ServerRequest::DynamicToolCall { params, .. },
+                ..
+            }) => params,
+            OutgoingMessage::Request(request)
+            | OutgoingMessage::SequencedRequest(ServerRequestEnvelope { request, .. }) => {
+                bail!("unexpected request: {request:?}");
+            }
+            OutgoingMessage::AppServerNotification(_)
+            | OutgoingMessage::Response(_)
+            | OutgoingMessage::Error(_) => bail!("unexpected message: {request:?}"),
         };
         assert_eq!(
             params,

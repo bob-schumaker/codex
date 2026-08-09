@@ -1226,9 +1226,13 @@ mod thread_processor_behavior_tests {
         let OutgoingEnvelope::ToConnection {
             connection_id: request_connection_id,
             message:
-                OutgoingMessage::Request(ServerRequest::ToolRequestUserInput {
-                    request_id: sent_request_id,
-                    ..
+                OutgoingMessage::SequencedRequest(codex_app_server_protocol::ServerRequestEnvelope {
+                    request:
+                        ServerRequest::ToolRequestUserInput {
+                            request_id: sent_request_id,
+                            ..
+                        },
+                    thread_sequence: Some(1),
                 }),
             ..
         } = request_message

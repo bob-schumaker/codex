@@ -101,6 +101,9 @@ macro_rules! experimental_method_entry {
     (#[experimental($reason:expr)]) => {
         $reason
     };
+    (#[$($meta:tt)*] $($rest:tt)+) => {
+        experimental_method_entry!($($rest)+)
+    };
     ($($tt:tt)*) => {
         ""
     };
@@ -110,6 +113,9 @@ macro_rules! experimental_method_entry {
 macro_rules! experimental_type_entry {
     (#[experimental($reason:expr)] $ty:ty) => {
         stringify!($ty)
+    };
+    (#[$($meta:tt)*] $($rest:tt)+) => {
+        experimental_type_entry!($($rest)+)
     };
     ($ty:ty) => {
         ""
@@ -1489,7 +1495,7 @@ macro_rules! server_request_definitions {
 macro_rules! server_notification_definitions {
     (
         $(
-            $(#[$variant_meta:meta])*
+            $(#[$($variant_meta:tt)*])*
             $variant:ident $(=> $wire:literal)? ( $payload:ty )
         ),* $(,)?
     ) => {
@@ -1509,7 +1515,7 @@ macro_rules! server_notification_definitions {
         #[strum(serialize_all = "camelCase")]
         pub enum ServerNotification {
             $(
-                $(#[$variant_meta])*
+                $(#[$($variant_meta)*])*
                 $(#[serde(rename = $wire)] #[ts(rename = $wire)] #[strum(serialize = $wire)])?
                 $variant($payload),
             )*
@@ -1540,6 +1546,20 @@ macro_rules! server_notification_definitions {
             $(schemas.push(crate::export::write_json_schema::<$payload>(out_dir, stringify!($payload))?);)*
             Ok(schemas)
         }
+
+        #[cfg(test)]
+        pub(crate) const EXPERIMENTAL_SERVER_NOTIFICATION_TYPES: &[&str] = &[
+            $(
+                experimental_type_entry!($(#[$($variant_meta)*])* $payload),
+            )*
+        ];
+
+        #[cfg(test)]
+        pub(crate) const EXPERIMENTAL_SERVER_NOTIFICATION_METHODS: &[&str] = &[
+            $(
+                experimental_method_entry!($(#[$($variant_meta)*])* $(=> $wire)?),
+            )*
+        ];
     };
 }
 /// Notifications sent from the client to the server.
@@ -1852,6 +1872,16 @@ server_notification_definitions! {
 pub struct ServerNotificationEnvelope {
     #[serde(flatten)]
     pub notification: ServerNotification,
+    /// Per-thread monotonic sequence assigned when the notification changes or
+    /// reflects state for a specific thread.
+    ///
+    /// Optional so clients can decode notifications from older app-server
+    /// versions and app/global notifications that are not part of a thread
+    /// stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub thread_sequence: Option<u64>,
     /// Unix timestamp (in milliseconds) when app-server emitted this notification.
     ///
     /// Optional so clients can decode notifications from older app-server
@@ -1860,6 +1890,22 @@ pub struct ServerNotificationEnvelope {
     #[ts(optional)]
     #[ts(type = "number")]
     pub emitted_at_ms: Option<i64>,
+}
+
+/// Server request envelope sent over app-server transports.
+///
+/// `thread_sequence` is present when a request changes or reflects prompt state
+/// for a specific thread. The request itself remains the normal app-server
+/// JSON-RPC request shape.
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerRequestEnvelope {
+    #[serde(flatten)]
+    pub request: ServerRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub thread_sequence: Option<u64>,
 }
 
 client_notification_definitions! {

@@ -3,6 +3,7 @@ use crate::ClientRequest;
 use crate::ServerNotification;
 use crate::ServerNotificationEnvelope;
 use crate::ServerRequest;
+use crate::ServerRequestEnvelope;
 use crate::TS;
 use crate::export::GENERATED_TS_HEADER;
 use crate::export::filter_experimental_ts_tree;
@@ -69,6 +70,7 @@ pub fn generate_typescript_schema_fixture_subtree_for_tests() -> Result<BTreeMap
         visit_server_response_types(visitor);
     })?;
     collect_typescript_fixture_file::<ServerNotification>(&mut files, &mut seen)?;
+    collect_typescript_fixture_file::<ServerRequestEnvelope>(&mut files, &mut seen)?;
     collect_typescript_fixture_file::<ServerNotificationEnvelope>(&mut files, &mut seen)?;
 
     filter_experimental_ts_tree(&mut files)?;

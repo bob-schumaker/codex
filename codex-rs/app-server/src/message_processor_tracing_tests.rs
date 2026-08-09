@@ -64,6 +64,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::RequestPermissionProfile;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerRequestEnvelope;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadDeleteParams;
@@ -931,12 +932,27 @@ async fn read_server_request_for_connection(
         if connection_id != expected_connection_id {
             continue;
         }
-        let crate::outgoing_message::OutgoingMessage::Request(request) = message else {
+        let Some(request) = server_request_from_outgoing_message(message) else {
             continue;
         };
         if request.id() == expected_request_id {
             return request;
         }
+    }
+}
+
+fn server_request_from_outgoing_message(
+    message: crate::outgoing_message::OutgoingMessage,
+) -> Option<ServerRequest> {
+    match message {
+        crate::outgoing_message::OutgoingMessage::Request(request) => Some(request),
+        crate::outgoing_message::OutgoingMessage::SequencedRequest(ServerRequestEnvelope {
+            request,
+            ..
+        }) => Some(request),
+        crate::outgoing_message::OutgoingMessage::AppServerNotification(_)
+        | crate::outgoing_message::OutgoingMessage::Response(_)
+        | crate::outgoing_message::OutgoingMessage::Error(_) => None,
     }
 }
 
@@ -4293,7 +4309,7 @@ fn controller_disconnect_rebinds_prompts_before_rpc_drain() -> Result<()> {
                 if connection_id != EXTERNAL_CONNECTION_ID {
                     continue;
                 }
-                let crate::outgoing_message::OutgoingMessage::Request(request) = message else {
+                let Some(request) = server_request_from_outgoing_message(message) else {
                     continue;
                 };
                 if request.id() == &prompt_request_id {

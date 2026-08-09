@@ -240,7 +240,7 @@ async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
             include_turns: false,
         })
         .await?;
-    let ThreadReadResponse { thread } =
+    let ThreadReadResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
     assert!(thread.turns.is_empty());
@@ -1002,7 +1002,7 @@ async fn thread_read_can_return_archived_threads_by_id() -> Result<()> {
             include_turns: false,
         })
         .await?;
-    let ThreadReadResponse { thread } =
+    let ThreadReadResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
 
     assert_eq!(thread.id, conversation_id);
@@ -1661,6 +1661,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .await?;
     let ThreadReadResponse {
         thread: unloaded_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(unloaded_thread.turns, expected_full_turns);
 
@@ -1924,6 +1925,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .await?;
     let ThreadReadResponse {
         thread: loaded_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(&loaded_thread.turns[..2], expected_full_turns);
     assert_eq!(

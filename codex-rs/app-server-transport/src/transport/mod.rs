@@ -325,6 +325,7 @@ mod tests {
                 path: None,
                 range: None,
             }),
+            thread_sequence: None,
             emitted_at_ms: Some(1_234),
         });
 
@@ -552,6 +553,7 @@ mod tests {
                         path: None,
                         range: None,
                     }),
+                    thread_sequence: None,
                     emitted_at_ms: Some(1_234),
                 }),
             ))

@@ -8,6 +8,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerRequestEnvelope;
 use serde::Serialize;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -28,6 +29,7 @@ impl fmt::Display for ConnectionId {
 #[allow(clippy::large_enum_variant)]
 pub enum OutgoingMessage {
     Request(ServerRequest),
+    SequencedRequest(ServerRequestEnvelope),
     /// AppServerNotification is specific to the case where this is run as an
     /// "app server" as opposed to an MCP server.
     AppServerNotification(ServerNotificationEnvelope),

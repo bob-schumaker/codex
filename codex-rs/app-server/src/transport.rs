@@ -263,6 +263,15 @@ fn filter_outgoing_message_for_connection(
                 params,
             })
         }
+        OutgoingMessage::SequencedRequest(mut envelope) => {
+            if let ServerRequest::CommandExecutionRequestApproval { params, .. } =
+                &mut envelope.request
+                && !experimental_api_enabled
+            {
+                params.strip_experimental_fields();
+            }
+            OutgoingMessage::SequencedRequest(envelope)
+        }
         _ => message,
     }
 }

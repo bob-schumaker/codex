@@ -94,6 +94,7 @@ fn splits_large_server_messages_into_wire_chunks() {
                         path: None,
                         range: None,
                     }),
+                    thread_sequence: None,
                     emitted_at_ms: Some(1_234),
                 },
             )),

@@ -1496,6 +1496,9 @@ pub struct ThreadReadParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadReadResponse {
     pub thread: Thread,
+    /// Monotonic app-server sequence number for the latest live event known for
+    /// this thread when the snapshot was built.
+    pub last_sequence: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

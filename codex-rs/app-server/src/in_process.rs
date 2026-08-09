@@ -788,7 +788,6 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
-<<<<<<< HEAD
     let auth_manager =
         AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
             .await
@@ -1410,7 +1409,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 );
                             }
                         }
-                        OutgoingMessage::Request(request) => {
+                        OutgoingMessage::Request(request)
+                        | OutgoingMessage::SequencedRequest(
+                            codex_app_server_protocol::ServerRequestEnvelope { request, .. },
+                        ) => {
                             // Send directly to avoid cloning; on failure the
                             // original value is returned inside the error.
                             if let Err(send_error) = event_tx

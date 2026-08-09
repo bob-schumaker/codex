@@ -4561,66 +4561,6 @@
           "properties": {
             "method": {
               "enum": [
-                "thread/environment/connected"
-              ],
-              "title": "Thread/environment/connectedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/EnvironmentConnectionNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/environment/connectedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/environment/disconnected"
-              ],
-              "title": "Thread/environment/disconnectedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/EnvironmentConnectionNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/environment/disconnectedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/settings/updated"
-              ],
-              "title": "Thread/settings/updatedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadSettingsUpdatedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/settings/updatedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
                 "thread/tokenUsage/updated"
               ],
               "title": "Thread/tokenUsage/updatedNotificationMethod",
@@ -4900,48 +4840,6 @@
           "type": "object"
         },
         {
-          "description": "Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.",
-          "properties": {
-            "method": {
-              "enum": [
-                "process/outputDelta"
-              ],
-              "title": "Process/outputDeltaNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ProcessOutputDeltaNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Process/outputDeltaNotification",
-          "type": "object"
-        },
-        {
-          "description": "Final exit notification for a `process/spawn` session.",
-          "properties": {
-            "method": {
-              "enum": [
-                "process/exited"
-              ],
-              "title": "Process/exitedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ProcessExitedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Process/exitedNotification",
-          "type": "object"
-        },
-        {
           "properties": {
             "method": {
               "enum": [
@@ -5186,46 +5084,6 @@
           "properties": {
             "method": {
               "enum": [
-                "controller/authorizationChanged"
-              ],
-              "title": "Controller/authorizationChangedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ControllerAuthorizationChangedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Controller/authorizationChangedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "controller/controlOwnershipChanged"
-              ],
-              "title": "Controller/controlOwnershipChangedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ControllerControlOwnershipChangedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Controller/controlOwnershipChangedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
                 "externalAgentConfig/import/progress"
               ],
               "title": "ExternalAgentConfig/import/progressNotificationMethod",
@@ -5407,26 +5265,6 @@
           "properties": {
             "method": {
               "enum": [
-                "turn/moderationMetadata"
-              ],
-              "title": "Turn/moderationMetadataNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/TurnModerationMetadataNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Turn/moderationMetadataNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
                 "model/safetyBuffering/updated"
               ],
               "title": "Model/safetyBuffering/updatedNotificationMethod",
@@ -5561,166 +5399,6 @@
             "params"
           ],
           "title": "FuzzyFileSearch/sessionCompletedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/started"
-              ],
-              "title": "Thread/realtime/startedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeStartedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/startedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/itemAdded"
-              ],
-              "title": "Thread/realtime/itemAddedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeItemAddedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/itemAddedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/transcript/delta"
-              ],
-              "title": "Thread/realtime/transcript/deltaNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeTranscriptDeltaNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/transcript/deltaNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/transcript/done"
-              ],
-              "title": "Thread/realtime/transcript/doneNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeTranscriptDoneNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/transcript/doneNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/outputAudio/delta"
-              ],
-              "title": "Thread/realtime/outputAudio/deltaNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeOutputAudioDeltaNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/outputAudio/deltaNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/sdp"
-              ],
-              "title": "Thread/realtime/sdpNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeSdpNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/sdpNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/error"
-              ],
-              "title": "Thread/realtime/errorNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeErrorNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/errorNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/realtime/closed"
-              ],
-              "title": "Thread/realtime/closedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadRealtimeClosedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/realtime/closedNotification",
           "type": "object"
         },
         {
@@ -9536,55 +9214,6 @@
         "title": "ContextCompactedNotification",
         "type": "object"
       },
-      "ControllerAuthorizationChangedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "authorizationEpoch": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "mainThreadId": {
-            "type": "string"
-          },
-          "ownerEpoch": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "reason": {
-            "$ref": "#/definitions/v2/ControllerAuthorizationChangedReason"
-          },
-          "session": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/v2/ControllerSession"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sessionId": {
-            "type": "string"
-          },
-          "sessionSequence": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "authorizationEpoch",
-          "mainThreadId",
-          "ownerEpoch",
-          "reason",
-          "sessionId",
-          "sessionSequence"
-        ],
-        "title": "ControllerAuthorizationChangedNotification",
-        "type": "object"
-      },
       "ControllerAuthorizationChangedReason": {
         "enum": [
           "approved",
@@ -9599,55 +9228,6 @@
           "tuiUnavailable"
         ],
         "type": "string"
-      },
-      "ControllerControlOwnershipChangedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "activeLease": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/v2/ControllerLease"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "authorizationEpoch": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "mainThreadId": {
-            "type": "string"
-          },
-          "ownerEpoch": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "reason": {
-            "$ref": "#/definitions/v2/ControllerControlOwnershipChangedReason"
-          },
-          "sessionId": {
-            "type": "string"
-          },
-          "sessionSequence": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "authorizationEpoch",
-          "mainThreadId",
-          "ownerEpoch",
-          "reason",
-          "sessionId",
-          "sessionSequence"
-        ],
-        "title": "ControllerControlOwnershipChangedNotification",
-        "type": "object"
       },
       "ControllerControlOwnershipChangedReason": {
         "enum": [
@@ -10001,23 +9581,6 @@
             "type": "object"
           }
         ]
-      },
-      "EnvironmentConnectionNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "environmentId": {
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "environmentId",
-          "threadId"
-        ],
-        "title": "EnvironmentConnectionNotification",
-        "type": "object"
       },
       "ErrorNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -16100,81 +15663,6 @@
         ],
         "type": "object"
       },
-      "ProcessExitedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "Final process exit notification for `process/spawn`.",
-        "properties": {
-          "exitCode": {
-            "description": "Process exit code.",
-            "format": "int32",
-            "type": "integer"
-          },
-          "processHandle": {
-            "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-            "type": "string"
-          },
-          "stderr": {
-            "description": "Buffered stderr capture.\n\nEmpty when stderr was streamed via `process/outputDelta`.",
-            "type": "string"
-          },
-          "stderrCapReached": {
-            "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the final stderr `process/outputDelta` notification.",
-            "type": "boolean"
-          },
-          "stdout": {
-            "description": "Buffered stdout capture.\n\nEmpty when stdout was streamed via `process/outputDelta`.",
-            "type": "string"
-          },
-          "stdoutCapReached": {
-            "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the final stdout `process/outputDelta` notification.",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "exitCode",
-          "processHandle",
-          "stderr",
-          "stderrCapReached",
-          "stdout",
-          "stdoutCapReached"
-        ],
-        "title": "ProcessExitedNotification",
-        "type": "object"
-      },
-      "ProcessOutputDeltaNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "Base64-encoded output chunk emitted for a streaming `process/spawn` request.",
-        "properties": {
-          "capReached": {
-            "description": "True on the final streamed chunk for this stream when output was truncated by `outputBytesCap`.",
-            "type": "boolean"
-          },
-          "deltaBase64": {
-            "description": "Base64-encoded output bytes.",
-            "type": "string"
-          },
-          "processHandle": {
-            "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-            "type": "string"
-          },
-          "stream": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/v2/ProcessOutputStream"
-              }
-            ],
-            "description": "Output stream this chunk belongs to."
-          }
-        },
-        "required": [
-          "capReached",
-          "deltaBase64",
-          "processHandle",
-          "stream"
-        ],
-        "title": "ProcessOutputDeltaNotification",
-        "type": "object"
-      },
       "ProcessOutputStream": {
         "description": "Stream label for `process/outputDelta` notifications.",
         "oneOf": [
@@ -20810,11 +20298,18 @@
       "ThreadReadResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "lastSequence": {
+            "description": "Monotonic app-server sequence number for the latest live event known for this thread when the snapshot was built.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "thread": {
             "$ref": "#/definitions/v2/Thread"
           }
         },
         "required": [
+          "lastSequence",
           "thread"
         ],
         "title": "ThreadReadResponse",
@@ -20858,44 +20353,6 @@
         ],
         "type": "object"
       },
-      "ThreadRealtimeClosedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - emitted when thread realtime transport closes.",
-        "properties": {
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "threadId"
-        ],
-        "title": "ThreadRealtimeClosedNotification",
-        "type": "object"
-      },
-      "ThreadRealtimeErrorNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - emitted when thread realtime encounters an error.",
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeErrorNotification",
-        "type": "object"
-      },
       "ThreadRealtimeInitialItem": {
         "description": "EXPERIMENTAL - role-bearing text item included when a realtime V3 session starts.",
         "properties": {
@@ -20910,58 +20367,6 @@
           "role",
           "text"
         ],
-        "type": "object"
-      },
-      "ThreadRealtimeItemAddedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.",
-        "properties": {
-          "item": true,
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "item",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeItemAddedNotification",
-        "type": "object"
-      },
-      "ThreadRealtimeOutputAudioDeltaNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - streamed output audio emitted by thread realtime.",
-        "properties": {
-          "audio": {
-            "$ref": "#/definitions/v2/ThreadRealtimeAudioChunk"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "audio",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeOutputAudioDeltaNotification",
-        "type": "object"
-      },
-      "ThreadRealtimeSdpNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.",
-        "properties": {
-          "sdp": {
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sdp",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeSdpNotification",
         "type": "object"
       },
       "ThreadRealtimeStartTransport": {
@@ -21005,76 +20410,6 @@
             "type": "object"
           }
         ]
-      },
-      "ThreadRealtimeStartedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - emitted when thread realtime startup is accepted.",
-        "properties": {
-          "realtimeSessionId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "threadId": {
-            "type": "string"
-          },
-          "version": {
-            "$ref": "#/definitions/v2/RealtimeConversationVersion"
-          }
-        },
-        "required": [
-          "threadId",
-          "version"
-        ],
-        "title": "ThreadRealtimeStartedNotification",
-        "type": "object"
-      },
-      "ThreadRealtimeTranscriptDeltaNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - flat transcript delta emitted whenever realtime transcript text changes.",
-        "properties": {
-          "delta": {
-            "description": "Live transcript delta from the realtime event.",
-            "type": "string"
-          },
-          "role": {
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "delta",
-          "role",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeTranscriptDeltaNotification",
-        "type": "object"
-      },
-      "ThreadRealtimeTranscriptDoneNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "description": "EXPERIMENTAL - final transcript text emitted when realtime completes a transcript part.",
-        "properties": {
-          "role": {
-            "type": "string"
-          },
-          "text": {
-            "description": "Final complete text for the transcript part.",
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "text",
-          "threadId"
-        ],
-        "title": "ThreadRealtimeTranscriptDoneNotification",
-        "type": "object"
       },
       "ThreadResumeInitialTurnsPageParams": {
         "properties": {
@@ -21682,23 +21017,6 @@
           "modelProvider",
           "sandboxPolicy"
         ],
-        "type": "object"
-      },
-      "ThreadSettingsUpdatedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "threadId": {
-            "type": "string"
-          },
-          "threadSettings": {
-            "$ref": "#/definitions/v2/ThreadSettings"
-          }
-        },
-        "required": [
-          "threadId",
-          "threadSettings"
-        ],
-        "title": "ThreadSettingsUpdatedNotification",
         "type": "object"
       },
       "ThreadShellCommandParams": {
@@ -22563,25 +21881,6 @@
             "type": "string"
           }
         ]
-      },
-      "TurnModerationMetadataNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "metadata": true,
-          "threadId": {
-            "type": "string"
-          },
-          "turnId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "metadata",
-          "threadId",
-          "turnId"
-        ],
-        "title": "TurnModerationMetadataNotification",
-        "type": "object"
       },
       "TurnPlanStep": {
         "properties": {

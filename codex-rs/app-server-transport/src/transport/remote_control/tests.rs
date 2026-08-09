@@ -748,6 +748,7 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
                     path: None,
                     range: None,
                 }),
+                thread_sequence: None,
                 emitted_at_ms: Some(1_234),
             }),
         ))
@@ -1358,6 +1359,7 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
                     path: None,
                     range: None,
                 }),
+                thread_sequence: None,
                 emitted_at_ms: Some(1_234),
             }),
         ))
@@ -1660,6 +1662,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                     path: None,
                     range: None,
                 }),
+                thread_sequence: None,
                 emitted_at_ms: Some(1_234),
             }),
         ))

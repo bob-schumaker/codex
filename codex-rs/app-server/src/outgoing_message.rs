@@ -14,6 +14,7 @@ use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerRequestEnvelope;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ServerResponse;
 use codex_diagnostics::Gauge;
@@ -32,6 +33,8 @@ use tracing::warn;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
+use crate::thread_sequence::ThreadSequenceTracker;
+use crate::thread_sequence::notification_thread_id;
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
@@ -117,6 +120,7 @@ pub(crate) struct OutgoingMessageSender {
     /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
     analytics_events_client: AnalyticsEventsClient,
+    thread_sequences: ThreadSequenceTracker,
 }
 
 #[derive(Clone)]
@@ -136,8 +140,15 @@ struct PendingCallbackEntry {
     external_delivery_write_permits: HashMap<ConnectionId, ExternalDeliveryWritePermit>,
     external_controller_owner_epoch: Option<u64>,
     thread_id: Option<ThreadId>,
+    thread_sequence: Option<u64>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingRequestReplay {
+    request: ServerRequest,
+    thread_sequence: Option<u64>,
 }
 
 struct ExternalDeliveryWritePermit {
@@ -156,6 +167,8 @@ pub(crate) struct ServerRequestRecipients {
 #[derive(Clone)]
 pub(crate) struct PendingServerRequest {
     pub(crate) thread_id: Option<ThreadId>,
+    #[cfg(test)]
+    pub(crate) thread_sequence: Option<u64>,
     pub(crate) request: ServerRequest,
     pub(crate) external_controller_owner_epoch: Option<u64>,
 }
@@ -410,7 +423,12 @@ impl OutgoingMessageSender {
             request_id_to_callback: Arc::new(Mutex::new(HashMap::new())),
             request_contexts: Mutex::new(HashMap::new()),
             analytics_events_client,
+            thread_sequences: ThreadSequenceTracker::default(),
         }
+    }
+
+    pub(crate) async fn thread_sequence(&self, thread_id: ThreadId) -> u64 {
+        self.thread_sequences.current(thread_id).await
     }
 
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
@@ -476,6 +494,13 @@ impl OutgoingMessageSender {
         RequestId::Integer(self.next_server_request_id.fetch_add(1, Ordering::Relaxed))
     }
 
+    async fn next_thread_sequence(&self, thread_id: Option<ThreadId>) -> Option<u64> {
+        match thread_id {
+            Some(thread_id) => Some(self.thread_sequences.advance(thread_id).await),
+            None => None,
+        }
+    }
+
     pub(crate) async fn send_request_to_connections(
         &self,
         connection_ids: Option<&[ConnectionId]>,
@@ -485,6 +510,7 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
+        let thread_sequence = self.next_thread_sequence(thread_id).await;
 
         let (tx_approve, rx_approve) = oneshot::channel();
         {
@@ -499,13 +525,14 @@ impl OutgoingMessageSender {
                     external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: None,
                     thread_id,
+                    thread_sequence,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
             );
         }
 
-        let outgoing_message = OutgoingMessage::Request(request.clone());
+        let outgoing_message = server_request_outgoing_message(request.clone(), thread_sequence);
         let send_result = match connection_ids {
             None => {
                 self.sender
@@ -559,6 +586,7 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
+        let thread_sequence = self.next_thread_sequence(thread_id).await;
 
         let (tx_approve, rx_approve) = oneshot::channel();
         {
@@ -574,6 +602,7 @@ impl OutgoingMessageSender {
                     external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: recipients.external_controller_owner_epoch,
                     thread_id,
+                    thread_sequence,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
@@ -593,7 +622,7 @@ impl OutgoingMessageSender {
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id: *connection_id,
-                    message: OutgoingMessage::Request(request.clone()),
+                    message: server_request_outgoing_message(request.clone(), thread_sequence),
                     write_complete_tx,
                 })
                 .await
@@ -660,14 +689,18 @@ impl OutgoingMessageSender {
                 entry.external_delivery_fallback_connection_id = None;
                 entry.revoke_external_delivery_write_permits();
                 entry.external_controller_owner_epoch = None;
-                (fallback_connection_id, entry.request.clone())
+                (
+                    fallback_connection_id,
+                    entry.request.clone(),
+                    entry.thread_sequence,
+                )
             };
 
-            let (fallback_connection_id, request) = fallback_request;
+            let (fallback_connection_id, request, thread_sequence) = fallback_request;
             if let Err(err) = sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id: fallback_connection_id,
-                    message: OutgoingMessage::Request(request),
+                    message: server_request_outgoing_message(request, thread_sequence),
                     write_complete_tx: None,
                 })
                 .await
@@ -711,13 +744,16 @@ impl OutgoingMessageSender {
                         entry.external_delivery_fallback_connection_id = None;
                         entry.revoke_external_delivery_write_permits();
                         entry.external_controller_owner_epoch = None;
-                        Some(entry.request.clone())
+                        Some(PendingRequestReplay {
+                            request: entry.request.clone(),
+                            thread_sequence: entry.thread_sequence,
+                        })
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<_>>();
-            requests.sort_by(|left, right| left.id().cmp(right.id()));
+            requests.sort_by(|left, right| left.request.id().cmp(right.request.id()));
             requests
         };
         self.send_pending_requests_to_connection(connection_id, requests)
@@ -743,13 +779,16 @@ impl OutgoingMessageSender {
                         entry.external_delivery_fallback_connection_id = fallback_connection_id;
                         entry.revoke_external_delivery_write_permits();
                         entry.external_controller_owner_epoch = Some(owner_epoch);
-                        Some(entry.request.clone())
+                        Some(PendingRequestReplay {
+                            request: entry.request.clone(),
+                            thread_sequence: entry.thread_sequence,
+                        })
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<_>>();
-            requests.sort_by(|left, right| left.id().cmp(right.id()));
+            requests.sort_by(|left, right| left.request.id().cmp(right.request.id()));
             requests
         };
         self.send_pending_requests_to_external_controller_connection(connection_id, requests)
@@ -765,6 +804,8 @@ impl OutgoingMessageSender {
             .get(id)
             .map(|entry| PendingServerRequest {
                 thread_id: entry.thread_id,
+                #[cfg(test)]
+                thread_sequence: entry.thread_sequence,
                 request: entry.request.clone(),
                 external_controller_owner_epoch: entry.external_controller_owner_epoch,
             })
@@ -794,14 +835,18 @@ impl OutgoingMessageSender {
     async fn send_pending_requests_to_connection(
         &self,
         connection_id: ConnectionId,
-        requests: Vec<ServerRequest>,
+        requests: Vec<PendingRequestReplay>,
     ) {
-        for request in requests {
+        for PendingRequestReplay {
+            request,
+            thread_sequence,
+        } in requests
+        {
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id,
-                    message: OutgoingMessage::Request(request),
+                    message: server_request_outgoing_message(request, thread_sequence),
                     write_complete_tx: None,
                 })
                 .await
@@ -814,9 +859,13 @@ impl OutgoingMessageSender {
     async fn send_pending_requests_to_external_controller_connection(
         &self,
         connection_id: ConnectionId,
-        requests: Vec<ServerRequest>,
+        requests: Vec<PendingRequestReplay>,
     ) {
-        for request in requests {
+        for PendingRequestReplay {
+            request,
+            thread_sequence,
+        } in requests
+        {
             let request_id = request.id().clone();
             let write_complete_tx = self
                 .tracked_write_completion(
@@ -829,7 +878,7 @@ impl OutgoingMessageSender {
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id,
-                    message: OutgoingMessage::Request(request),
+                    message: server_request_outgoing_message(request, thread_sequence),
                     write_complete_tx,
                 })
                 .await
@@ -992,17 +1041,20 @@ impl OutgoingMessageSender {
     pub(crate) async fn pending_requests_for_thread(
         &self,
         thread_id: ThreadId,
-    ) -> Vec<ServerRequest> {
+    ) -> Vec<PendingRequestReplay> {
         let request_id_to_callback = self.request_id_to_callback.lock().await;
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
                 (entry.thread_id == Some(thread_id)
                     && !entry.has_external_delivery_or_started_write())
-                .then_some(entry.request.clone())
+                .then_some(PendingRequestReplay {
+                    request: entry.request.clone(),
+                    thread_sequence: entry.thread_sequence,
+                })
             })
             .collect::<Vec<_>>();
-        requests.sort_by(|left, right| left.id().cmp(right.id()));
+        requests.sort_by(|left, right| left.request.id().cmp(right.request.id()));
         requests
     }
 
@@ -1183,7 +1235,7 @@ impl OutgoingMessageSender {
             targeted_connections = connection_ids.len(),
             "app-server event: {notification}"
         );
-        let outgoing_message = timestamped_server_notification(notification);
+        let outgoing_message = self.timestamped_server_notification(notification).await;
         if connection_ids.is_empty() {
             if let Err(err) = self
                 .sender
@@ -1217,7 +1269,7 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let outgoing_message = timestamped_server_notification(notification);
+        let outgoing_message = self.timestamped_server_notification(notification).await;
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
         if let Err(err) = self
             .sender
@@ -1343,6 +1395,21 @@ impl OutgoingMessageSender {
             warn!("failed to send {message_kind} to client: {err:?}");
         }
     }
+
+    async fn timestamped_server_notification(
+        &self,
+        notification: ServerNotification,
+    ) -> OutgoingMessage {
+        let thread_sequence = match notification_thread_id(&notification) {
+            Some(thread_id) => Some(self.thread_sequences.advance(thread_id).await),
+            None => None,
+        };
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification,
+            thread_sequence,
+            emitted_at_ms: Some(now_unix_timestamp_ms().try_into().unwrap_or_default()),
+        })
+    }
 }
 
 fn now_unix_timestamp_ms() -> u64 {
@@ -1354,11 +1421,17 @@ fn now_unix_timestamp_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn timestamped_server_notification(notification: ServerNotification) -> OutgoingMessage {
-    OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
-        notification,
-        emitted_at_ms: Some(now_unix_timestamp_ms().try_into().unwrap_or_default()),
-    })
+fn server_request_outgoing_message(
+    request: ServerRequest,
+    thread_sequence: Option<u64>,
+) -> OutgoingMessage {
+    match thread_sequence {
+        Some(thread_sequence) => OutgoingMessage::SequencedRequest(ServerRequestEnvelope {
+            request,
+            thread_sequence: Some(thread_sequence),
+        }),
+        None => OutgoingMessage::Request(request),
+    }
 }
 
 #[cfg(test)]
@@ -1388,6 +1461,8 @@ mod tests {
     use codex_app_server_protocol::RateLimitSnapshot;
     use codex_app_server_protocol::RateLimitWindow;
     use codex_app_server_protocol::ServerResponse;
+    use codex_app_server_protocol::ThreadStatus;
+    use codex_app_server_protocol::ThreadStatusChangedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
@@ -1413,6 +1488,7 @@ mod tests {
         let jsonrpc_notification =
             OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
                 notification,
+                thread_sequence: None,
                 emitted_at_ms: Some(1_234),
             });
         assert_eq!(
@@ -1897,6 +1973,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_scoped_notifications_include_one_sequence_per_fanout() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let thread_id = ThreadId::new();
+
+        outgoing
+            .send_server_notification_to_connections(
+                &[ConnectionId(1), ConnectionId(2)],
+                ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
+                    thread_id: thread_id.to_string(),
+                    status: ThreadStatus::Idle,
+                }),
+            )
+            .await;
+
+        let envelopes = [
+            rx.recv()
+                .await
+                .expect("first connection should receive notification"),
+            rx.recv()
+                .await
+                .expect("second connection should receive notification"),
+        ]
+        .map(|envelope| match envelope {
+            OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::AppServerNotification(envelope),
+                ..
+            } => envelope,
+            _ => panic!("expected targeted server notification"),
+        });
+
+        assert_eq!(envelopes[0].thread_sequence, Some(1));
+        assert_eq!(envelopes[1].thread_sequence, Some(1));
+        assert_eq!(outgoing.thread_sequence(thread_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_server_requests_include_sequence_in_pending_state() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+
+        let (request_id, _waiter) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::SequencedRequest(envelope),
+            ..
+        } = rx.recv().await.expect("request should be sent")
+        else {
+            panic!("expected sequenced request");
+        };
+        assert_eq!(envelope.request.id(), &request_id);
+        assert_eq!(envelope.thread_sequence, Some(1));
+
+        let pending_request = outgoing
+            .pending_server_request(&request_id)
+            .await
+            .expect("request should stay pending");
+        assert_eq!(pending_request.thread_id, Some(thread_id));
+        assert_eq!(pending_request.thread_sequence, Some(1));
+        assert_eq!(outgoing.thread_sequence(thread_id).await, 1);
+    }
+
+    #[tokio::test]
     async fn send_server_notification_to_connection_and_wait_tracks_write_completion() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
         let outgoing =
@@ -2074,28 +2225,32 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             ..
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(1));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
 
         outgoing
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(2))
             .await;
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(rebound_request),
+            message,
             ..
         } = rx.recv().await.expect("rebound request should be sent")
         else {
             panic!("expected rebound request envelope");
         };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(1));
 
         outgoing
             .notify_client_response_from_connection(
@@ -2150,14 +2305,16 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
         let write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.is_write_permitted());
@@ -2169,14 +2326,16 @@ mod tests {
         drop(write_complete_tx);
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(rebound_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("rebound request should be sent")
         else {
             panic!("expected rebound request envelope");
         };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(1));
         assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(1));
         assert!(write_complete_tx.is_none());
 
         outgoing
@@ -2232,14 +2391,16 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
         let write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.begin_write());
@@ -2247,7 +2408,7 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(rebound_request),
+            message,
             write_complete_tx,
         } = timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -2256,8 +2417,10 @@ mod tests {
         else {
             panic!("expected fallback request envelope");
         };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(1));
         assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(1));
         assert!(write_complete_tx.is_none());
 
         outgoing
@@ -2314,20 +2477,20 @@ mod tests {
         let initial_envelope = rx.recv().await.expect("initial request should be sent");
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             ..
         } = &initial_envelope
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message_ref(message);
         assert_eq!(*connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
 
         let (external_writer_tx, mut external_writer_rx) = mpsc::channel(1);
         external_writer_tx
-            .try_send(QueuedOutgoingMessage::new(OutgoingMessage::Request(
-                initial_request.clone(),
-            )))
+            .try_send(QueuedOutgoingMessage::new(message.clone()))
             .expect("external writer should accept its initial buffered request");
         let external_disconnect_token = CancellationToken::new();
         let mut connections = HashMap::new();
@@ -2350,15 +2513,14 @@ mod tests {
         let retained_request = external_writer_rx
             .try_recv()
             .expect("external queue should retain only its buffered request");
-        assert!(matches!(
-            retained_request.message,
-            OutgoingMessage::Request(request) if request.id() == &request_id
-        ));
+        let (request, retained_thread_sequence) = request_from_message(retained_request.message);
+        assert_eq!(request.id(), &request_id);
+        assert_eq!(retained_thread_sequence, Some(1));
         assert!(external_writer_rx.try_recv().is_err());
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(rebound_request),
+            message,
             write_complete_tx,
         } = timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -2367,8 +2529,10 @@ mod tests {
         else {
             panic!("expected fallback request envelope");
         };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(1));
         assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(1));
         assert!(write_complete_tx.is_none());
 
         outgoing
@@ -2424,14 +2588,16 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
         let write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.begin_write());
@@ -2508,14 +2674,16 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
         let write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.begin_write());
@@ -2579,14 +2747,16 @@ mod tests {
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
-            message: OutgoingMessage::Request(initial_request),
+            message,
             write_complete_tx,
         } = rx.recv().await.expect("initial request should be sent")
         else {
             panic!("expected initial request envelope");
         };
+        let (initial_request, initial_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
+        assert_eq!(initial_thread_sequence, Some(1));
         let write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
         assert!(write_complete_tx.begin_write());
@@ -2636,6 +2806,30 @@ mod tests {
             .expect("waiter should receive a callback")
             .expect("authorized response should resolve successfully");
         assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    fn request_from_message(message: OutgoingMessage) -> (ServerRequest, Option<u64>) {
+        match message {
+            OutgoingMessage::Request(request) => (request, None),
+            OutgoingMessage::SequencedRequest(envelope) => {
+                (envelope.request, envelope.thread_sequence)
+            }
+            OutgoingMessage::AppServerNotification(_)
+            | OutgoingMessage::Response(_)
+            | OutgoingMessage::Error(_) => panic!("expected server request"),
+        }
+    }
+
+    fn request_from_message_ref(message: &OutgoingMessage) -> (&ServerRequest, Option<u64>) {
+        match message {
+            OutgoingMessage::Request(request) => (request, None),
+            OutgoingMessage::SequencedRequest(envelope) => {
+                (&envelope.request, envelope.thread_sequence)
+            }
+            OutgoingMessage::AppServerNotification(_)
+            | OutgoingMessage::Response(_)
+            | OutgoingMessage::Error(_) => panic!("expected server request"),
+        }
     }
 
     fn command_execution_request_approval(thread_id: ThreadId) -> ServerRequestPayload {
@@ -2714,7 +2908,7 @@ mod tests {
         assert_eq!(
             pending_requests
                 .iter()
-                .map(ServerRequest::id)
+                .map(|request| request.request.id())
                 .collect::<Vec<_>>(),
             vec![
                 &dynamic_tool_request_id,

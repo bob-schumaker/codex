@@ -2428,7 +2428,11 @@ impl ThreadRequestProcessor {
             .read_thread_view(thread_uuid, include_turns)
             .await
             .map_err(thread_read_view_error)?;
-        Ok(ThreadReadResponse { thread })
+        let last_sequence = self.outgoing.thread_sequence(thread_uuid).await;
+        Ok(ThreadReadResponse {
+            thread,
+            last_sequence,
+        })
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.

@@ -4,6 +4,7 @@ use crate::JsonSchema;
 use crate::ServerNotification;
 use crate::ServerNotificationEnvelope;
 use crate::ServerRequest;
+use crate::ServerRequestEnvelope;
 use crate::TS;
 use crate::experimental_api::experimental_fields;
 use crate::export_client_notification_schemas;
@@ -20,6 +21,8 @@ use crate::protocol::common::EXPERIMENTAL_CLIENT_METHODS;
 use crate::protocol::common::EXPERIMENTAL_SERVER_METHOD_PARAM_TYPES;
 use crate::protocol::common::EXPERIMENTAL_SERVER_METHOD_RESPONSE_TYPES;
 use crate::protocol::common::EXPERIMENTAL_SERVER_METHODS;
+use crate::protocol::common::EXPERIMENTAL_SERVER_NOTIFICATION_METHODS;
+use crate::protocol::common::EXPERIMENTAL_SERVER_NOTIFICATION_TYPES;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -127,6 +130,7 @@ pub fn generate_ts_with_options(
     ClientNotification::export_all_to(out_dir)?;
 
     ServerRequest::export_all_to(out_dir)?;
+    ServerRequestEnvelope::export_all_to(out_dir)?;
     export_server_responses(out_dir)?;
     ServerNotification::export_all_to(out_dir)?;
     ServerNotificationEnvelope::export_all_to(out_dir)?;
@@ -260,6 +264,11 @@ fn filter_experimental_ts(out_dir: &Path) -> Result<()> {
     // post-processing because they encode method/field information locally.
     filter_request_ts(out_dir, "ClientRequest.ts", EXPERIMENTAL_CLIENT_METHODS)?;
     filter_request_ts(out_dir, "ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS)?;
+    filter_request_ts(
+        out_dir,
+        "ServerNotification.ts",
+        EXPERIMENTAL_SERVER_NOTIFICATION_METHODS,
+    )?;
     filter_experimental_type_fields_ts(out_dir, &registered_fields)?;
     remove_generated_type_files(out_dir, &experimental_method_types, "ts")?;
     Ok(())
@@ -271,6 +280,10 @@ pub(crate) fn filter_experimental_ts_tree(tree: &mut BTreeMap<PathBuf, String>) 
     for (file_name, experimental_methods) in [
         ("ClientRequest.ts", EXPERIMENTAL_CLIENT_METHODS),
         ("ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS),
+        (
+            "ServerNotification.ts",
+            EXPERIMENTAL_SERVER_NOTIFICATION_METHODS,
+        ),
     ] {
         if let Some(content) = tree.get_mut(Path::new(file_name)) {
             *content = filter_request_ts_contents(std::mem::take(content), experimental_methods);
@@ -415,6 +428,7 @@ fn filter_experimental_schema(bundle: &mut Value) -> Result<()> {
     filter_experimental_fields_in_definitions(bundle, &registered_fields);
     prune_experimental_methods(bundle, EXPERIMENTAL_CLIENT_METHODS);
     prune_experimental_methods(bundle, EXPERIMENTAL_SERVER_METHODS);
+    prune_experimental_methods(bundle, EXPERIMENTAL_SERVER_NOTIFICATION_METHODS);
     remove_experimental_method_type_definitions(bundle);
     Ok(())
 }
@@ -573,6 +587,7 @@ fn experimental_method_types() -> HashSet<String> {
     collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES, &mut type_names);
     collect_experimental_type_names(EXPERIMENTAL_SERVER_METHOD_PARAM_TYPES, &mut type_names);
     collect_experimental_type_names(EXPERIMENTAL_SERVER_METHOD_RESPONSE_TYPES, &mut type_names);
+    collect_experimental_type_names(EXPERIMENTAL_SERVER_NOTIFICATION_TYPES, &mut type_names);
     type_names
 }
 

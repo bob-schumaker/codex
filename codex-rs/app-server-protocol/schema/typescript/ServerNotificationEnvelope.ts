@@ -83,6 +83,15 @@ import type { WindowsWorldWritableWarningNotification } from "./v2/WindowsWorldW
  */
 export type ServerNotificationEnvelope = {
 /**
+ * Per-thread monotonic sequence assigned when the notification changes or
+ * reflects state for a specific thread.
+ *
+ * Optional so clients can decode notifications from older app-server
+ * versions and app/global notifications that are not part of a thread
+ * stream.
+ */
+threadSequence?: number,
+/**
  * Unix timestamp (in milliseconds) when app-server emitted this notification.
  *
  * Optional so clients can decode notifications from older app-server
