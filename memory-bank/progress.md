@@ -9,6 +9,10 @@
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
   `$CODEX_HOME/local-controllers`, not generic Codex hooks or Herdr metadata.
+- Controller protocol/export tests now cover the controller request/response
+  schemas, controller authorization/control-ownership notification schemas,
+  controller notification wire shapes, `ControllerErrorData`, and every
+  canonical controller error-code wire name.
 - In-process local-controller socket coverage now exercises the native TUI
   approval path rather than durable enrollment test credentials.
 - External-controller admission now extracts exact main-thread targets from the
@@ -178,7 +182,7 @@
   backpressure: `thread/status/changed`, `thread/archived`, `thread/deleted`,
   `thread/unarchived`, `thread/closed`, and `thread/name/updated`.
 - The latest Codex-side source checkpoint is
-  `3bf6c0d` for launch metadata publication, native approval coverage, exact
+  `3d96c79` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -207,7 +211,9 @@
   per-connection external-controller ingress with typed `controller-overloaded`
   retry guidance, plus terminal controller launch closure when the immutable
   main thread closes or unloads, plus lossless in-process delivery for
-  controller-relevant thread lifecycle/state notifications.
+  controller-relevant thread lifecycle/state notifications, plus typed
+  controller prompt-rejection surfacing and protocol/export schema coverage for
+  controller notifications and canonical controller error-code wire names.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and

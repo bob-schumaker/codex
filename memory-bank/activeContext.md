@@ -43,7 +43,9 @@
   main thread is closed or unloaded, plus preserving controller-relevant thread
   lifecycle/state notifications across the in-process TUI delivery bridge under
   backpressure, plus surfacing typed controller prompt-reply rejections back to
-  the external-controller connection without resolving the pending prompt;
+  the external-controller connection without resolving the pending prompt, plus
+  adding protocol/export coverage for controller notification schemas and all
+  canonical controller error-code wire names;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -639,6 +641,17 @@
     hunks were reverted, `git diff --check` and `git diff --cached --check`
     passing, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 23.66s.
+  - Added controller protocol/export coverage for the two controller
+    notification schemas, the authorization notification wire shape, and every
+    canonical controller error-code wire name.
+  - Validated the protocol coverage slice at commit `3d96c79` with
+    `just test -p codex-app-server-protocol controller` passing 7/7 focused
+    tests, `just test -p codex-app-server-protocol stable_schema_filter_removes_mock_thread_start_field`
+    passing 1/1 focused test, `just fmt` passing, scoped
+    `just fix -p codex-app-server-protocol` passing, `git diff --check` and
+    `git diff --cached --check` passing. No schema regeneration or debug binary
+    rebuild was required because the protocol shape and production code did not
+    change.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -665,7 +678,8 @@
     initialize-notification suppression, or exhaustive TUI command reclaim
     classification, or terminal main-thread-close launch handling, or
     in-process lifecycle/state notification preservation, or controller
-    prompt-rejection error surfacing.
+    prompt-rejection error surfacing, or controller notification schema
+    coverage.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -695,9 +709,10 @@
   pre-participation initialize-notification suppression coverage, plus
   exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
-  notification preservation, plus controller prompt-rejection error surfacing.
+  notification preservation, plus controller prompt-rejection error surfacing,
+  plus controller notification schema coverage.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `ca5186e`.
+  commit `3d96c79`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
