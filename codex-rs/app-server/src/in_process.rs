@@ -181,6 +181,7 @@ pub fn server_notification_requires_delivery(notification: &ServerNotification) 
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
+            | ServerNotification::ThreadStarted(_)
             | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadDeleted(_)
@@ -1560,6 +1561,7 @@ mod tests {
     use codex_app_server_protocol::ThreadSetNameResponse;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ThreadStartedNotification;
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::ThreadStatusChangedNotification;
     use codex_app_server_protocol::ThreadUnarchivedNotification;
@@ -1568,6 +1570,7 @@ mod tests {
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     #[cfg(unix)]
     use futures::SinkExt;
     #[cfg(unix)]
@@ -4138,6 +4141,11 @@ mod tests {
             })
         ));
         assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: test_notification_thread("thread-1"),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
             &ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
                 thread_id: "thread-1".to_string(),
                 status: ThreadStatus::Idle,
@@ -4275,5 +4283,37 @@ mod tests {
                 },
             )
         ));
+    }
+
+    fn test_notification_thread(thread_id: &str) -> codex_app_server_protocol::Thread {
+        let cwd = AbsolutePathBuf::current_dir().expect("current directory should be absolute");
+        codex_app_server_protocol::Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: "session-1".to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "preview".to_string(),
+            ephemeral: false,
+            section: None,
+            section_entered_at: None,
+            history_mode: Default::default(),
+            model_provider: "mock_provider".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            recency_at: None,
+            status: ThreadStatus::Idle,
+            path: None,
+            cwd,
+            cli_version: "test".to_string(),
+            source: ApiSessionSource::AppServer,
+            can_accept_direct_input: Some(true),
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        }
     }
 }
