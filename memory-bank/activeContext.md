@@ -28,8 +28,9 @@
   controller-origin archive/delete from spawned-descendant subtree targets, plus
   skipping running-thread resume replay for controller prompts after external
   delivery, plus routing app-server extension fallback goal/warning egress
-  through controller-aware recipient computation; remaining Codex-side review is
-  centered on any other implicit
+  through controller-aware recipient computation, plus routing listener-ordered
+  `serverRequest/resolved` egress through the controller-aware thread sender;
+  remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
 
@@ -481,6 +482,17 @@
     `just fix -p codex-app-server` completing after unrelated fixer hunks were
     reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Routed listener-ordered `serverRequest/resolved` notifications through the
+    controller-aware thread sender instead of rebuilding a raw thread sender
+    from subscribed connection IDs.
+  - Validated the server-request resolution egress slice with
+    `just test -p codex-app-server listener_server_request_resolved_targets_thread_notification_recipients`
+    passing 1/1 focused test, `just test -p codex-app-server listener_`
+    passing 8/8 listener-filtered tests,
+    `just test -p codex-app-server controller` passing 87/87 controller tests,
+    `just fix -p codex-app-server` completing after unrelated fixer hunks were
+    reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -494,8 +506,9 @@
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
     no-listener goal/warning fallback controller targeting, or app-server
-    thread-goal fallback targeting, or thread-scoped MCP OAuth completion
-    targeting, or controller-origin detached review fencing, or
+    thread-goal fallback targeting, or listener server-request resolution
+    targeting, or thread-scoped MCP OAuth completion targeting, or
+    controller-origin detached review fencing, or
     controller-origin realtime context/configuration override gating, or
     controller-origin realtime text role fencing, or controller-origin
     section-move implicit target fencing, or controller-origin archive/delete
@@ -522,10 +535,10 @@
   and status delivery, plus thread-scoped global and listener-command
   thread-goal notification targeting, plus listener-warning targeting and
   extension no-listener goal/warning fallback controller targeting, plus app-server
-  thread-goal fallback targeting, plus thread-scoped MCP OAuth completion
-  targeting.
+  thread-goal fallback targeting, plus listener server-request resolution
+  targeting, plus thread-scoped MCP OAuth completion targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `09768dc`.
+  commit `e17994d`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

@@ -121,6 +121,9 @@
 - Live listener-command warning egress now uses the controller-aware thread
   sender, preserving normal TUI warning delivery while including authorized
   external-controller recipients and avoiding raw subscriber targeting.
+- Listener-ordered `serverRequest/resolved` egress now uses the
+  controller-aware thread sender, preserving listener ordering while avoiding
+  raw subscriber targeting for request-resolution notifications.
 - Extension no-listener `ThreadGoalUpdated` fallback now targets thread
   subscribers instead of raw broadcast, preserving visibility for approved
   subscribed external controllers after generic broadcasts were filtered away
@@ -152,7 +155,7 @@
   thread-affecting approval path, so the documented TUI-primary reclaim
   invariant includes `AppCommand::ApproveGuardianDeniedAction`.
 - The latest Codex-side source checkpoint is
-  `09768dc` for launch metadata publication, native approval coverage, exact
+  `e17994d` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -174,7 +177,7 @@
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
   coverage, archive/delete spawned-descendant subtree fencing, delivered
   controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting.
+  controller targeting, plus listener server-request resolution targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -338,6 +341,14 @@
   after unrelated fixer hunks were reverted, `just fmt` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `e17994d` is
+  `just test -p codex-app-server listener_server_request_resolved_targets_thread_notification_recipients`
+  passing 1/1 focused test, `just test -p codex-app-server listener_` passing
+  8/8 listener-filtered tests, `just test -p codex-app-server controller`
+  passing 87/87 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, `just fmt` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -352,14 +363,15 @@
   notification targeting, listener-command thread-goal egress targeting, and
   listener-warning targeting, plus extension no-listener goal/warning fallback
   controller targeting and app-server thread-goal fallback targeting, plus
-  thread-scoped MCP OAuth completion targeting, plus controller-origin
+  listener server-request resolution targeting, plus thread-scoped MCP OAuth
+  completion targeting, plus controller-origin
   detached review fencing and realtime
   context/configuration override gating, plus realtime text role fencing and
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
   coverage, archive/delete spawned-descendant subtree fencing, delivered
   controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting. There is no known uncommitted Codex-side source diff in
-  this checkpoint.
+  controller targeting, plus listener server-request resolution targeting.
+  There is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -447,7 +459,8 @@
   thread-scoped global notification targeting and listener-command thread-goal
   egress targeting, listener-warning targeting, and extension no-listener
   goal/warning fallback controller targeting, plus app-server thread-goal
-  fallback targeting and thread-scoped MCP OAuth completion targeting.
+  fallback targeting, listener server-request resolution targeting, and
+  thread-scoped MCP OAuth completion targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
