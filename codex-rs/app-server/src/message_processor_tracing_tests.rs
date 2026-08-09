@@ -22,6 +22,7 @@ use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
 use codex_app_server_protocol::ControllerAuthorizationChangedNotification;
 use codex_app_server_protocol::ControllerAuthorizationChangedReason;
@@ -792,6 +793,40 @@ async fn read_controller_ownership_changed_for_connection(
         panic!("expected controller ownership notification");
     };
     notification
+}
+
+async fn fill_outgoing_queue(outgoing: &Arc<OutgoingMessageSender>) {
+    for index in 0..16 {
+        outgoing
+            .send_server_notification_to_connections(
+                &[TEST_CONNECTION_ID],
+                ServerNotification::ConfigWarning(ConfigWarningNotification {
+                    summary: format!("queue blocker {index}"),
+                    details: None,
+                    path: None,
+                    range: None,
+                }),
+            )
+            .await;
+    }
+}
+
+async fn drain_outgoing_envelopes(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    count: usize,
+) {
+    for _ in 0..count {
+        let envelope = tokio::time::timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting to drain outgoing envelope")
+            .expect("outgoing channel closed");
+        if let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            write_complete_tx, ..
+        } = envelope
+        {
+            acknowledge_write(write_complete_tx);
+        }
+    }
 }
 
 async fn read_server_request_for_connection(
@@ -2330,6 +2365,148 @@ fn controller_participation_rejects_unproven_display_claims() -> Result<()> {
             let denial = rejected.denial.expect("rejection should include denial");
             assert_eq!(denial.data.code, ControllerErrorCode::EnrollmentDenied);
             assert_eq!(denial.data.main_thread_id, Some(started.thread.id));
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_signoff_unsubscribes_before_terminal_notification() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_signoff_unsubscribes_before_terminal_notification",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 45_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let second_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    SECOND_EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&second_session),
+                    controller_initialize_request(/*request_id*/ 45_002),
+                )
+                .await;
+            second_session
+                .bind_controller_credential_proof(controller_proof(SECOND_EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 45_003, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 45_004),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+            let second_participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    SECOND_EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&second_session),
+                    controller_participation_request(/*request_id*/ 45_005),
+                )
+                .await;
+            assert_eq!(
+                second_participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert_eq!(
+                second_participation
+                    .session
+                    .expect("second approved session")
+                    .active_lease,
+                None
+            );
+
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(main_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
+            fill_outgoing_queue(&harness.processor.outgoing).await;
+            let processor = Arc::clone(&harness.processor);
+            let session = Arc::clone(&external_session);
+            let signoff_request = request_from_client_request(controller_no_params_request(
+                /*request_id*/ 45_006,
+                "controller/signOff",
+            ));
+            let signoff_task = tokio::spawn(async move {
+                let transport = AppServerTransport::Stdio;
+                processor
+                    .process_request(
+                        EXTERNAL_CONNECTION_ID,
+                        ConnectionOrigin::ExternalController,
+                        signoff_request,
+                        &transport,
+                        session,
+                    )
+                    .await;
+            });
+
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if !harness
+                        .processor
+                        .thread_processor
+                        .subscribed_connection_ids_for_thread(main_thread_id)
+                        .await
+                        .contains(&EXTERNAL_CONNECTION_ID)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("sign-off should unsubscribe before emitting terminal notification");
+
+            drain_outgoing_envelopes(&mut harness.outgoing_rx, /*count*/ 2).await;
+            tokio::time::timeout(Duration::from_secs(1), signoff_task)
+                .await
+                .expect("sign-off should finish after outgoing queue has capacity")
+                .expect("sign-off task should not panic");
+            drain_outgoing_envelopes(&mut harness.outgoing_rx, /*count*/ 16).await;
+
             harness.shutdown().await;
             Ok(())
         },

@@ -852,6 +852,14 @@ impl MessageProcessor {
         connection_id: ConnectionId,
         session_state: &ConnectionSessionState,
     ) {
+        if let Some(main_thread_id) = self
+            .controller_processor
+            .main_thread_for_live_session(connection_id)
+        {
+            self.thread_processor
+                .unsubscribe_connection_from_thread(main_thread_id, connection_id)
+                .await;
+        }
         let disconnected_controller_main_thread_id = self
             .controller_processor
             .connection_closed(connection_id)
@@ -1341,6 +1349,14 @@ impl MessageProcessor {
                             connection_id,
                             admission_rule,
                             ControllerRequestTarget::None,
+                        )
+                        .await?;
+                    self.thread_processor
+                        .thread_unsubscribe(
+                            &request_id,
+                            codex_app_server_protocol::ThreadUnsubscribeParams {
+                                thread_id: authorization.main_thread_id.clone(),
+                            },
                         )
                         .await?;
                     let response = self

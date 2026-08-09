@@ -448,6 +448,20 @@ impl ControllerRequestProcessor {
             .then_some(main_thread_id)
     }
 
+    pub(crate) fn main_thread_for_live_session(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<ThreadId> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let coordinator = state.coordinator.as_ref()?;
+        coordinator
+            .session_for(connection_id)
+            .map(|session| session.main_thread_id)
+    }
+
     pub(crate) fn prompt_request_recipients(
         &self,
         thread_id: ThreadId,
