@@ -386,6 +386,12 @@ TUI event stream only.
     for controller-visible lifecycle/state notifications
   - tests or code review evidence that ownership/provenance/status events do not
     mutate model-visible history
+  - implemented checkpoint `55c979b`:
+    - the typed in-process `ControllerOwnershipStatus` event is handled through
+      the real TUI app-server event handler without inserting transcript history
+      or creating an active transcript cell; and
+    - the related validation set covers that path with the existing JSON-RPC
+      controller control-plane history exclusion and lag snapshot recovery tests
 
 Commit 18: Start the endpoint from embedded TUI launches only, after admission,
 ownership, enrollment, prompt fencing, reclaim, and reflection are in place.

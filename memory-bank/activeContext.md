@@ -52,7 +52,8 @@
   delivery through the in-process TUI bridge, plus lossless
   controller-visible lifecycle/state notifications through the embedded
   runtime and app-server-client bridge, plus explicit controller
-  `thread/unsubscribe` target-binding coverage;
+  `thread/unsubscribe` target-binding coverage, plus TUI in-process
+  ownership-status history-exclusion coverage;
   current source audit has no confirmed remaining Codex-side
   subscription/implicit-target gap while downstream discovery/display consumes
   the published local-controller metadata contract.
@@ -793,7 +794,8 @@
     realtime-error rendering, or TUI realtime transcript rendering, or TUI
     app-server lag snapshot recovery, or lossless `thread/started`
     notification delivery, or controller prompt egress-fencing at begin-write,
-    or controller egress-overflow isolation/fallback coverage.
+    or controller egress-overflow isolation/fallback coverage, or TUI
+    in-process ownership-status history-exclusion coverage.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -830,9 +832,10 @@
   transcript rendering, plus TUI app-server lag snapshot recovery, plus
   lossless `thread/started` notification delivery, plus controller prompt
   egress-fencing at begin-write, plus controller egress-overflow
-  isolation/fallback coverage.
+  isolation/fallback coverage, plus TUI in-process ownership-status
+  history-exclusion coverage.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `9bdbda6`.
+  commit `55c979b`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

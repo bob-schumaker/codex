@@ -225,8 +225,12 @@
   controller with a standing read/subscription session to unsubscribe from the
   authorized main thread after releasing input ownership, and rejects a
   wrong-thread unsubscribe before the handler can mutate that subscription.
+- The TUI now has app-level coverage proving typed in-process
+  `ControllerOwnershipStatus` events do not enter transcript history or create
+  an active transcript cell; this complements the existing JSON-RPC controller
+  control-plane history-exclusion coverage.
 - The latest Codex-side source checkpoint is
-  `fee11eb` for launch metadata publication, native approval coverage, exact
+  `55c979b` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -265,7 +269,7 @@
   delivery through the in-process TUI bridge, plus controller prompt egress
   fencing at begin-write, controller egress-overflow isolation/fallback
   coverage, and explicit controller `thread/unsubscribe` target/mutation
-  fencing.
+  fencing, plus TUI in-process ownership-status history-exclusion coverage.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -594,7 +598,14 @@
   only because `.pre-commit-config.yaml` is not present, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
-- The latest focused validation for commit `fee11eb` is `just fmt` passing,
+- The latest focused validation for commit `55c979b` is `just fmt` passing,
+  `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history`
+  passing 1/1 focused test, `just fix -p codex-tui` passing,
+  `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history controller_control_plane_notifications_do_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot`
+  passing 3/3 focused tests, and `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 0.85s with the known `__eh_frame` linker
+  warning.
+- The focused validation for commit `fee11eb` was `just fmt` passing,
   `just test -p codex-app-server controller_thread_unsubscribe_is_bound_to_standing_main_thread_session thread_resume_extracts_exact_controller_thread_target exact_controller_thread_target_uses_serialization_scope`
   passing 3/3 focused tests, `just test -p codex-app-server controller`
   passing 113/113 controller-filtered tests, `just fix -p codex-app-server`
@@ -606,8 +617,9 @@
 ## In Flight
 
 - Codex-side normal-interface parity audit: no confirmed remaining
-  subscription/implicit-target gap after explicit `thread/unsubscribe`
-  coverage. Prior reviewed areas include the committed cleanup,
+  subscription/implicit-target gap after explicit `thread/unsubscribe` coverage
+  and TUI in-process ownership-status history-exclusion coverage. Prior reviewed
+  areas include the committed cleanup,
   resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
@@ -637,7 +649,8 @@
   app-server lag snapshot recovery, plus lossless `thread/started`
   notification delivery through the in-process TUI bridge, plus controller
   prompt egress-fencing at begin-write, plus controller egress-overflow
-  isolation/fallback coverage.
+  isolation/fallback coverage, plus TUI in-process ownership-status
+  history-exclusion coverage.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -736,7 +749,9 @@
   delivers them. Explicit controller-origin `thread/unsubscribe` is covered as
   an exact-thread, standing-session subscription operation: main-thread
   unsubscribe works after release, and wrong-thread unsubscribe is rejected
-  before subscription mutation.
+  before subscription mutation. Typed in-process `ControllerOwnershipStatus`
+  events are covered through the real TUI event handler and remain out of
+  transcript/model-visible history.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -779,8 +794,9 @@
   fallback targeting, listener server-request resolution targeting, and
   thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
   overload, separate controller control-plane ingress, pre-participation
-  initialize-notification suppression coverage, and explicit
-  `thread/unsubscribe` target/mutation fencing.
+  initialize-notification suppression coverage, explicit `thread/unsubscribe`
+  target/mutation fencing, and TUI in-process ownership-status
+  history-exclusion coverage.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

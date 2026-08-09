@@ -314,7 +314,9 @@ egress-fencing slice, the cumulative goal cost was 21,272,170 tokens and
 coverage slice, the cumulative goal cost was 21,524,837 tokens and 87,580
 seconds (approximately 24h 19m 40s). At the explicit controller
 `thread/unsubscribe` coverage slice, the cumulative goal cost was 21,794,287
-tokens and 88,185 seconds (approximately 24h 29m 45s).
+tokens and 88,185 seconds (approximately 24h 29m 45s). At the TUI
+ownership-status history-exclusion slice, the cumulative goal cost was
+22,166,703 tokens and 88,906 seconds (approximately 24h 41m 46s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -442,6 +444,11 @@ Recorded build and validation evidence:
 | `just test -p codex-app-server controller` | Passed: 113 test runs, 113 passed, 1139 skipped after adding explicit controller `thread/unsubscribe` coverage. | Compile reported 1.07s; nextest reported 29.573s. |
 | `just fix -p codex-app-server` | Passed after the explicit controller `thread/unsubscribe` coverage slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the test commit stayed scoped. | Cargo reported 29.50s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the explicit controller `thread/unsubscribe` coverage slice. | Cargo reported 17.41s with the known `__eh_frame section too large` linker warning. |
+| `just fmt` | Passed after the TUI ownership-status history-exclusion slice. | Shell wall time was 6.655s. |
+| `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history` | Passed: 1 test run, 1 passed, 3463 skipped. This covers the typed in-process `ControllerOwnershipStatus` event entering the real TUI app-server event handler without writing transcript history or creating an active transcript cell. | Compile reported 1m 05s; nextest reported 0.370s. |
+| `just fix -p codex-tui` | Passed after the TUI ownership-status history-exclusion slice. | Cargo reported 49.82s. |
+| `just test -p codex-tui controller_ownership_status_event_does_not_write_transcript_history controller_control_plane_notifications_do_not_write_transcript_history lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 3 test runs, 3 passed, 3461 skipped. This covers the new typed ownership-status history exclusion, existing JSON-RPC controller control-plane history exclusion, and lag snapshot recovery together. | Compile reported 1.07s; nextest reported 0.340s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI ownership-status history-exclusion slice. | Cargo reported 0.85s with the known `__eh_frame section too large` linker warning. |
 
 ## Relevant implementation seams
 
