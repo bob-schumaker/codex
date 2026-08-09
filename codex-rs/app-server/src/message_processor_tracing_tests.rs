@@ -74,6 +74,9 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
@@ -1047,6 +1050,18 @@ fn controller_thread_read_request(request_id: i64, thread_id: impl Into<String>)
         params: ThreadReadParams {
             thread_id: thread_id.into(),
             include_turns: false,
+        },
+    }
+}
+
+fn controller_thread_unsubscribe_request(
+    request_id: i64,
+    thread_id: impl Into<String>,
+) -> ClientRequest {
+    ClientRequest::ThreadUnsubscribe {
+        request_id: RequestId::Integer(request_id),
+        params: ThreadUnsubscribeParams {
+            thread_id: thread_id.into(),
         },
     }
 }
@@ -3284,6 +3299,126 @@ fn queued_primary_thread_input_reclaims_after_controller_reacquires() -> Result<
             assert_eq!(
                 stale_controller_mutation_data.code,
                 ControllerErrorCode::StaleOwnership
+            );
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_thread_unsubscribe_is_bound_to_standing_main_thread_session() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_thread_unsubscribe_is_bound_to_standing_main_thread_session",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_501),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let main = harness
+                .start_thread(/*request_id*/ 40_502, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&main.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_503),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            let released: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_504,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            assert_eq!(released.session.active_lease, None);
+
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(main_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+            let secondary = harness
+                .start_thread(/*request_id*/ 40_505, /*trace*/ None)
+                .await;
+            let secondary_thread_id = ThreadId::from_string(&secondary.thread.id)?;
+            harness
+                .processor
+                .thread_processor
+                .subscribe_test_connection_for_thread(secondary_thread_id, EXTERNAL_CONNECTION_ID)
+                .await;
+
+            let wrong_thread = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_unsubscribe_request(
+                        /*request_id*/ 40_506,
+                        secondary.thread.id,
+                    ),
+                )
+                .await;
+            let wrong_thread_data: ControllerErrorData =
+                serde_json::from_value(wrong_thread.error.data.expect("typed controller error"))?;
+            assert_eq!(
+                wrong_thread_data.code,
+                ControllerErrorCode::DifferentThreadTarget
+            );
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(secondary_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
+            let unsubscribed: ThreadUnsubscribeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_unsubscribe_request(
+                        /*request_id*/ 40_507,
+                        main.thread.id,
+                    ),
+                )
+                .await;
+            assert_eq!(unsubscribed.status, ThreadUnsubscribeStatus::Unsubscribed);
+            assert!(
+                !harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
             );
 
             harness.shutdown().await;

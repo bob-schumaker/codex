@@ -25,6 +25,7 @@ use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSectionListParams;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnSteerParams;
@@ -478,6 +479,16 @@ fn exact_controller_thread_target_uses_serialization_scope() {
             },
         },
         "thread/backgroundTerminals/list",
+        &thread_id,
+    );
+    assert_exact_thread_target(
+        ClientRequest::ThreadUnsubscribe {
+            request_id: RequestId::Integer(4),
+            params: ThreadUnsubscribeParams {
+                thread_id: thread_id.clone(),
+            },
+        },
+        "thread/unsubscribe",
         &thread_id,
     );
 }
