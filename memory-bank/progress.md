@@ -90,8 +90,14 @@
   TUI-unavailable/main-thread-close, explicit revocation, sign-off, and
   disconnect paths with coordinator-owned reason, owner epoch, session sequence,
   and session/lease snapshots.
+- App-server serialized request queues now prioritize primary/TUI work over
+  queued external-controller work, while preserving a bounded eight-dequeue
+  fairness rule for valid controller work.
+- Thread-scoped primary input now rechecks TUI reclaim immediately before a
+  queued request executes, so a controller that reacquires while TUI input is
+  waiting cannot keep ownership after that TUI input runs.
 - The latest Codex-side implementation commit is
-  `c267e17` for launch metadata publication, native approval coverage, exact
+  `2bce609` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -100,7 +106,7 @@
   terminal native TUI-unavailable launch handling, main-thread egress fencing,
   early controller disconnect revocation, and early disconnect subscription
   cleanup, plus controller authorization/control-ownership notification
-  emission.
+  emission, plus serialized-request priority and dequeue-time TUI reclaim.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -113,15 +119,24 @@
   the source slice after reverting known unrelated fixer hunks, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `2bce609` is
+  `just test -p codex-app-server request_serialization` passing 9/9 focused
+  tests,
+  `just test -p codex-app-server queued_primary_thread_input_reclaims_after_controller_reacquires`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 66/66 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
 - Codex-side selection of the next normal-interface parity slice: remaining
   implicit targets, egress transactionality, and long-lived subscription edges
   not covered by the committed cleanup, resume/turn override gating,
-  cursor-binding, internally-sent resume cursor binding, owner-binding, and
-  controller notification work. There is no known uncommitted Codex-side source
-  diff in this checkpoint.
+  cursor-binding, internally-sent resume cursor binding, owner-binding,
+  controller notification work, and serialized-request priority/dequeue reclaim.
+  There is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -140,6 +155,8 @@
   revokes ownership, rebinds pre-delivery prompts, and removes the controller's
   main-thread subscription before RPC drain. Controller authorization and
   ownership notifications now emit from the coordinator transition boundary.
+  Primary/TUI serialized requests now preempt queued controller work, and
+  queued primary thread input reclaims ownership again at dequeue time.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -171,7 +188,8 @@
   performs early revocation and subscription removal before RPC drain. Any
   remaining subscription work is outside the committed sign-off,
   authorization-expiry cleanup, terminal TUI-unavailable,
-  disconnect-revocation, and disconnect-subscription-cleanup paths.
+  disconnect-revocation, disconnect-subscription-cleanup, and queued
+  primary-reclaim paths.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
