@@ -2173,6 +2173,71 @@ mod tests {
         )
         .await;
 
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_103,
+            "thread/list",
+            &serde_json::json!({ "limit": 100 }),
+        )
+        .await;
+        let listed: ThreadListResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_103).await;
+        assert_eq!(
+            listed
+                .data
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>(),
+            vec![started.thread.id.clone()]
+        );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_105,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: other_started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let wrong_thread_read = read_websocket_error(&mut websocket, /*expected_id*/ 20_105).await;
+        let wrong_thread_read_data: ControllerErrorData = serde_json::from_value(
+            wrong_thread_read
+                .error
+                .data
+                .expect("wrong-thread read error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            wrong_thread_read_data.code,
+            ControllerErrorCode::DifferentThreadTarget
+        );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_106,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: other_started.thread.id.clone(),
+                name: "controller-should-not-rename-other".to_string(),
+            },
+        )
+        .await;
+        let wrong_thread_mutation =
+            read_websocket_error(&mut websocket, /*expected_id*/ 20_106).await;
+        let wrong_thread_mutation_data: ControllerErrorData = serde_json::from_value(
+            wrong_thread_mutation
+                .error
+                .data
+                .expect("wrong-thread mutation error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            wrong_thread_mutation_data.code,
+            ControllerErrorCode::DifferentThreadTarget
+        );
+
         client
             .shutdown()
             .await
