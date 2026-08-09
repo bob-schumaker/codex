@@ -52,13 +52,17 @@ use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::TerminalResizeReflowMaxRows;
+use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
+use codex_app_server_client::InProcessControllerOwnershipStatus;
+use codex_app_server_client::InProcessControllerOwnershipStatusOwner;
 use codex_app_server_protocol::AdditionalFileSystemPermissions;
 use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -7125,6 +7129,35 @@ async fn lag_refresh_replays_authoritative_active_thread_snapshot() -> Result<()
         !rendered.contains("stale prompt"),
         "expected lag refresh replay to omit stale buffered text, got {rendered}"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn controller_ownership_status_event_does_not_write_transcript_history() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.chat_widget.config_ref().clone();
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_app_server_event(
+        &mut app_server,
+        AppServerEvent::ControllerOwnershipStatus(Box::new(InProcessControllerOwnershipStatus {
+            main_thread_id: ThreadId::new(),
+            owner: InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: "controller-session".to_string(),
+            },
+            owner_epoch: 2,
+            reason: ControllerControlOwnershipChangedReason::Acquired,
+        })),
+    )
+    .await;
+
+    let emitted_history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .any(|event| matches!(event, AppEvent::InsertHistoryCell(_)));
+    assert!(!emitted_history);
+    assert!(app.chat_widget.active_cell_transcript_key().is_none());
+    app_server.shutdown().await?;
 
     Ok(())
 }
