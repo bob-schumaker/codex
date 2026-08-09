@@ -155,7 +155,7 @@
   thread-affecting approval path, so the documented TUI-primary reclaim
   invariant includes `AppCommand::ApproveGuardianDeniedAction`.
 - The latest Codex-side source checkpoint is
-  `e17994d` for launch metadata publication, native approval coverage, exact
+  `cfa8ea6` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -177,7 +177,9 @@
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
   coverage, archive/delete spawned-descendant subtree fencing, delivered
   controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting, plus listener server-request resolution targeting.
+  controller targeting, plus listener server-request resolution targeting, plus
+  terminal local-controller acceptor failure reporting, metadata/socket cleanup,
+  and external-controller connection closure through the normal revocation path.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -369,6 +371,22 @@
   `just fmt` passing, `git diff --check` and `git diff --cached --check`
   passing, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `cfa8ea6` is
+  `just test -p codex-app-server-transport terminal_accept_error_reports_endpoint_failure`
+  passing 1/1 focused transport test,
+  `just test -p codex-app-server in_process_outbound_router_disconnect_and_close_requests_disconnect`
+  passing 1/1 focused app-server test,
+  `just test -p codex-app-server-transport local_controller` passing 13/13,
+  `just test -p codex-app-server in_process::tests` passing 11/11,
+  `just test -p codex-app-server-transport` passing 158/158, and
+  `just test -p codex-app-server controller` passing 87/87. Scoped
+  `just fix -p codex-app-server-transport` and `just fix -p codex-app-server`
+  completed, with the known unrelated app-server fixer hunks reverted; `just
+  fmt` and `git diff --check` passed. The first
+  `cargo build -p codex-cli -j 4` failed at link with `errno=28` because the
+  filesystem had 823 MiB free; removing `codex-rs/target/debug/incremental`
+  freed enough cache space while preserving debug binaries, and the rerun
+  rebuilt `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -393,8 +411,10 @@
   controller targeting, listener server-request resolution targeting, and
   embedded in-process transcript/item delivery preservation before the
   app-server-client lossless bridge, plus centralized lossless delivery
-  classification shared by the embedded runtime writer and app-server-client.
-  There is no known uncommitted Codex-side source diff in this checkpoint.
+  classification shared by the embedded runtime writer and app-server-client,
+  and terminal local-controller acceptor failure handling.
+  There is no known uncommitted Codex-side source diff in that source
+  checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -451,6 +471,10 @@
   The app-server-client bridge now delegates its delivery classifier to the
   embedded app-server classifier, avoiding future drift between the producer and
   bridge lossless sets.
+  Terminal local-controller acceptor failure now stops the acceptor, reports the
+  failure to the embedded runtime, drops socket/metadata guards, prevents
+  `mainThreadId` republication through the closed handle, and closes existing
+  external-controller connections through the normal revocation path.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

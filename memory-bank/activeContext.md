@@ -32,7 +32,9 @@
   `serverRequest/resolved` egress through the controller-aware thread sender,
   plus preserving embedded in-process transcript/item delivery before the
   client-side lossless bridge sees reflected controller work, plus centralizing
-  the embedded app-server/app-server-client lossless delivery classifier;
+  the embedded app-server/app-server-client lossless delivery classifier, plus
+  closing established external controllers and removing discovery metadata when
+  the local-controller acceptor hits a terminal failure;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -496,6 +498,19 @@
     `just fix -p codex-app-server` completing after unrelated fixer hunks were
     reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Made terminal local-controller acceptor failure stop accepting, report a
+    one-shot endpoint failure to the embedded runtime, drop the socket and
+    metadata guards, avoid republishing `mainThreadId` after acceptor exit, and
+    close existing external-controller connections through the normal
+    connection-closed revocation path.
+  - Validated the endpoint-failure slice with
+    `just test -p codex-app-server-transport local_controller`,
+    `just test -p codex-app-server-transport`,
+    `just test -p codex-app-server in_process::tests`,
+    `just test -p codex-app-server controller`, scoped `just fix` runs for
+    `codex-app-server-transport` and `codex-app-server`, `just fmt`, `git diff
+    --check`, and `cargo build -p codex-cli -j 4` after freeing
+    `target/debug/incremental` build cache.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -516,7 +531,7 @@
     controller-origin realtime text role fencing, or controller-origin
     section-move implicit target fencing, or controller-origin archive/delete
     spawned-descendant subtree fencing, or delivered controller prompt replay
-    fencing.
+    fencing, or terminal local-controller acceptor failure handling.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -543,7 +558,7 @@
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `c1b4a2a`.
+  commit `cfa8ea6`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
