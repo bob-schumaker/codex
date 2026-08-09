@@ -1582,6 +1582,13 @@ the TUI launch's immutable main thread:
   opaque audit/revocation identifier, and authority remains bound to the live
   connection, session, main thread, and owner epoch.
 
+For approval server requests, an active controller may use only non-persistent
+decisions. Session-scoped or persistent approval effects, including
+`acceptForSession`, exec-policy amendments, network-policy amendments, and
+session-scoped permission grants, are rejected with typed
+`controller-not-allowed` error data because those effects would outlive the
+connection-bound lease.
+
 Control can move between the controller and TUI:
 
 ```json
