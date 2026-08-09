@@ -493,6 +493,10 @@
   `mainThreadId` republication through the closed handle, and closes existing
   external-controller connections through the normal revocation path. Late
   endpoint failure now also reports `embedded-unavailable` into the owning TUI.
+  Initialized external-controller ingress is now bounded per connection before
+  serialized app-server work is enqueued. Saturated controller ingress receives
+  JSON-RPC `-32001` with typed `controller-overloaded` data and
+  `sameConnection` retry guidance.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -532,7 +536,8 @@
   egress targeting, listener-warning targeting, and extension no-listener
   goal/warning fallback controller targeting, plus app-server thread-goal
   fallback targeting, listener server-request resolution targeting, and
-  thread-scoped MCP OAuth completion targeting.
+  thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
+  overload.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

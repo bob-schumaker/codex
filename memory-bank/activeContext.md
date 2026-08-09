@@ -35,7 +35,10 @@
   the embedded app-server/app-server-client lossless delivery classifier, plus
   closing established external controllers and removing discovery metadata when
   the local-controller acceptor hits a terminal failure, plus reporting late
-  local-controller endpoint failure to the TUI as `embedded-unavailable`;
+  local-controller endpoint failure to the TUI as `embedded-unavailable`, plus
+  bounding initialized external-controller ingress per connection and returning
+  typed `controller-overloaded` responses before queued app-server work can grow
+  without limit;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -525,6 +528,18 @@
     runs for `codex-app-server`, `codex-app-server-client`, `codex-tui`, and
     `codex-exec`, `just fmt`, `just build-code-mode-host`, and
     `cargo build -p codex-cli -j 4`.
+  - Added a per-connection external-controller initialized-RPC reservation in
+    the app-server request gate. Saturated controller ingress now receives
+    JSON-RPC `-32001` with typed `ControllerErrorData { code:
+    controller-overloaded, retry: sameConnection }` instead of allowing
+    unbounded serialized app-server queue growth.
+  - Validated the controller ingress overload slice with focused
+    `just test -p codex-app-server connection_rpc_gate request_serialization controller_overload saturated_external_controller_ingress_returns_typed_overload`
+    passing 19/19 tests, `just test -p codex-app-server` reaching 1227/1229
+    passing with only the known zsh-fork timeout fixture cluster failing,
+    `just fix -p codex-app-server` completing after unrelated fixer hunks were
+    reverted, `just fmt` passing, `git diff --check` passing, and
+    `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -546,7 +561,7 @@
     section-move implicit target fencing, or controller-origin archive/delete
     spawned-descendant subtree fencing, or delivered controller prompt replay
     fencing, or terminal local-controller acceptor failure handling, or late
-    endpoint-unavailable TUI reporting.
+    endpoint-unavailable TUI reporting, or bounded controller ingress overload.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -571,7 +586,8 @@
   thread-goal fallback targeting, plus listener server-request resolution
   targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
   in-process transcript/item delivery preservation and centralized lossless
-  delivery classification.
+  delivery classification, plus bounded per-connection external-controller
+  ingress overload.
 - Treat the source tree as ready for the next narrow implementation slice after
   commit `6e69a87`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
