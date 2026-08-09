@@ -278,14 +278,14 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `f6b2772`
-(`test(app-server): cover controller retry before main thread`). The recorded
+Codex-side hardening has continued through commit `347ba1f`
+(`test(app-server): cover controller metadata publish route`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
-44,738 seconds (approximately 12h 25m 38s). At the local-socket starting
-readiness validation slice, the cumulative goal cost was 16,189,291 tokens and
-48,850 seconds (approximately 13h 34m 10s). These costs include implementation,
-review, validation, and commit preparation across the staged slices; they are not
-limited to build/test subprocess runtime.
+44,738 seconds (approximately 12h 25m 38s). At the in-process metadata publish
+validation slice, the cumulative goal cost was 16,220,093 tokens and 49,110
+seconds (approximately 13h 38m 30s). These costs include implementation, review,
+validation, and commit preparation across the staged slices; they are not limited
+to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -315,6 +315,10 @@ Final build and validation evidence:
 | `just test -p codex-app-server local_controller_socket_` | Passed: 6 test runs, 6 passed, 1233 skipped after adding the starting-readiness socket test. | Compile reported 1.04s; nextest reported 27.787s. |
 | `just test -p codex-app-server local_controller_` | Passed: 10 test runs, 10 passed, 1229 skipped across local-controller startup, native approval, notification suppression, socket parity, single-lease, launch isolation, reconnect, native rejection, and starting-readiness coverage. | Compile reported 0.74s; nextest reported 33.439s. |
 | `git diff --check` | Passed after the local-socket starting-readiness coverage slice. | Subsecond. |
+| `just fmt` | Passed after the in-process metadata publish route coverage slice. | Shell wall time was 6.520s. |
+| `just test -p codex-app-server local_controller_main_thread_publish_updates_discovery_metadata` | Passed: 1 test run, 1 passed, 1239 skipped. This covers the in-process TUI publish command updating the actual local-controller discovery metadata file, and verifies a later publish does not replace the immutable main-thread ID. | Compile reported 20.53s; nextest reported 0.595s. |
+| `just test -p codex-app-server local_controller_` | Passed: 11 test runs, 11 passed, 1229 skipped after adding the metadata publish route test. | Compile reported 1.10s; nextest reported 36.461s. |
+| `git diff --check` | Passed after the in-process metadata publish route coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 
