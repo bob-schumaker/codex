@@ -11,6 +11,8 @@ use crate::current_time::current_time_request_recipients;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::request_serialization::RequestSerializationAccess;
+use crate::request_serialization::RequestSerializationQueueKey;
 use crate::transport::AppServerTransport;
 use crate::transport::ConnectionOrigin;
 use anyhow::Result;
@@ -49,6 +51,7 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -932,6 +935,20 @@ fn controller_thread_read_request(request_id: i64, thread_id: impl Into<String>)
         params: ThreadReadParams {
             thread_id: thread_id.into(),
             include_turns: false,
+        },
+    }
+}
+
+fn thread_set_name_request(
+    request_id: i64,
+    thread_id: impl Into<String>,
+    name: impl Into<String>,
+) -> ClientRequest {
+    ClientRequest::ThreadSetName {
+        request_id: RequestId::Integer(request_id),
+        params: ThreadSetNameParams {
+            thread_id: thread_id.into(),
+            name: name.into(),
         },
     }
 }
@@ -2002,6 +2019,161 @@ fn controller_control_plane_round_trips_after_enrollment() -> Result<()> {
             assert_eq!(
                 after_signoff_data.code,
                 ControllerErrorCode::TransportClosing
+            );
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn queued_primary_thread_input_reclaims_after_controller_reacquires() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "queued_primary_thread_input_reclaims_after_controller_reacquires",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_201),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 40_202, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_203),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let released: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_204,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            assert_eq!(released.session.active_lease, None);
+
+            let (blocker_started_tx, blocker_started_rx) = oneshot::channel::<()>();
+            let (blocker_release_tx, blocker_release_rx) = oneshot::channel::<()>();
+            harness
+                .processor
+                .request_serialization_queues
+                .enqueue_background(
+                    RequestSerializationQueueKey::Thread {
+                        thread_id: started.thread.id.clone(),
+                    },
+                    RequestSerializationAccess::Exclusive,
+                    async move {
+                        blocker_started_tx
+                            .send(())
+                            .expect("blocker start receiver should be open");
+                        let _ = blocker_release_rx.await;
+                    },
+                )
+                .await;
+            tokio::time::timeout(Duration::from_secs(1), blocker_started_rx)
+                .await
+                .expect("thread queue blocker should start")
+                .expect("blocker start sender should be open");
+
+            let primary_session = Arc::clone(&harness.session);
+            let _primary_request_id = harness
+                .submit_for_connection(
+                    TEST_CONNECTION_ID,
+                    ConnectionOrigin::Stdio,
+                    primary_session,
+                    thread_set_name_request(
+                        /*request_id*/ 40_205,
+                        started.thread.id.clone(),
+                        "queued primary input",
+                    ),
+                )
+                .await;
+
+            let reacquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 40_206,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(reacquired.session.effective_capabilities.mutate_main_thread);
+
+            blocker_release_tx
+                .send(())
+                .expect("thread queue blocker should still be waiting");
+
+            let reclaimed = read_controller_ownership_changed_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+            )
+            .await;
+            assert_eq!(
+                reclaimed.reason,
+                ControllerControlOwnershipChangedReason::ReclaimedByTui
+            );
+            assert_eq!(reclaimed.active_lease, None);
+
+            let stale_controller_mutation = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    thread_set_name_request(
+                        /*request_id*/ 40_207,
+                        started.thread.id,
+                        "stale controller input",
+                    ),
+                )
+                .await;
+            let stale_controller_mutation_data: ControllerErrorData = serde_json::from_value(
+                stale_controller_mutation
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                stale_controller_mutation_data.code,
+                ControllerErrorCode::StaleOwnership
             );
 
             harness.shutdown().await;

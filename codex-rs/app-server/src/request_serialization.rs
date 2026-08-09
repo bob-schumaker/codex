@@ -18,6 +18,7 @@ use crate::outgoing_message::ConnectionId;
 type BoxFutureUnit = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 static QUEUED_REQUESTS: Gauge = Gauge::new("app.requests.queued");
+const PRIMARY_DEQUEUE_FAIRNESS_LIMIT: usize = 8;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RequestSerializationQueueKey {
@@ -52,6 +53,12 @@ pub(crate) enum RequestSerializationQueueKey {
 pub(crate) enum RequestSerializationAccess {
     Exclusive,
     SharedRead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RequestSerializationPriority {
+    Primary,
+    ExternalController,
 }
 
 impl RequestSerializationQueueKey {
@@ -141,13 +148,87 @@ impl QueuedInitializedRequest {
 
 struct QueuedSerializedRequest {
     access: RequestSerializationAccess,
+    priority: RequestSerializationPriority,
     request: QueuedInitializedRequest,
     _diagnostics_guard: GaugeGuard,
 }
 
+#[derive(Default)]
+struct ActiveSerializedQueue {
+    requests: VecDeque<QueuedSerializedRequest>,
+    consecutive_primary_dequeues: usize,
+}
+
+impl ActiveSerializedQueue {
+    fn push_back(&mut self, request: QueuedSerializedRequest) {
+        self.requests.push_back(request);
+    }
+
+    fn pop_next_batch(&mut self) -> Option<Vec<QueuedSerializedRequest>> {
+        let first_index = self.next_request_index()?;
+        let controller_waiting = self
+            .requests
+            .iter()
+            .any(|request| request.priority == RequestSerializationPriority::ExternalController);
+        let first = self.requests.remove(first_index)?;
+        let priority = first.priority;
+        let access = first.access;
+        let mut requests = vec![first];
+
+        if access == RequestSerializationAccess::SharedRead {
+            while self.requests.get(first_index).is_some_and(|request| {
+                request.priority == priority
+                    && request.access == RequestSerializationAccess::SharedRead
+            }) {
+                let Some(request) = self.requests.remove(first_index) else {
+                    break;
+                };
+                requests.push(request);
+            }
+        }
+
+        match priority {
+            RequestSerializationPriority::Primary if controller_waiting => {
+                self.consecutive_primary_dequeues =
+                    self.consecutive_primary_dequeues.saturating_add(1);
+            }
+            RequestSerializationPriority::Primary => {
+                self.consecutive_primary_dequeues = 0;
+            }
+            RequestSerializationPriority::ExternalController => {
+                self.consecutive_primary_dequeues = 0;
+            }
+        }
+
+        Some(requests)
+    }
+
+    fn next_request_index(&self) -> Option<usize> {
+        let primary_index = self
+            .requests
+            .iter()
+            .position(|request| request.priority == RequestSerializationPriority::Primary);
+        let controller_index = self.requests.iter().position(|request| {
+            request.priority == RequestSerializationPriority::ExternalController
+        });
+
+        match (primary_index, controller_index) {
+            (Some(_), Some(controller_index))
+                if self.consecutive_primary_dequeues >= PRIMARY_DEQUEUE_FAIRNESS_LIMIT =>
+            {
+                Some(controller_index)
+            }
+            (Some(primary_index), Some(_)) => Some(primary_index),
+            (Some(primary_index), None) => Some(primary_index),
+            (None, Some(controller_index)) => Some(controller_index),
+            (None, None) => None,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RequestSerializationQueues {
-    inner: Arc<Mutex<HashMap<RequestSerializationQueueKey, VecDeque<QueuedSerializedRequest>>>>,
+    inner: Arc<Mutex<HashMap<RequestSerializationQueueKey, ActiveSerializedQueue>>>,
 }
 
 impl RequestSerializationQueues {
@@ -172,8 +253,20 @@ impl RequestSerializationQueues {
         access: RequestSerializationAccess,
         request: QueuedInitializedRequest,
     ) {
+        self.enqueue_with_priority(key, access, RequestSerializationPriority::Primary, request)
+            .await;
+    }
+
+    pub(crate) async fn enqueue_with_priority(
+        &self,
+        key: RequestSerializationQueueKey,
+        access: RequestSerializationAccess,
+        priority: RequestSerializationPriority,
+        request: QueuedInitializedRequest,
+    ) {
         let request = QueuedSerializedRequest {
             access,
+            priority,
             request,
             _diagnostics_guard: QUEUED_REQUESTS.track(),
         };
@@ -185,7 +278,7 @@ impl RequestSerializationQueues {
                     false
                 }
                 None => {
-                    let mut queue = VecDeque::new();
+                    let mut queue = ActiveSerializedQueue::default();
                     queue.push_back(request);
                     queues.insert(key.clone(), queue);
                     true
@@ -207,22 +300,8 @@ impl RequestSerializationQueues {
                 let Some(queue) = queues.get_mut(&key) else {
                     return;
                 };
-                match queue.pop_front() {
-                    Some(request) => {
-                        let access = request.access;
-                        let mut requests = vec![request];
-                        if access == RequestSerializationAccess::SharedRead {
-                            while queue.front().is_some_and(|request| {
-                                request.access == RequestSerializationAccess::SharedRead
-                            }) {
-                                let Some(request) = queue.pop_front() else {
-                                    break;
-                                };
-                                requests.push(request);
-                            }
-                        }
-                        requests
-                    }
+                match queue.pop_next_batch() {
+                    Some(requests) => requests,
                     None => {
                         queues.remove(&key);
                         return;
@@ -303,6 +382,144 @@ mod tests {
                 THIRD_REQUEST_VALUE
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn primary_priority_runs_before_queued_controller_work() {
+        let queues = RequestSerializationQueues::default();
+        let key = RequestSerializationQueueKey::Global("test");
+        let (blocker_started_tx, blocker_started_rx) = oneshot::channel::<()>();
+        let (blocker_release_tx, blocker_release_rx) = oneshot::channel::<()>();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        queues
+            .enqueue(
+                key.clone(),
+                RequestSerializationAccess::Exclusive,
+                QueuedInitializedRequest::new(gate(), async move {
+                    blocker_started_tx
+                        .send(())
+                        .expect("receiver should be open");
+                    let _ = blocker_release_rx.await;
+                }),
+            )
+            .await;
+        timeout(queue_drain_timeout(), blocker_started_rx)
+            .await
+            .expect("blocker should start")
+            .expect("sender should be open");
+
+        {
+            let tx = tx.clone();
+            queues
+                .enqueue_with_priority(
+                    key.clone(),
+                    RequestSerializationAccess::Exclusive,
+                    RequestSerializationPriority::ExternalController,
+                    QueuedInitializedRequest::new(gate(), async move {
+                        tx.send(SECOND_REQUEST_VALUE)
+                            .expect("receiver should be open");
+                    }),
+                )
+                .await;
+        }
+        {
+            let tx = tx.clone();
+            queues
+                .enqueue_with_priority(
+                    key,
+                    RequestSerializationAccess::Exclusive,
+                    RequestSerializationPriority::Primary,
+                    QueuedInitializedRequest::new(gate(), async move {
+                        tx.send(FIRST_REQUEST_VALUE)
+                            .expect("receiver should be open");
+                    }),
+                )
+                .await;
+        }
+        drop(tx);
+        blocker_release_tx
+            .send(())
+            .expect("blocker should still be waiting");
+
+        let mut values = Vec::new();
+        while let Some(value) = timeout(queue_drain_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for queue to drain")
+        {
+            values.push(value);
+        }
+
+        assert_eq!(values, vec![FIRST_REQUEST_VALUE, SECOND_REQUEST_VALUE]);
+    }
+
+    #[tokio::test]
+    async fn controller_work_runs_after_eight_primary_dequeues() {
+        let queues = RequestSerializationQueues::default();
+        let key = RequestSerializationQueueKey::Global("test");
+        let (blocker_started_tx, blocker_started_rx) = oneshot::channel::<()>();
+        let (blocker_release_tx, blocker_release_rx) = oneshot::channel::<()>();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        queues
+            .enqueue(
+                key.clone(),
+                RequestSerializationAccess::Exclusive,
+                QueuedInitializedRequest::new(gate(), async move {
+                    blocker_started_tx
+                        .send(())
+                        .expect("receiver should be open");
+                    let _ = blocker_release_rx.await;
+                }),
+            )
+            .await;
+        timeout(queue_drain_timeout(), blocker_started_rx)
+            .await
+            .expect("blocker should start")
+            .expect("sender should be open");
+
+        {
+            let tx = tx.clone();
+            queues
+                .enqueue_with_priority(
+                    key.clone(),
+                    RequestSerializationAccess::Exclusive,
+                    RequestSerializationPriority::ExternalController,
+                    QueuedInitializedRequest::new(gate(), async move {
+                        tx.send(/*controller*/ 100)
+                            .expect("receiver should be open");
+                    }),
+                )
+                .await;
+        }
+
+        for value in 1..=9 {
+            let tx = tx.clone();
+            queues
+                .enqueue_with_priority(
+                    key.clone(),
+                    RequestSerializationAccess::Exclusive,
+                    RequestSerializationPriority::Primary,
+                    QueuedInitializedRequest::new(gate(), async move {
+                        tx.send(value).expect("receiver should be open");
+                    }),
+                )
+                .await;
+        }
+        drop(tx);
+        blocker_release_tx
+            .send(())
+            .expect("blocker should still be waiting");
+
+        let mut values = Vec::new();
+        while let Some(value) = timeout(queue_drain_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for queue to drain")
+        {
+            values.push(value);
+        }
+
+        assert_eq!(values, vec![1, 2, 3, 4, 5, 6, 7, 8, 100, 9]);
     }
 
     #[tokio::test]

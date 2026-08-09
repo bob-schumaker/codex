@@ -62,6 +62,7 @@ use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_processors::read_server_diagnostics;
 use crate::request_serialization::QueuedInitializedRequest;
+use crate::request_serialization::RequestSerializationPriority;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
 use crate::skills_watcher::SkillsWatcher;
@@ -1061,11 +1062,13 @@ impl MessageProcessor {
             admit_initialized_client_request(connection_origin, codex_request.method_name())?;
         let connection_id = connection_request_id.connection_id;
         let serialization_scope = codex_request.serialization_scope();
-        if let Some(thread_id) = primary_input_reclaim_thread_id(
+        let primary_reclaim_thread_id = primary_input_reclaim_thread_id(
             connection_origin,
             admission_rule,
             serialization_scope.as_ref(),
-        ) {
+        )
+        .map(str::to_string);
+        if let Some(thread_id) = primary_reclaim_thread_id.as_deref() {
             self.controller_processor
                 .reclaim_for_primary_thread_input(thread_id)
                 .await?;
@@ -1080,6 +1083,7 @@ impl MessageProcessor {
         let client_version = session.client_version().map(str::to_string);
         let client_mcp_extensions = session.client_mcp_extensions();
         let error_request_id = connection_request_id.clone();
+        let dequeue_reclaim_thread_id = primary_reclaim_thread_id;
         let rpc_gate = Arc::clone(&session.rpc_gate);
         let session_for_request = Arc::clone(&session);
         let processor = Arc::clone(self);
@@ -1088,19 +1092,28 @@ impl MessageProcessor {
             rpc_gate,
             async move {
                 let processor_for_request = Arc::clone(&processor);
-                let result = processor_for_request
-                    .handle_initialized_client_request(InitializedClientRequest {
-                        connection_request_id,
-                        connection_origin,
-                        admission_rule,
-                        codex_request,
-                        session: session_for_request,
-                        request_context,
-                        app_server_client_name,
-                        client_version,
-                        client_mcp_extensions,
-                    })
-                    .await;
+                let result = async {
+                    if let Some(thread_id) = dequeue_reclaim_thread_id.as_deref() {
+                        processor_for_request
+                            .controller_processor
+                            .reclaim_for_primary_thread_input(thread_id)
+                            .await?;
+                    }
+                    processor_for_request
+                        .handle_initialized_client_request(InitializedClientRequest {
+                            connection_request_id,
+                            connection_origin,
+                            admission_rule,
+                            codex_request,
+                            session: session_for_request,
+                            request_context,
+                            app_server_client_name,
+                            client_version,
+                            client_mcp_extensions,
+                        })
+                        .await
+                }
+                .await;
                 if let Err(error) = result {
                     processor.outgoing.send_error(error_request_id, error).await;
                 }
@@ -1110,8 +1123,17 @@ impl MessageProcessor {
 
         if let Some(scope) = serialization_scope {
             let (key, access) = RequestSerializationQueueKey::from_scope(connection_id, scope);
+            let priority = match connection_origin {
+                ConnectionOrigin::ExternalController => {
+                    RequestSerializationPriority::ExternalController
+                }
+                ConnectionOrigin::Stdio
+                | ConnectionOrigin::InProcess
+                | ConnectionOrigin::WebSocket
+                | ConnectionOrigin::RemoteControl => RequestSerializationPriority::Primary,
+            };
             self.request_serialization_queues
-                .enqueue(key, access, request)
+                .enqueue_with_priority(key, access, priority, request)
                 .await;
         } else {
             tokio::spawn(async move {
