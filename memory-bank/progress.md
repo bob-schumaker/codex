@@ -125,8 +125,11 @@
   subscribers instead of raw broadcast, preserving visibility for approved
   subscribed external controllers after generic broadcasts were filtered away
   from external-controller origins.
+- App-server `thread/goal` update, clear, and snapshot fallbacks now use the
+  controller-aware thread sender, preserving primary/TUI broadcasts while adding
+  targeted copies for authorized external-controller recipients.
 - The latest Codex-side implementation commit is
-  `9b59a8c` for launch metadata publication, native approval coverage, exact
+  `e5d3141` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -141,7 +144,8 @@
   targeted main-thread lifecycle delivery, plus targeted main-thread status
   delivery, plus thread-scoped global notification targeting and
   listener-command thread-goal egress targeting, plus listener-warning
-  targeting and extension no-listener goal-update fallback targeting.
+  targeting, extension no-listener goal-update fallback targeting, and
+  app-server thread-goal fallback targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -226,6 +230,13 @@
   `just test -p codex-app-server extension` run timed out in
   `suite::v2::imagegen_extension::standalone_image_edit_uses_attached_model_visible_image`
   after sandbox image-read failure, outside the controller egress slice.
+- The latest focused validation for commit `e5d3141` is
+  `just test -p codex-app-server thread_goal_update_fallback_targets_external_controller_recipients thread_goal_clear_fallback_targets_external_controller_recipients`
+  passing 2/2 focused tests, `just test -p codex-app-server controller`
+  passing 77/77, `just test -p codex-app-server thread_goal` passing 9/9,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -239,8 +250,8 @@
   main-thread lifecycle and status delivery, plus thread-scoped global
   notification targeting, listener-command thread-goal egress targeting, and
   listener-warning targeting, plus extension no-listener goal-update fallback
-  targeting. There is no known uncommitted Codex-side source diff in this
-  checkpoint.
+  targeting and app-server thread-goal fallback targeting. There is no known
+  uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -271,7 +282,9 @@
   preserving primary/TUI broadcasts, including live listener-command thread
   goal update/clear/snapshot paths, running-thread resume goal snapshots, and
   listener warning notifications. Extension no-listener goal-update fallback now
-  targets thread subscribers instead of relying on raw broadcast.
+  targets thread subscribers instead of relying on raw broadcast. App-server
+  `thread/goal` update, clear, and snapshot fallbacks now use the
+  controller-aware thread sender.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -309,7 +322,8 @@
   filtering and targeted main-thread lifecycle and status delivery, plus
   thread-scoped global notification targeting and listener-command thread-goal
   egress targeting, listener-warning targeting, and extension no-listener
-  goal-update fallback targeting.
+  goal-update fallback targeting, plus app-server thread-goal fallback
+  targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

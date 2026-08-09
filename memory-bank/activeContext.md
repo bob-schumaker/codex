@@ -17,10 +17,10 @@
   notifications, and preserving global primary thread notifications while
   targeting external-controller copies, including listener-command thread goal
   updates, resume snapshots, listener warning notifications, and extension
-  no-listener goal-update fallback; remaining Codex-side review is centered on
-  implicit targets, egress transactionality, and subscription edges while
-  downstream discovery/display consumes the published local-controller metadata
-  contract.
+  no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
+  and snapshot fallbacks; remaining Codex-side review is centered on implicit
+  targets, egress transactionality, and subscription edges while downstream
+  discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -347,6 +347,17 @@
     `suite::v2::imagegen_extension::standalone_image_edit_uses_attached_model_visible_image`
     after sandbox image-read failure, which remains separate from this
     controller egress slice.
+  - Routed app-server `thread/goal` update, clear, and snapshot fallbacks
+    through the controller-aware thread sender. These no-listener and
+    closed-listener paths now preserve primary/TUI broadcast behavior while
+    sending targeted copies to authorized external-controller subscribers.
+  - Validated the app-server thread-goal fallback slice with
+    `just test -p codex-app-server thread_goal_update_fallback_targets_external_controller_recipients thread_goal_clear_fallback_targets_external_controller_recipients`
+    passing 2/2 focused tests, `just test -p codex-app-server controller`
+    passing 77/77, `just test -p codex-app-server thread_goal` passing 9/9,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -359,7 +370,8 @@
     generic broadcast filtering plus targeted main-thread lifecycle and status
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
-    no-listener goal-update fallback targeting.
+    no-listener goal-update fallback targeting, or app-server thread-goal
+    fallback targeting.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -380,9 +392,10 @@
   fencing, plus generic broadcast filtering and targeted main-thread lifecycle
   and status delivery, plus thread-scoped global and listener-command
   thread-goal notification targeting, plus listener-warning targeting and
-  extension no-listener goal-update fallback targeting.
+  extension no-listener goal-update fallback targeting, plus app-server
+  thread-goal fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `9b59a8c`.
+  commit `e5d3141`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
