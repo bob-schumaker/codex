@@ -2184,6 +2184,102 @@ fn queued_primary_thread_input_reclaims_after_controller_reacquires() -> Result<
 
 #[test]
 #[serial(app_server_tracing)]
+fn auto_attach_filters_external_controller_subscriptions_to_main_thread() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "auto_attach_filters_external_controller_subscriptions_to_main_thread",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_301),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let main = harness
+                .start_thread(/*request_id*/ 40_302, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&main.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_303),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+
+            harness
+                .processor
+                .connection_initialized(TEST_CONNECTION_ID, harness.session.request_attestation())
+                .await;
+            harness
+                .processor
+                .connection_initialized(
+                    EXTERNAL_CONNECTION_ID,
+                    external_session.request_attestation(),
+                )
+                .await;
+
+            harness
+                .processor
+                .try_attach_thread_listener_for_initialized_connections(
+                    main_thread_id,
+                    vec![(EXTERNAL_CONNECTION_ID, ConnectionOrigin::ExternalController)],
+                )
+                .await;
+            assert!(
+                harness
+                    .processor
+                    .thread_processor
+                    .subscribed_connection_ids_for_thread(main_thread_id)
+                    .await
+                    .contains(&EXTERNAL_CONNECTION_ID)
+            );
+
+            let secondary = harness
+                .start_thread(/*request_id*/ 40_304, /*trace*/ None)
+                .await;
+            let secondary_thread_id = ThreadId::from_string(&secondary.thread.id)?;
+            harness
+                .processor
+                .try_attach_thread_listener_for_initialized_connections(
+                    secondary_thread_id,
+                    vec![
+                        (TEST_CONNECTION_ID, ConnectionOrigin::Stdio),
+                        (EXTERNAL_CONNECTION_ID, ConnectionOrigin::ExternalController),
+                    ],
+                )
+                .await;
+            let secondary_subscriptions = harness
+                .processor
+                .thread_processor
+                .subscribed_connection_ids_for_thread(secondary_thread_id)
+                .await;
+            assert!(secondary_subscriptions.contains(&TEST_CONNECTION_ID));
+            assert!(!secondary_subscriptions.contains(&EXTERNAL_CONNECTION_ID));
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
 fn controller_participation_rejects_unproven_display_claims() -> Result<()> {
     run_current_thread_test_with_stack(
         "controller_participation_rejects_unproven_display_claims",

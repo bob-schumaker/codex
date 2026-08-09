@@ -393,6 +393,45 @@ impl ControllerRequestProcessor {
         result
     }
 
+    pub(crate) async fn can_auto_attach_thread_listener(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> bool {
+        let transition = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
+            coordinator
+                .require_standing_session(connection_id)
+                .map(|main_thread_id| main_thread_id == thread_id)
+                .map_err(controller_session_error)
+        });
+        let (result, rebind, events) = match transition {
+            Ok(transition) => transition,
+            Err(error) => {
+                tracing::debug!(
+                    ?connection_id,
+                    ?thread_id,
+                    ?error,
+                    "external controller cannot auto-attach thread listener"
+                );
+                return false;
+            }
+        };
+        self.rebind_pending_prompts(rebind).await;
+        self.send_controller_events(events).await;
+        match result {
+            Ok(can_attach) => can_attach,
+            Err(error) => {
+                tracing::debug!(
+                    ?connection_id,
+                    ?thread_id,
+                    ?error,
+                    "external controller cannot auto-attach thread listener"
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) fn main_thread_for_missing_session(
         &self,
         connection_id: ConnectionId,

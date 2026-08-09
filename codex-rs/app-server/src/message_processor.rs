@@ -809,6 +809,27 @@ impl MessageProcessor {
             .await;
     }
 
+    pub(crate) async fn try_attach_thread_listener_for_initialized_connections(
+        &self,
+        thread_id: ThreadId,
+        connections: Vec<(ConnectionId, ConnectionOrigin)>,
+    ) {
+        let mut connection_ids = Vec::new();
+        for (connection_id, origin) in connections {
+            if matches!(origin, ConnectionOrigin::ExternalController)
+                && !self
+                    .controller_processor
+                    .can_auto_attach_thread_listener(connection_id, thread_id)
+                    .await
+            {
+                continue;
+            }
+            connection_ids.push(connection_id);
+        }
+        self.try_attach_thread_listener(thread_id, connection_ids)
+            .await;
+    }
+
     pub(crate) async fn drain_background_tasks(&self) {
         self.models_refresh_worker.shutdown();
         self.thread_processor.drain_background_tasks().await;

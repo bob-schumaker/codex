@@ -616,16 +616,16 @@ fn sync_outbound_state_from_session(connection_state: &ConnectionState) {
         .store(experimental_api_enabled, Ordering::Release);
 }
 
-fn initialized_connection_ids(
+fn initialized_connections(
     connections: &HashMap<ConnectionId, ConnectionState>,
-) -> Vec<ConnectionId> {
+) -> Vec<(ConnectionId, ConnectionOrigin)> {
     connections
         .iter()
         .filter_map(|(connection_id, connection_state)| {
             connection_state
                 .session
                 .initialized()
-                .then_some(*connection_id)
+                .then_some((*connection_id, connection_state.origin))
         })
         .collect()
 }
@@ -1048,9 +1048,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     created = thread_created_rx.recv(), if listen_for_threads => {
                         match created {
                             Ok(thread_id) => {
-                                let connection_ids = initialized_connection_ids(&connections);
                                 processor
-                                    .try_attach_thread_listener(thread_id, connection_ids)
+                                    .try_attach_thread_listener_for_initialized_connections(
+                                        thread_id,
+                                        initialized_connections(&connections),
+                                    )
                                     .await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
