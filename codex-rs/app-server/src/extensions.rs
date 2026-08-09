@@ -31,6 +31,7 @@ use codex_thread_store::QueueStore;
 
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::request_processors::ControllerRequestProcessor;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadStateManager;
 
@@ -128,30 +129,113 @@ where
     Arc::new(builder.build())
 }
 
+#[cfg(test)]
 pub(crate) fn app_server_extension_event_sink(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
 ) -> Arc<dyn ExtensionEventSink> {
+    app_server_extension_event_sink_inner(outgoing, thread_state_manager, None)
+}
+
+pub(crate) fn app_server_extension_event_sink_with_controller_targeting(
+    outgoing: Arc<OutgoingMessageSender>,
+    thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
+) -> Arc<dyn ExtensionEventSink> {
+    app_server_extension_event_sink_inner(
+        outgoing,
+        thread_state_manager,
+        Some(controller_processor),
+    )
+}
+
+fn app_server_extension_event_sink_inner(
+    outgoing: Arc<OutgoingMessageSender>,
+    thread_state_manager: ThreadStateManager,
+    controller_processor: Option<ControllerRequestProcessor>,
+) -> Arc<dyn ExtensionEventSink> {
     Arc::new(AppServerExtensionEventSink {
         outgoing,
         thread_state_manager,
+        controller_processor,
     })
+}
+
+async fn extension_thread_outgoing(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_state_manager: &ThreadStateManager,
+    controller_processor: Option<&ControllerRequestProcessor>,
+    thread_id: ThreadId,
+) -> ThreadScopedOutgoingMessageSender {
+    let subscribed_connection_ids = thread_state_manager
+        .subscribed_connection_ids(thread_id)
+        .await;
+    if let Some(controller_processor) = controller_processor {
+        let request_recipients = controller_processor
+            .prompt_request_recipients(thread_id, subscribed_connection_ids.clone());
+        let notification_connection_ids = controller_processor
+            .thread_notification_recipients(thread_id, subscribed_connection_ids.clone());
+        let external_notification_connection_ids = controller_processor
+            .external_controller_thread_notification_recipients(
+                thread_id,
+                subscribed_connection_ids,
+            );
+        return ThreadScopedOutgoingMessageSender::new_with_controller_recipients(
+            Arc::clone(outgoing),
+            request_recipients,
+            notification_connection_ids,
+            external_notification_connection_ids,
+            thread_id,
+        );
+    }
+
+    ThreadScopedOutgoingMessageSender::new(
+        Arc::clone(outgoing),
+        subscribed_connection_ids,
+        thread_id,
+    )
+}
+
+async fn send_thread_goal_updated(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_state_manager: &ThreadStateManager,
+    controller_processor: Option<&ControllerRequestProcessor>,
+    thread_id: ThreadId,
+    turn_id: Option<String>,
+    goal: ThreadGoal,
+) {
+    let thread_outgoing = extension_thread_outgoing(
+        outgoing,
+        thread_state_manager,
+        controller_processor,
+        thread_id,
+    )
+    .await;
+    thread_outgoing
+        .send_server_notification(ServerNotification::ThreadGoalUpdated(
+            ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id,
+                goal,
+            },
+        ))
+        .await;
 }
 
 pub(crate) async fn send_thread_warning(
     outgoing: &Arc<OutgoingMessageSender>,
     thread_state_manager: &ThreadStateManager,
+    controller_processor: Option<&ControllerRequestProcessor>,
     thread_id: ThreadId,
     message: String,
 ) {
-    let subscribed_connection_ids = thread_state_manager
-        .subscribed_connection_ids(thread_id)
-        .await;
-    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
-        Arc::clone(outgoing),
-        subscribed_connection_ids,
+    let thread_outgoing = extension_thread_outgoing(
+        outgoing,
+        thread_state_manager,
+        controller_processor,
         thread_id,
-    );
+    )
+    .await;
     thread_outgoing
         .send_server_notification(ServerNotification::Warning(WarningNotification {
             thread_id: Some(thread_id.to_string()),
@@ -163,6 +247,7 @@ pub(crate) async fn send_thread_warning(
 struct AppServerExtensionEventSink {
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    controller_processor: Option<ControllerRequestProcessor>,
 }
 
 const MAX_EXTENSION_WARNING_BYTES: usize = 256;
@@ -192,24 +277,17 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 }
                 let outgoing = Arc::clone(&self.outgoing);
                 let thread_state_manager = self.thread_state_manager.clone();
+                let controller_processor = self.controller_processor.clone();
                 tokio::spawn(async move {
-                    let subscribed_connection_ids = thread_state_manager
-                        .subscribed_connection_ids(thread_id)
-                        .await;
-                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
-                        outgoing,
-                        subscribed_connection_ids,
+                    send_thread_goal_updated(
+                        &outgoing,
+                        &thread_state_manager,
+                        controller_processor.as_ref(),
                         thread_id,
-                    );
-                    thread_outgoing
-                        .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                            ThreadGoalUpdatedNotification {
-                                thread_id: thread_id.to_string(),
-                                turn_id,
-                                goal,
-                            },
-                        ))
-                        .await;
+                        turn_id,
+                        goal,
+                    )
+                    .await;
                 });
             }
             msg => {
@@ -255,6 +333,7 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
         }
         let outgoing = Arc::clone(&self.outgoing);
         let thread_state_manager = self.thread_state_manager.clone();
+        let controller_processor = self.controller_processor.clone();
         tokio::spawn(async move {
             if tokio::time::timeout(
                 EXTENSION_WARNING_SUBSCRIBER_TIMEOUT,
@@ -270,7 +349,14 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 );
                 return;
             }
-            send_thread_warning(&outgoing, &thread_state_manager, thread_id, message).await;
+            send_thread_warning(
+                &outgoing,
+                &thread_state_manager,
+                controller_processor.as_ref(),
+                thread_id,
+                message,
+            )
+            .await;
         });
     }
 }
@@ -295,6 +381,17 @@ pub(crate) fn guardian_agent_spawner(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::controller_enrollment::ControllerEnrollmentPolicy;
+    use crate::controller_enrollment::EmptyControllerEnrollmentSource;
+    use crate::controller_native_approval::NativeControllerParticipationApprover;
+    use crate::controller_native_approval::NativeControllerParticipationDecision;
+    use crate::controller_session::ControllerSessionClock;
+    use crate::controller_session::ControllerSessionConfig;
+    use crate::transport::ConnectionOrigin;
+    use codex_app_server_protocol::ControllerParticipationStatus;
+    use codex_app_server_protocol::ControllerRequestParticipationParams;
     use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
@@ -455,6 +552,147 @@ mod tests {
                 },
             }
         );
+        assert!(outgoing_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn controller_targeted_goal_fallback_suppresses_tui_unavailable_main_thread() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let tui_connection = ConnectionId(1);
+        let controller_connection = ConnectionId(2);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(tui_connection, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                tui_connection,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("connection should be subscribed");
+        let controller_processor =
+            tui_unavailable_controller_processor_for_tests(Arc::clone(&outgoing));
+        controller_processor.register_main_thread(thread_id, tui_connection);
+        assert!(
+            controller_processor
+                .request_participation(
+                    controller_connection,
+                    ConnectionOrigin::ExternalController,
+                    /*credential_proof*/ None,
+                    ControllerRequestParticipationParams {
+                        controller_name: "test-controller".to_string(),
+                        description: "test controller".to_string(),
+                    },
+                )
+                .await
+                .is_err()
+        );
+        assert!(outgoing_rx.try_recv().is_err());
+
+        send_thread_goal_updated(
+            &outgoing,
+            &thread_state_manager,
+            Some(&controller_processor),
+            thread_id,
+            Some("turn-1".to_string()),
+            api_thread_goal(thread_id),
+        )
+        .await;
+
+        assert!(
+            timeout(Duration::from_millis(50), outgoing_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_targeted_goal_fallback_targets_approved_controller_subscriber() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let tui_connection = ConnectionId(1);
+        let controller_connection = ConnectionId(2);
+        let thread_state_manager = ThreadStateManager::new();
+        for connection_id in [tui_connection, controller_connection] {
+            thread_state_manager
+                .connection_initialized(connection_id, ConnectionCapabilities::default())
+                .await;
+            thread_state_manager
+                .try_ensure_connection_subscribed(
+                    thread_id,
+                    connection_id,
+                    /*experimental_raw_events*/ false,
+                )
+                .await
+                .expect("connection should be subscribed");
+        }
+        let controller_processor = approved_controller_processor_for_tests(Arc::clone(&outgoing));
+        controller_processor.register_main_thread(thread_id, tui_connection);
+        let response = controller_processor
+            .request_participation(
+                controller_connection,
+                ConnectionOrigin::ExternalController,
+                /*credential_proof*/ None,
+                ControllerRequestParticipationParams {
+                    controller_name: "test-controller".to_string(),
+                    description: "test controller".to_string(),
+                },
+            )
+            .await
+            .expect("native participation approval should create a controller session");
+        assert_eq!(response.status, ControllerParticipationStatus::Approved);
+        while outgoing_rx.try_recv().is_ok() {}
+        let sink = app_server_extension_event_sink_with_controller_targeting(
+            outgoing,
+            thread_state_manager,
+            controller_processor,
+        );
+
+        sink.emit(thread_goal_updated_event(thread_id, "turn-1"));
+
+        let mut recipient_ids = Vec::new();
+        for _ in 0..2 {
+            let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+                .await
+                .expect("timed out waiting for thread goal update notification")
+                .expect("outgoing channel closed unexpectedly");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx: _,
+            } = envelope
+            else {
+                panic!("expected connection-targeted thread goal update notification");
+            };
+            let OutgoingMessage::AppServerNotification(envelope) = message else {
+                panic!("expected app-server thread goal update notification");
+            };
+            let ServerNotification::ThreadGoalUpdated(notification) = envelope.notification else {
+                panic!("expected thread goal update notification");
+            };
+            assert_eq!(
+                notification,
+                ThreadGoalUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    goal: api_thread_goal(thread_id),
+                }
+            );
+            recipient_ids.push(connection_id);
+        }
+        recipient_ids.sort_by_key(|connection_id| connection_id.0);
+        assert_eq!(recipient_ids, vec![tui_connection, controller_connection]);
         assert!(outgoing_rx.try_recv().is_err());
     }
 
@@ -654,6 +892,60 @@ mod tests {
         });
 
         assert!(outgoing_rx.try_recv().is_err());
+    }
+
+    fn tui_unavailable_controller_processor_for_tests(
+        outgoing: Arc<OutgoingMessageSender>,
+    ) -> ControllerRequestProcessor {
+        let approver: NativeControllerParticipationApprover = Arc::new(|_| {
+            Box::pin(async {
+                NativeControllerParticipationDecision::TuiUnavailable {
+                    reason: "owning TUI unavailable".to_string(),
+                }
+            })
+        });
+        ControllerRequestProcessor::new(
+            outgoing,
+            Arc::new(EmptyControllerEnrollmentSource),
+            Some(approver),
+            None,
+            ControllerEnrollmentPolicy::BestEffort,
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(5 * 60),
+            },
+        )
+    }
+
+    fn approved_controller_processor_for_tests(
+        outgoing: Arc<OutgoingMessageSender>,
+    ) -> ControllerRequestProcessor {
+        let approver: NativeControllerParticipationApprover =
+            Arc::new(|_| Box::pin(async { NativeControllerParticipationDecision::Approved }));
+        ControllerRequestProcessor::new(
+            outgoing,
+            Arc::new(EmptyControllerEnrollmentSource),
+            Some(approver),
+            None,
+            ControllerEnrollmentPolicy::BestEffort,
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(5 * 60),
+            },
+        )
+    }
+
+    fn api_thread_goal(thread_id: ThreadId) -> ThreadGoal {
+        ThreadGoal {
+            thread_id: thread_id.to_string(),
+            objective: "wire extension events".to_string(),
+            status: codex_app_server_protocol::ThreadGoalStatus::Active,
+            token_budget: Some(123),
+            tokens_used: 45,
+            time_used_seconds: 6,
+            created_at: 7,
+            updated_at: 8,
+        }
     }
 
     fn thread_goal_updated_event(thread_id: ThreadId, turn_id: &str) -> Event {

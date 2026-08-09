@@ -26,7 +26,7 @@ use crate::controller_session::ControllerSessionConfig;
 use crate::current_time::app_server_time_provider;
 use crate::error_code::invalid_request;
 use crate::extensions::ThreadExtensionDependencies;
-use crate::extensions::app_server_extension_event_sink;
+use crate::extensions::app_server_extension_event_sink_with_controller_targeting;
 use crate::extensions::guardian_agent_spawner;
 use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
@@ -364,9 +364,10 @@ impl MessageProcessor {
                 thread_extensions(
                     guardian_agent_spawner(thread_manager.clone()),
                     ThreadExtensionDependencies {
-                        event_sink: app_server_extension_event_sink(
+                        event_sink: app_server_extension_event_sink_with_controller_targeting(
                             outgoing.clone(),
                             thread_state_manager.clone(),
+                            controller_processor.clone(),
                         ),
                         auth_manager: auth_manager.clone(),
                         state_db: state_db.clone(),
