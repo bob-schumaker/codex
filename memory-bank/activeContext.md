@@ -589,7 +589,7 @@
   delivery classification, plus bounded per-connection external-controller
   ingress overload.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `6e69a87`.
+  commit `0e9b265`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

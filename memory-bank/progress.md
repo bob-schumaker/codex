@@ -160,7 +160,7 @@
   `embedded-unavailable`; onboarding and `codex exec` ignore the event as
   non-interactive controller state.
 - The latest Codex-side source checkpoint is
-  `6e69a87` for launch metadata publication, native approval coverage, exact
+  `0e9b265` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -184,7 +184,9 @@
   controller prompt replay fencing, and extension fallback goal/warning
   controller targeting, plus listener server-request resolution targeting, plus
   terminal local-controller acceptor failure reporting, metadata/socket cleanup,
-  and external-controller connection closure through the normal revocation path.
+  external-controller connection closure through the normal revocation path, and
+  bounded per-connection external-controller ingress with typed
+  `controller-overloaded` retry guidance.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -404,6 +406,14 @@
   upstream `rusty_v8` archive download due Python TLS certificate verification,
   so the successful host build used the repo wrapper `just build-code-mode-host`
   and the successful CLI build used `cargo build -p codex-cli -j 4`.
+- The latest focused validation for commit `0e9b265` is
+  `just test -p codex-app-server connection_rpc_gate request_serialization controller_overload saturated_external_controller_ingress_returns_typed_overload`
+  passing 19/19 focused tests, `just test -p codex-app-server` reaching 1227
+  passed, 2 zsh-fork timeout fixture failures after retry, and 1 skipped,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, `git diff --check` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
