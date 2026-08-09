@@ -5,6 +5,11 @@
 - Codex-side local-controller metadata now publishes enough launch information
   for controller discovery, including process ID, endpoint URI, nonce, and
   `mainThreadId` once available.
+- Codex-side embedded launch availability is implemented and validated:
+  embedded-supported, daemon-unsupported, remote-unsupported, policy-disabled,
+  embedded-unavailable, launch-failed, best-effort startup, required startup,
+  immutable `mainThreadId` metadata publication, and existing Unix
+  control-socket/default `unix://` behavior all have focused coverage.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -234,7 +239,7 @@
   local sequence for session refreshes, inbound notifications, inbound
   requests, and ownership-status updates.
 - The latest Codex-side source checkpoint is
-  `dd2c93e` for launch metadata publication, native approval coverage, exact
+  `a4f8a84` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -274,7 +279,10 @@
   fencing at begin-write, controller egress-overflow isolation/fallback
   coverage, and explicit controller `thread/unsubscribe` target/mutation
   fencing, plus TUI in-process ownership-status history-exclusion coverage,
-  plus TUI snapshot-local sequence/ownership-state bookkeeping.
+  plus TUI snapshot-local sequence/ownership-state bookkeeping, app-server-owned
+  in-process recovery snapshots carrying ownership status/epoch and pending
+  prompt replay, and the reconciled Codex-side Commit 18 availability/publication
+  behavior.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -626,54 +634,21 @@
   --check` passing before the docs/memory update, and `cargo build -p
   codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in 17.41s with the
   known `__eh_frame` linker warning.
+- Availability reconciliation validation after source audit passed
+  `just test -p codex-tui external_controller_availability embedded_app_server_requests_best_effort_controller_endpoint embedded_app_server_can_disable_controller_endpoint_by_policy embedded_app_server_can_require_controller_endpoint_by_policy embedded_app_server_start_failure_is_returned`
+  with 9/9 tests,
+  `just test -p codex-app-server best_effort_local_controller_endpoint_failure_allows_startup enabled_local_controller_endpoint_failure_fails_startup local_controller_main_thread_publish_updates_discovery_metadata local_controller_socket_retries_participation_after_main_thread_publish`
+  with 4/4 tests, and
+  `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket`
+  with 18/18 tests.
 
 ## In Flight
 
-- Codex-side normal-interface parity audit: no confirmed remaining
-  subscription/implicit-target gap after explicit `thread/unsubscribe` coverage
-  and TUI in-process ownership-status history-exclusion coverage, plus TUI
-  snapshot-local sequence/ownership-state bookkeeping and in-process
-  recovery-snapshot prompt/owner replay. Prior reviewed
-  areas include the committed cleanup,
-  resume/turn override gating,
-  cursor-binding, internally-sent resume cursor binding, owner-binding,
-  controller notification work, serialized-request priority/dequeue reclaim,
-  controller auto-subscribe filtering, and terminal sign-off/disconnect
-  subscription fencing, plus generic broadcast filtering and targeted
-  main-thread lifecycle and status delivery, plus thread-scoped global
-  notification targeting, listener-command thread-goal egress targeting, and
-  listener-warning targeting, plus extension no-listener goal/warning fallback
-  controller targeting and app-server thread-goal fallback targeting, plus
-  listener server-request resolution targeting, plus thread-scoped MCP OAuth
-  completion targeting, plus controller-origin
-  detached review fencing and realtime
-  context/configuration override gating, plus realtime text role fencing and
-  section-move implicit-target fencing, Guardian-denied TUI approval reclaim
-  coverage, archive/delete spawned-descendant subtree fencing, delivered
-  controller prompt replay fencing, and extension fallback goal/warning
-  controller targeting, listener server-request resolution targeting, and
-  embedded in-process transcript/item delivery preservation before the
-  app-server-client lossless bridge, plus centralized lossless delivery
-  classification shared by the embedded runtime writer and app-server-client,
-  terminal local-controller acceptor failure handling, bounded
-  external-controller ingress overload, and separate controller control-plane
-  ingress, plus pre-participation initialize-notification suppression coverage,
-  plus exhaustive TUI command reclaim classification, plus terminal
-  main-thread-close launch handling, plus in-process lifecycle/state
-  notification preservation, plus TUI realtime transcript rendering, plus TUI
-  app-server lag snapshot recovery, plus lossless `thread/started`
-  notification delivery through the in-process TUI bridge, plus controller
-  prompt egress-fencing at begin-write, plus controller egress-overflow
-  isolation/fallback coverage, plus TUI in-process ownership-status
-  history-exclusion coverage, plus TUI snapshot-local sequence/ownership-state
-  bookkeeping and in-process recovery-snapshot prompt/owner replay.
-  There is no known uncommitted Codex-side source diff in that source
-  checkpoint.
-- Commit 17 sequence/recovery drift is closed for embedded TUI sessions: lag
-  recovery now uses an internal app-server-owned snapshot containing the normal
-  thread view, authoritative `lastSequence`, current controller ownership
-  status/epoch, and pending prompt requests for replay. Remote/daemon TUI
-  sessions retain the public `thread/read` fallback.
+- No concrete Codex-side source gap is currently confirmed after the
+  normal-interface, reclaim/reflection, prompt, egress, subscription,
+  launch-availability, and in-process recovery audits. New Codex work should
+  start from a fresh, narrow downstream finding rather than a generic parity
+  search.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -777,7 +752,9 @@
   internal app-server-owned snapshot containing the normal thread view,
   authoritative `lastSequence`, current controller ownership status/epoch, and
   pending prompt requests for replay; remote/daemon TUI sessions keep the public
-  `thread/read` fallback.
+  `thread/read` fallback. Codex-side Commit 18 availability/publication behavior
+  is also validated for embedded, daemon-backed, explicit remote,
+  policy-disabled, best-effort unavailable, and policy-required launch modes.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -823,8 +800,9 @@
   initialize-notification suppression coverage, explicit `thread/unsubscribe`
   target/mutation fencing, TUI in-process ownership-status history-exclusion
   coverage, and in-process recovery-snapshot prompt/owner replay.
-- For the next Codex-side slice, start from source inspection rather than
-  assuming the previous interrupted exploration found a confirmed bug.
+- If downstream reports a new Codex-side defect, start from source inspection
+  and focused reproduction rather than assuming the previous interrupted
+  exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
 - Do not expect a local-controller launch to become available again after a

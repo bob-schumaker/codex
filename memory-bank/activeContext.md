@@ -1,67 +1,17 @@
 # Active Context
 
-- Current focus: continue external-controller normal-interface parity after
-  binding collection-filtered controller cursors, gating controller-origin turn
-  input shapes, binding internally-sent controller `thread/resume` response
-  cursors, making native TUI-unavailable launch state terminal, and fencing
-  terminal TUI-unavailable main-thread egress, and rebinding controller-owned
-  prompts plus subscriptions before disconnect RPC drain, plus publishing
-  controller authorization/control-ownership notifications from the session
-  transition boundary, and prioritizing queued TUI thread input over queued
-  controller work with dequeue-time reclaim, and filtering automatic listener
-  attachment so external controllers only auto-subscribe to their authorized
-  main thread, and removing controller main-thread subscriptions before
-  terminal sign-off/disconnect revocation events, and filtering generic
-  broadcasts away from external controllers while explicitly targeting
-  authorized main-thread lifecycle notifications and status-change
-  notifications, and preserving global primary thread notifications while
-  targeting external-controller copies, including listener-command thread goal
-  updates, resume snapshots, listener warning notifications, and extension
-  no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
-  and snapshot fallbacks, plus thread-scoped MCP OAuth completion
-  notifications, plus fencing controller-origin detached reviews so
-  `review/start` stays on the authorized main thread, plus gating
-  controller-origin realtime startup context/configuration overrides and
-  realtime text role injection, plus fencing controller-origin section moves
-  from ordering the main thread relative to another thread, plus focused TUI
-  reclaim coverage for Guardian-denied approvals, plus making TUI command
-  reclaim classification exhaustive, plus fencing
-  controller-origin archive/delete from spawned-descendant subtree targets, plus
-  skipping running-thread resume replay for controller prompts after external
-  delivery, plus routing app-server extension fallback goal/warning egress
-  through controller-aware recipient computation, plus routing listener-ordered
-  `serverRequest/resolved` egress through the controller-aware thread sender,
-  plus preserving embedded in-process transcript/item delivery before the
-  client-side lossless bridge sees reflected controller work, plus centralizing
-  the embedded app-server/app-server-client lossless delivery classifier, plus
-  closing established external controllers and removing discovery metadata when
-  the local-controller acceptor hits a terminal failure, plus reporting late
-  local-controller endpoint failure to the TUI as `embedded-unavailable`, plus
-  bounding initialized external-controller ingress per connection and returning
-  typed `controller-overloaded` responses before queued app-server work can grow
-  without limit, plus marking the controller launch terminal when the immutable
-  main thread is closed or unloaded, plus preserving controller-relevant thread
-  lifecycle/state notifications across the in-process TUI delivery bridge under
-  backpressure, plus preserving reasoning summary section boundaries across the
-  same lossless bridge, plus reflecting realtime transcript notifications in
-  normal TUI history paths, plus surfacing typed controller prompt-reply
-  rejections back to the external-controller connection without resolving the
-  pending prompt, plus adding protocol/export coverage for controller
-  notification schemas and all canonical controller error-code wire names, plus
-  TUI app-server lag snapshot recovery, plus lossless `thread/started`
-  delivery through the in-process TUI bridge, plus lossless
-  controller-visible lifecycle/state notifications through the embedded
-  runtime and app-server-client bridge, plus explicit controller
-  `thread/unsubscribe` target-binding coverage, plus TUI in-process
-  ownership-status history-exclusion coverage, plus TUI snapshot-local
-  sequence/ownership-state bookkeeping, plus app-server-owned in-process
-  recovery snapshots carrying ownership status/epoch and pending prompt replay;
-  current source audit has no confirmed remaining Codex-side
-  subscription/implicit-target gap while downstream discovery/display consumes
-  the published local-controller metadata contract. The previous Commit 17
-  sequence/recovery drift is now closed for embedded TUI sessions by the
-  internal app-server recovery snapshot; remote/daemon TUI sessions retain the
-  public `thread/read` fallback.
+- Current focus: Codex-side Commit 18 availability/publication behavior is
+  implemented and freshly revalidated. Embedded TUI launches request and report
+  the local-controller endpoint by policy, metadata publishes `mainThreadId`
+  once the immutable main thread exists, best-effort and required endpoint
+  failures diverge as designed, late acceptor failure reaches the TUI as
+  `embedded-unavailable`, and existing Unix control-socket/default `unix://`
+  behavior remains covered. The current source audit has no confirmed remaining
+  Codex-side subscription, implicit-target, launch-availability, or recovery
+  gap. Remaining known work is downstream controller-host discovery,
+  presentation-state separation, deterministic slot auto-assignment, and the
+  downstream multi-launch acceptance rerun against the published
+  `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
 
@@ -787,82 +737,38 @@
     app-server fixer hunks were reverted, plus `cargo build -p codex-cli --bin codex`
     rebuilding `codex-rs/target/debug/codex` in 21.72s with the known
     `__eh_frame` linker warning.
+  - Reconciled Commit 18 availability/publication status against current source.
+    Embedded TUI startup now reports the documented controller availability
+    states, default best-effort endpoint startup, policy-disabled and
+    policy-required behavior, and unsupported daemon/remote launch modes.
+    App-server startup preserves the best-effort versus required acceptor
+    failure split, publishes `mainThreadId` to discovery metadata when the TUI
+    main thread exists, and lets controllers retry same-connection
+    participation while the main thread is still starting. Transport coverage
+    keeps local-controller metadata/nonce/acceptor behavior separate from
+    existing Unix control-socket/default `unix://` behavior.
+  - Validated the availability reconciliation with
+    `just test -p codex-tui external_controller_availability embedded_app_server_requests_best_effort_controller_endpoint embedded_app_server_can_disable_controller_endpoint_by_policy embedded_app_server_can_require_controller_endpoint_by_policy embedded_app_server_start_failure_is_returned`
+    passing 9/9,
+    `just test -p codex-app-server best_effort_local_controller_endpoint_failure_allows_startup enabled_local_controller_endpoint_failure_fails_startup local_controller_main_thread_publish_updates_discovery_metadata local_controller_socket_retries_participation_after_main_thread_publish`
+    passing 4/4, and
+    `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket`
+    passing 18/18.
 - In progress:
-  - Selecting the next Codex-side parity slice around any remaining implicit
-    targets and long-lived subscription edges not
-    covered by sign-off, authorization-expiry cleanup, exact-thread and
-    collection-filtered cursor binding, prompt owner-epoch binding,
-    current-time owner routing, resume/turn override gating, internally-sent
-    resume cursor binding, idempotent acquire, controller notifications, or
-    serialized-request priority/dequeue reclaim, or controller auto-subscribe
-    filtering, or terminal sign-off/disconnect subscription fencing, or
-    generic broadcast filtering plus targeted main-thread lifecycle and status
-    delivery, or thread-scoped global and listener-command thread-goal
-    notification targeting, listener-warning targeting, or extension
-    no-listener goal/warning fallback controller targeting, or app-server
-    thread-goal fallback targeting, or listener server-request resolution
-    targeting, or thread-scoped MCP OAuth completion targeting, or
-    controller-origin detached review fencing, or
-    controller-origin realtime context/configuration override gating, or
-    controller-origin realtime text role fencing, or controller-origin
-    section-move implicit target fencing, or controller-origin archive/delete
-    spawned-descendant subtree fencing, or delivered controller prompt replay
-    fencing, or terminal local-controller acceptor failure handling, or late
-    endpoint-unavailable TUI reporting, or bounded controller ingress overload,
-    or separate controller control-plane ingress, or pre-participation
-    initialize-notification suppression, or exhaustive TUI command reclaim
-    classification, or terminal main-thread-close launch handling, or
-    in-process lifecycle/state notification preservation, or controller
-    prompt-rejection error surfacing, or controller notification schema
-    coverage, or realtime transcript/lifecycle delivery preservation, or TUI
-    realtime-error rendering, or TUI realtime transcript rendering, or TUI
-    app-server lag snapshot recovery, or lossless `thread/started`
-    notification delivery, or controller prompt egress-fencing at begin-write,
-    or controller egress-overflow isolation/fallback coverage, or TUI
-    in-process ownership-status history-exclusion coverage, or TUI
-    snapshot-local sequence/ownership-state bookkeeping, or in-process
-    recovery-snapshot prompt/owner replay.
-  - Downstream controller-host implementation for file-watch discovery, health
-    model separation, and deterministic auto-assignment.
+  - Downstream controller-host implementation for file-watch discovery/full
+    rescans of `$CODEX_HOME/local-controllers`, launch-health versus
+    authorization versus slot-assignment state separation, and deterministic
+    auto-assignment.
 - Not started:
   - Downstream acceptance rerun across multiple live Codex launches after the
     controller host consumes the metadata-directory discovery contract.
 
 ## Next Steps
 
-- Keep tightening app-server normal-interface parity around any remaining
-  implicit targets and long-lived subscription edges beyond the
-  committed exact-thread/collection cursor binding, sign-off cleanup,
-  authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
-  current-time owner routing, resume/turn override gates, and internally-sent
-  resume cursor binding, plus terminal TUI-unavailable launch handling and
-  controller authorization/ownership notification emission, plus
-  serialized-request priority and dequeue-time TUI reclaim, plus controller
-  auto-subscribe filtering, plus terminal sign-off/disconnect subscription
-  fencing, plus generic broadcast filtering and targeted main-thread lifecycle
-  and status delivery, plus thread-scoped global and listener-command
-  thread-goal notification targeting, plus listener-warning targeting and
-  extension no-listener goal/warning fallback controller targeting, plus app-server
-  thread-goal fallback targeting, plus listener server-request resolution
-  targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
-  in-process transcript/item delivery preservation and centralized lossless
-  delivery classification, including reasoning summary part-added notifications,
-  plus realtime transcript/lifecycle delivery preservation, plus bounded
-  per-connection external-controller ingress overload and separate controller
-  control-plane ingress, plus pre-participation initialize-notification
-  suppression coverage, plus exhaustive TUI command reclaim classification, plus terminal
-  main-thread-close launch handling, plus in-process lifecycle/state
-  notification preservation, plus controller prompt-rejection error surfacing,
-  plus controller notification schema coverage, plus reasoning-summary-part
-  lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
-  transcript rendering, plus TUI app-server lag snapshot recovery, plus
-  lossless `thread/started` notification delivery, plus controller prompt
-  egress-fencing at begin-write, plus controller egress-overflow
-  isolation/fallback coverage, plus TUI in-process ownership-status
-  history-exclusion coverage, plus in-process recovery-snapshot prompt/owner
-  replay.
-- Treat the source tree as ready for the next narrow implementation slice after
-  the current recovery-snapshot source/docs commit.
+- Treat the Codex source tree as having no confirmed remaining local-controller
+  launch-availability, normal-interface admission, TUI reclaim/reflection,
+  prompt, egress, subscription, or in-process recovery gap until a narrower
+  downstream finding identifies one.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

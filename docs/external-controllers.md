@@ -325,6 +325,8 @@ At the in-process TUI sequence-preservation slice, the cumulative goal cost was
 24,089,821 tokens and 96,994 seconds (approximately 26h 56m 34s).
 At the in-process recovery-snapshot slice, the cumulative goal cost was
 24,507,618 tokens and 98,385 seconds (approximately 27h 19m 45s).
+At the availability reconciliation slice, the cumulative goal cost was
+24,982,209 tokens and 100,159 seconds (approximately 27h 49m 19s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -485,6 +487,9 @@ Recorded build and validation evidence:
 | `just fix -p codex-tui` | Passed after the in-process recovery-snapshot slice. | Cargo reported 27.68s. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; final binary size was 757,129,192 bytes. | Cargo reported 21.72s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` | Passed after the in-process recovery-snapshot source/docs slice. | Subsecond. |
+| `just test -p codex-tui external_controller_availability embedded_app_server_requests_best_effort_controller_endpoint embedded_app_server_can_disable_controller_endpoint_by_policy embedded_app_server_can_require_controller_endpoint_by_policy embedded_app_server_start_failure_is_returned` | Passed: 9 test runs, 9 passed, 3460 skipped. This covers embedded-supported, embedded-unavailable, policy-disabled, launch-failed, daemon-unsupported, remote-unsupported, best-effort startup, disabled startup, required startup, and startup failure propagation. | Compile reported 24.32s; nextest reported 1.082s. |
+| `just test -p codex-app-server best_effort_local_controller_endpoint_failure_allows_startup enabled_local_controller_endpoint_failure_fails_startup local_controller_main_thread_publish_updates_discovery_metadata local_controller_socket_retries_participation_after_main_thread_publish` | Passed: 4 test runs, 4 passed, 1256 skipped. This covers best-effort endpoint failure continuing startup, required endpoint failure aborting startup, metadata `mainThreadId` publication without replacing the immutable main-thread binding, and retryable same-connection participation before main-thread readiness. | Compile reported 20.10s; nextest reported 5.850s. |
+| `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket` | Passed: 18 test runs, 18 passed, 143 skipped. This covers local-controller metadata, nonce, peer-credential, cleanup, acceptor-failure reporting, main-thread metadata republication, and existing Unix control-socket/default `unix://` parsing and WebSocket upgrade behavior. | Compile reported 1.02s; nextest reported 0.300s. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -497,6 +502,15 @@ embedded TUI sessions: the app-server now builds an internal snapshot containing
 the normal thread view, authoritative sequence, current interactive ownership
 status/epoch, and pending prompt requests for TUI replay. Remote/daemon TUI
 sessions retain the public `thread/read` fallback.
+
+Availability reconciliation note: the current source satisfies Commit 18's
+Codex-side launch-mode scope. Embedded TUI launches request the local-controller
+endpoint by default and publish `$CODEX_HOME/local-controllers` metadata when
+the endpoint is available. Policy-disabled, best-effort unavailable,
+policy-required launch failure, daemon-backed, and explicit remote launch modes
+produce the documented availability states. The remaining discovery,
+presentation, and auto-assignment work is downstream controller-host product
+work against the published metadata contract.
 
 ## Relevant implementation seams
 

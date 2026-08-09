@@ -447,6 +447,19 @@ ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
   - standalone `codex app-server --listen unix://...` and daemon/control-socket
     regression tests
   - TUI snapshot tests only if user-visible text changes
+  - implemented checkpoint in the current availability reconciliation slice:
+    - embedded TUI startup requests a best-effort local-controller endpoint by
+      default, can disable or require it by policy, and reports supported,
+      unavailable, disabled, required-failure, daemon-unsupported, and
+      remote-unsupported availability states;
+    - best-effort acceptor startup failure allows embedded app-server startup,
+      required acceptor startup failure aborts launch, late terminal acceptor
+      failure closes controller sessions through the normal revocation path and
+      reports `embedded-unavailable`, and metadata publication updates
+      `mainThreadId` once without replacing the immutable main-thread binding;
+      and
+    - local-controller transport coverage preserves nonce-gated metadata
+      publication and existing Unix control-socket/default `unix://` behavior.
 
 ### 8. Downstream controller-host discovery and presentation
 
