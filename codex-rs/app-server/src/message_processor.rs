@@ -12,6 +12,7 @@ use crate::controller_admission::AdmissionRule;
 use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
 use crate::controller_admission::admit_initialized_client_request;
+use crate::controller_admission::controller_experimental_not_enabled;
 use crate::controller_admission::controller_not_allowed;
 use crate::controller_admission::controller_overloaded;
 use crate::controller_admission::controller_transport_closing;
@@ -1111,6 +1112,9 @@ impl MessageProcessor {
         if let Some(reason) = codex_request.experimental_reason()
             && !session.experimental_api_enabled()
         {
+            if matches!(connection_origin, ConnectionOrigin::ExternalController) {
+                return Err(controller_experimental_not_enabled(reason));
+            }
             return Err(invalid_request(experimental_required_message(reason)));
         }
         let admission_rule =

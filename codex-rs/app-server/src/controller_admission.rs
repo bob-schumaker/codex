@@ -347,6 +347,26 @@ pub(crate) fn controller_not_allowed(message: &str) -> JSONRPCErrorError {
     }
 }
 
+pub(crate) fn controller_experimental_not_enabled(reason: &str) -> JSONRPCErrorError {
+    JSONRPCErrorError {
+        code: INVALID_REQUEST_ERROR_CODE,
+        message: format!("{reason} requires experimentalApi capability"),
+        data: Some(
+            serde_json::to_value(ControllerErrorData {
+                code: ControllerErrorCode::ExperimentalNotEnabled,
+                retry: ControllerRetryDisposition::Reconnect,
+                retry_after_ms: None,
+                launch_state: None,
+                main_thread_id: None,
+                session_id: None,
+                authorization_epoch: None,
+                owner_epoch: None,
+            })
+            .unwrap_or(serde_json::Value::Null),
+        ),
+    }
+}
+
 pub(crate) fn controller_transport_closing() -> JSONRPCErrorError {
     JSONRPCErrorError {
         code: INVALID_REQUEST_ERROR_CODE,

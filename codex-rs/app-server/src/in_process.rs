@@ -2714,6 +2714,151 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn local_controller_endpoint_requires_experimental_api_opt_in() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_401,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": false,
+                },
+            })),
+        )
+        .await;
+        let initialize_response: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_401).await;
+        assert!(initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_402,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare-no-exp".to_string(),
+                description: "controller without experimental opt-in".to_string(),
+            },
+        )
+        .await;
+        let missing_opt_in = read_websocket_error(&mut websocket, /*expected_id*/ 20_402).await;
+        assert_eq!(
+            missing_opt_in.error.message,
+            "controller/requestParticipation requires experimentalApi capability"
+        );
+        let missing_opt_in_data: ControllerErrorData = serde_json::from_value(
+            missing_opt_in
+                .error
+                .data
+                .expect("experimental-not-enabled error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            missing_opt_in_data,
+            ControllerErrorData {
+                code: ControllerErrorCode::ExperimentalNotEnabled,
+                retry: ControllerRetryDisposition::Reconnect,
+                retry_after_ms: None,
+                launch_state: None,
+                main_thread_id: None,
+                session_id: None,
+                authorization_epoch: None,
+                owner_epoch: None,
+            }
+        );
+
+        drop(websocket);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(10_401),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+
+        let mut opted_in_websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut opted_in_websocket,
+            /*request_id*/ 20_403,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let opted_in_initialize_response: serde_json::Value =
+            read_websocket_response(&mut opted_in_websocket, /*expected_id*/ 20_403).await;
+        assert!(opted_in_initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut opted_in_websocket,
+            /*request_id*/ 20_404,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+
+        let participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut opted_in_websocket, /*expected_id*/ 20_404).await;
+        assert_eq!(
+            participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let session = participation.session.expect("approved session");
+        assert_eq!(session.main_thread_id, started.thread.id);
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn local_controller_initialize_suppresses_pre_participation_notifications() {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
         let mut args = build_test_start_args(
