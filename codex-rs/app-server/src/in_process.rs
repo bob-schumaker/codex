@@ -2789,6 +2789,273 @@ mod tests {
             .expect("in-process runtime should shutdown cleanly");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_sessions_are_isolated_per_launch() {
+        let first_codex_home = TempDir::new_in("/tmp").expect("first temp dir");
+        let first_args = build_test_start_args(
+            first_codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut first_client = start(first_args)
+            .await
+            .expect("first local-controller startup should succeed");
+        first_client._test_codex_home = Some(first_codex_home);
+
+        let second_codex_home = TempDir::new_in("/tmp").expect("second temp dir");
+        let second_args = build_test_start_args(
+            second_codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut second_client = start(second_args)
+            .await
+            .expect("second local-controller startup should succeed");
+        second_client._test_codex_home = Some(second_codex_home);
+
+        let first_started: ThreadStartResponse = serde_json::from_value(
+            first_client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(12_001),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("first thread/start transport should work")
+                .expect("first thread/start should succeed"),
+        )
+        .expect("first thread/start response should parse");
+        let second_started: ThreadStartResponse = serde_json::from_value(
+            second_client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(12_002),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("second thread/start transport should work")
+                .expect("second thread/start should succeed"),
+        )
+        .expect("second thread/start response should parse");
+
+        let first_metadata = first_client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("first local-controller endpoint should be published");
+        let second_metadata = second_client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("second local-controller endpoint should be published");
+        assert_ne!(first_metadata.launch_id, second_metadata.launch_id);
+        assert_ne!(first_metadata.endpoint_uri, second_metadata.endpoint_uri);
+
+        let mut first_websocket = connect_local_controller_websocket(&first_metadata).await;
+        let mut second_websocket = connect_local_controller_websocket(&second_metadata).await;
+
+        for (request_id, websocket) in [
+            (23_001, &mut first_websocket),
+            (24_001, &mut second_websocket),
+        ] {
+            send_websocket_request(
+                websocket,
+                request_id,
+                "initialize",
+                Some(serde_json::json!({
+                    "clientInfo": {
+                        "name": "codex-waveshare",
+                        "version": "0.0.0-test",
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                    },
+                })),
+            )
+            .await;
+            let initialize_response: serde_json::Value =
+                read_websocket_response(websocket, request_id).await;
+            assert!(initialize_response.get("userAgent").is_some());
+        }
+
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 23_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare-first".to_string(),
+                description: "first launch controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut first_client,
+            "codex-waveshare-first",
+            "first launch controller",
+            first_started.thread.id.as_str(),
+        )
+        .await;
+        let first_participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 23_002).await;
+        assert_eq!(
+            first_participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let first_session = first_participation.session.expect("first approved session");
+        assert_eq!(first_session.main_thread_id, first_started.thread.id);
+        assert!(first_session.active_lease.is_some());
+        expect_next_controller_ownership_status(
+            &mut first_client,
+            first_started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: first_session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut second_websocket,
+            /*request_id*/ 24_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare-second".to_string(),
+                description: "second launch controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut second_client,
+            "codex-waveshare-second",
+            "second launch controller",
+            second_started.thread.id.as_str(),
+        )
+        .await;
+        let second_participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 24_002).await;
+        assert_eq!(
+            second_participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let second_session = second_participation
+            .session
+            .expect("second approved session");
+        assert_eq!(second_session.main_thread_id, second_started.thread.id);
+        assert!(second_session.active_lease.is_some());
+        expect_next_controller_ownership_status(
+            &mut second_client,
+            second_started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: second_session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 23_003,
+            "thread/list",
+            &serde_json::json!({ "limit": 100 }),
+        )
+        .await;
+        let first_list: ThreadListResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 23_003).await;
+        assert_eq!(
+            first_list
+                .data
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>(),
+            vec![first_started.thread.id.clone()]
+        );
+
+        send_websocket_typed_request(
+            &mut second_websocket,
+            /*request_id*/ 24_003,
+            "thread/list",
+            &serde_json::json!({ "limit": 100 }),
+        )
+        .await;
+        let second_list: ThreadListResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 24_003).await;
+        assert_eq!(
+            second_list
+                .data
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>(),
+            vec![second_started.thread.id.clone()]
+        );
+
+        send_websocket_request(
+            &mut first_websocket,
+            /*request_id*/ 23_004,
+            "controller/signOff",
+            None,
+        )
+        .await;
+        let _: ControllerSignOffResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 23_004).await;
+        expect_next_controller_ownership_status(
+            &mut first_client,
+            first_started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Tui,
+            /*expected_owner_epoch*/ 2,
+            ControllerControlOwnershipChangedReason::SignOff,
+        )
+        .await;
+        expect_websocket_closed(&mut first_websocket).await;
+
+        send_websocket_typed_request(
+            &mut second_websocket,
+            /*request_id*/ 24_004,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: second_started.thread.id.clone(),
+                name: "second-controller-still-active".to_string(),
+            },
+        )
+        .await;
+        let _: ThreadSetNameResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 24_004).await;
+
+        let second_read: ThreadReadResponse = serde_json::from_value(
+            second_client
+                .request(ClientRequest::ThreadRead {
+                    request_id: RequestId::Integer(12_003),
+                    params: ThreadReadParams {
+                        thread_id: second_started.thread.id.clone(),
+                        include_turns: false,
+                    },
+                })
+                .await
+                .expect("second TUI thread/read transport should work")
+                .expect("second TUI thread/read should succeed"),
+        )
+        .expect("second thread/read response should parse");
+        assert_eq!(
+            second_read.thread.name,
+            Some("second-controller-still-active".to_string())
+        );
+
+        first_client
+            .shutdown()
+            .await
+            .expect("first in-process runtime should shutdown cleanly");
+        second_client
+            .shutdown()
+            .await
+            .expect("second in-process runtime should shutdown cleanly");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn in_process_outbound_router_shutdown_does_not_wait_for_retained_sender() {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(/*buffer*/ 1);
