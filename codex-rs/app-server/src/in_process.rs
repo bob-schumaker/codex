@@ -179,6 +179,12 @@ pub fn server_notification_requires_delivery(notification: &ServerNotification) 
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
+            | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadArchived(_)
+            | ServerNotification::ThreadDeleted(_)
+            | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadClosed(_)
+            | ServerNotification::ThreadNameUpdated(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ControllerAuthorizationChanged(_)
             | ServerNotification::ControllerControlOwnershipChanged(_)
@@ -1520,10 +1526,14 @@ mod tests {
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::ThreadArchivedNotification;
+    use codex_app_server_protocol::ThreadClosedNotification;
+    use codex_app_server_protocol::ThreadDeletedNotification;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ThreadListResponse;
     use codex_app_server_protocol::ThreadLoadedListParams;
     use codex_app_server_protocol::ThreadLoadedListResponse;
+    use codex_app_server_protocol::ThreadNameUpdatedNotification;
     use codex_app_server_protocol::ThreadReadParams;
     use codex_app_server_protocol::ThreadReadResponse;
     use codex_app_server_protocol::ThreadSearchParams;
@@ -1532,6 +1542,9 @@ mod tests {
     use codex_app_server_protocol::ThreadSetNameResponse;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ThreadStatus;
+    use codex_app_server_protocol::ThreadStatusChangedNotification;
+    use codex_app_server_protocol::ThreadUnarchivedNotification;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
@@ -2651,6 +2664,38 @@ mod tests {
                     completed_at: Some(0),
                     duration_ms: None,
                 },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
+                thread_id: "thread-1".to_string(),
+                status: ThreadStatus::Idle,
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadDeleted(ThreadDeletedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadUnarchived(ThreadUnarchivedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: "thread-1".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadNameUpdated(ThreadNameUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                thread_name: Some("renamed".to_string()),
             })
         ));
         assert!(server_notification_requires_delivery(

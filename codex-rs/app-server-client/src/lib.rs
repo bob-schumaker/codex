@@ -2476,6 +2476,62 @@ mod tests {
         ));
         assert!(event_requires_delivery(
             &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadStatusChanged(
+                    codex_app_server_protocol::ThreadStatusChangedNotification {
+                        thread_id: "thread".to_string(),
+                        status: codex_app_server_protocol::ThreadStatus::Idle,
+                    },
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadArchived(
+                    codex_app_server_protocol::ThreadArchivedNotification {
+                        thread_id: "thread".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadDeleted(
+                    codex_app_server_protocol::ThreadDeletedNotification {
+                        thread_id: "thread".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadUnarchived(
+                    codex_app_server_protocol::ThreadUnarchivedNotification {
+                        thread_id: "thread".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadClosed(
+                    codex_app_server_protocol::ThreadClosedNotification {
+                        thread_id: "thread".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadNameUpdated(
+                    codex_app_server_protocol::ThreadNameUpdatedNotification {
+                        thread_id: "thread".to_string(),
+                        thread_name: Some("renamed".to_string()),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
                 codex_app_server_protocol::ServerNotification::AgentMessageDelta(
                     codex_app_server_protocol::AgentMessageDeltaNotification {
                         thread_id: "thread".to_string(),
