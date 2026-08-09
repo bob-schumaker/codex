@@ -51,10 +51,11 @@
   TUI app-server lag snapshot recovery, plus lossless `thread/started`
   delivery through the in-process TUI bridge, plus lossless
   controller-visible lifecycle/state notifications through the embedded
-  runtime and app-server-client bridge;
-  remaining Codex-side review is centered on any other implicit
-  targets, egress transactionality, and subscription edges while downstream
-  discovery/display consumes the published local-controller metadata contract.
+  runtime and app-server-client bridge, plus explicit controller
+  `thread/unsubscribe` target-binding coverage;
+  current source audit has no confirmed remaining Codex-side
+  subscription/implicit-target gap while downstream discovery/display consumes
+  the published local-controller metadata contract.
 
 ## Current Status
 

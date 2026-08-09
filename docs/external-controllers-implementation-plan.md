@@ -108,6 +108,13 @@ Commit 3: Add the generated two-axis admission registry.
   - continuation tests proving cursors, subscriptions, and resume tokens remain
     bound to the same `ConnectionId` and main thread and cannot be replayed
     across connections or threads
+  - implemented checkpoint `fee11eb`:
+    - explicit `thread/unsubscribe` has exact-thread target-extraction coverage;
+      and
+    - an approved controller with a standing read/subscription session can
+      unsubscribe from the main thread after releasing input ownership, while a
+      wrong-thread unsubscribe is rejected before the handler can mutate
+      subscriptions
 
 Commit 4: Wire admission before initialized dispatch with controller origins
 still disabled.

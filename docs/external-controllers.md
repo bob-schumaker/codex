@@ -312,7 +312,9 @@ lossless-delivery slice, the cumulative goal cost was 20,492,362 tokens and
 egress-fencing slice, the cumulative goal cost was 21,272,170 tokens and
 87,013 seconds (approximately 24h 10m 13s). At the controller egress-overflow
 coverage slice, the cumulative goal cost was 21,524,837 tokens and 87,580
-seconds (approximately 24h 19m 40s).
+seconds (approximately 24h 19m 40s). At the explicit controller
+`thread/unsubscribe` coverage slice, the cumulative goal cost was 21,794,287
+tokens and 88,185 seconds (approximately 24h 29m 45s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -435,6 +437,11 @@ Recorded build and validation evidence:
 | `just fix -p codex-app-server` | Passed after the controller egress-overflow coverage slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the test commit stayed scoped. | Cargo reported 25.52s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the controller egress-overflow coverage slice. | Cargo reported 24.24s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` and `git diff --cached --check` | Passed after the controller egress-overflow coverage slice. | Subsecond. |
+| `just fmt` | Passed after the explicit controller `thread/unsubscribe` coverage slice. | Shell wall time was 6.852s. |
+| `just test -p codex-app-server controller_thread_unsubscribe_is_bound_to_standing_main_thread_session thread_resume_extracts_exact_controller_thread_target exact_controller_thread_target_uses_serialization_scope` | Passed: 3 test runs, 3 passed, 1249 skipped. This covers explicit controller `thread/unsubscribe` target extraction, released-controller standing-session unsubscribe of the authorized main thread, and wrong-thread rejection before the unsubscribe handler mutates subscriptions. | Compile reported 19.12s; nextest reported 0.420s. |
+| `just test -p codex-app-server controller` | Passed: 113 test runs, 113 passed, 1139 skipped after adding explicit controller `thread/unsubscribe` coverage. | Compile reported 1.07s; nextest reported 29.573s. |
+| `just fix -p codex-app-server` | Passed after the explicit controller `thread/unsubscribe` coverage slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the test commit stayed scoped. | Cargo reported 29.50s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the explicit controller `thread/unsubscribe` coverage slice. | Cargo reported 17.41s with the known `__eh_frame section too large` linker warning. |
 
 ## Relevant implementation seams
 

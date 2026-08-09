@@ -220,8 +220,13 @@
   external-controller writer queue disconnects only that external connection
   and preserves subsequent primary delivery. A controller-bound prompt dropped
   by the real outbound router before `externalDelivery` falls back to the TUI.
+- Explicit controller-origin `thread/unsubscribe` now has focused target and
+  behavior coverage. It extracts an exact thread target, allows an approved
+  controller with a standing read/subscription session to unsubscribe from the
+  authorized main thread after releasing input ownership, and rejects a
+  wrong-thread unsubscribe before the handler can mutate that subscription.
 - The latest Codex-side source checkpoint is
-  `9bdbda6` for launch metadata publication, native approval coverage, exact
+  `fee11eb` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -258,8 +263,9 @@
   TUI realtime-error warning rendering, plus TUI realtime transcript rendering,
   plus TUI app-server lag snapshot recovery, plus lossless `thread/started`
   delivery through the in-process TUI bridge, plus controller prompt egress
-  fencing at begin-write, plus controller egress-overflow isolation/fallback
-  coverage.
+  fencing at begin-write, controller egress-overflow isolation/fallback
+  coverage, and explicit controller `thread/unsubscribe` target/mutation
+  fencing.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -588,12 +594,21 @@
   only because `.pre-commit-config.yaml` is not present, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `fee11eb` is `just fmt` passing,
+  `just test -p codex-app-server controller_thread_unsubscribe_is_bound_to_standing_main_thread_session thread_resume_extracts_exact_controller_thread_target exact_controller_thread_target_uses_serialization_scope`
+  passing 3/3 focused tests, `just test -p codex-app-server controller`
+  passing 113/113 controller-filtered tests, `just fix -p codex-app-server`
+  completing after unrelated app-server fixer hunks were reverted, `git diff
+  --check` passing before the docs/memory update, and `cargo build -p
+  codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in 17.41s with the
+  known `__eh_frame` linker warning.
 
 ## In Flight
 
-- Codex-side selection of the next normal-interface parity slice: remaining
-  implicit targets and long-lived subscription edges not covered by the
-  committed cleanup, resume/turn override gating,
+- Codex-side normal-interface parity audit: no confirmed remaining
+  subscription/implicit-target gap after explicit `thread/unsubscribe`
+  coverage. Prior reviewed areas include the committed cleanup,
+  resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
   controller auto-subscribe filtering, and terminal sign-off/disconnect
@@ -630,8 +645,8 @@
 
 ## Remaining
 
-- Codex app-server should route and validate any remaining server-side binding
-  for long-lived subscriptions and implicit targets.
+- No concrete Codex app-server subscription or implicit-target gap is known in
+  the current source checkpoint.
   Exact-thread and collection-filtered pagination cursors are now
   connection-bound for controllers, including internally-sent `thread/resume`
   response cursors. Controller-origin `thread/resume` override fields and
@@ -718,7 +733,10 @@
   matching the existing lossless treatment for reasoning summary text deltas.
   Realtime transcript delta/done notifications are now also reflected by the
   TUI through normal user/assistant history paths after the lossless bridge
-  delivers them.
+  delivers them. Explicit controller-origin `thread/unsubscribe` is covered as
+  an exact-thread, standing-session subscription operation: main-thread
+  unsubscribe works after release, and wrong-thread unsubscribe is rejected
+  before subscription mutation.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -742,13 +760,14 @@
   credential-enrollment assumptions do not mask launch behavior regressions.
 - Keep controller admission and target-extraction tables aligned when opening
   additional normal app-server methods to approved controllers.
-- Continue validating long-lived subscription behavior; exact-thread and
-  collection-filtered pagination cursors now have explicit
+- Continue keeping long-lived subscription behavior aligned when future methods
+  change; exact-thread and collection-filtered pagination cursors now have
+  explicit
   connection/main-thread binding coverage, including internal `thread/resume`
   response sends, while terminal TUI-unavailable now suppresses main-thread
   notifications for existing subscribers, and unexpected disconnect now
-  performs early revocation and subscription removal before RPC drain. Any
-  remaining subscription work is outside the committed sign-off,
+  performs early revocation and subscription removal before RPC drain. Future
+  subscription work is outside the committed sign-off,
   authorization-expiry cleanup, terminal TUI-unavailable,
   disconnect-revocation, disconnect-subscription-cleanup, and queued
   primary-reclaim paths, plus automatic subscription attach filtering and
@@ -759,8 +778,9 @@
   goal/warning fallback controller targeting, plus app-server thread-goal
   fallback targeting, listener server-request resolution targeting, and
   thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
-  overload, separate controller control-plane ingress, and pre-participation
-  initialize-notification suppression coverage.
+  overload, separate controller control-plane ingress, pre-participation
+  initialize-notification suppression coverage, and explicit
+  `thread/unsubscribe` target/mutation fencing.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
