@@ -278,12 +278,14 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `bcdbdff`
-(`fix(app-server): reserve controller control-plane ingress`). The recorded
+Codex-side hardening has continued through commit `55a86e3`
+(`test(app-server): cover native controller rejection over socket`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
-44,738 seconds (approximately 12h 25m 38s). This cost includes implementation,
-review, validation, and commit preparation across the staged slices; it is not
-limited to build/test subprocess runtime.
+44,738 seconds (approximately 12h 25m 38s). At the local-socket rejection
+validation slice, the cumulative goal cost was 16,068,831 tokens and 48,479
+seconds (approximately 13h 27m 59s). These costs include implementation, review,
+validation, and commit preparation across the staged slices; they are not limited
+to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -303,6 +305,11 @@ Final build and validation evidence:
 | `just test -p codex-app-server connection_rpc_gate saturated_external_controller` | Passed: 10/10 focused tests after the separate control-plane ingress hardening. | Prior run reported 35.07s compile and 0.781s nextest. |
 | `just test -p codex-app-server controller` | Passed: 93/93 controller-filtered tests after the separate control-plane ingress hardening. | Prior run reported 23.363s nextest. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the separate control-plane ingress hardening. | Cargo reported 1.47s. |
+| `just fmt` | Passed after the local-socket native rejection coverage slice. | Shell wall time was 6.543s. |
+| `just test -p codex-app-server local_controller_socket_rejected_participation_stays_denied_until_reapproved` | Passed: 1 test run, 1 passed, 1237 skipped. This covers TUI native rejection over the published local-controller socket, preserved denial of normal thread reads, repeat participation on the same initialized connection, and later approval. | Compile reported 19.56s; nextest reported 7.467s. |
+| `just test -p codex-app-server local_controller_socket_` | Passed: 5 test runs, 5 passed, 1233 skipped after adding the native rejection socket test. | Compile reported 1.07s; nextest reported 23.922s. |
+| `just test -p codex-app-server local_controller_` | Passed: 9 test runs, 9 passed, 1229 skipped across local-controller startup, native approval, notification suppression, socket parity, single-lease, launch isolation, reconnect, and native rejection coverage. | Compile reported 0.76s; nextest reported 29.220s. |
+| `git diff --check` | Passed after the local-socket native rejection coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 
