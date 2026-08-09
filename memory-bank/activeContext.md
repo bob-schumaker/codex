@@ -20,10 +20,11 @@
   no-listener goal-update fallback, plus app-server `thread/goal` update, clear,
   and snapshot fallbacks, plus fencing controller-origin detached reviews so
   `review/start` stays on the authorized main thread, plus gating
-  controller-origin realtime startup context/configuration overrides; remaining
-  Codex-side review is centered on implicit targets, egress transactionality,
-  and subscription edges while downstream discovery/display consumes the
-  published local-controller metadata contract.
+  controller-origin realtime startup context/configuration overrides and
+  realtime text role injection; remaining Codex-side review is centered on
+  implicit targets, egress transactionality, and subscription edges while
+  downstream discovery/display consumes the published local-controller metadata
+  contract.
 
 ## Current Status
 
@@ -387,6 +388,17 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks,
     `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Rejected controller-origin `thread/realtime/appendText` with non-user
+    roles before dispatch. Active controllers may append user-role realtime
+    text to the authorized main thread, but cannot inject developer or
+    assistant-role realtime text into the session.
+  - Validated the realtime append-text role gate with
+    `just test -p codex-app-server controller_realtime_append_text_allows_user_role_only`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 80/80, `just test -p codex-app-server realtime` passing 32/32,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -401,7 +413,8 @@
     notification targeting, listener-warning targeting, or extension
     no-listener goal-update fallback targeting, or app-server thread-goal
     fallback targeting, or controller-origin detached review fencing, or
-    controller-origin realtime context/configuration override gating.
+    controller-origin realtime context/configuration override gating, or
+    controller-origin realtime text role fencing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -425,7 +438,7 @@
   extension no-listener goal-update fallback targeting, plus app-server
   thread-goal fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `e436e75`.
+  commit `ea756d4`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

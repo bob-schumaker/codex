@@ -137,8 +137,11 @@
   configuration override fields that would replace model, prompt, instructions,
   startup context, initial session history, protocol version, transcript-tail
   handling, or Codex response-handoff behavior.
+- Controller-origin `thread/realtime/appendText` now accepts only user-role
+  realtime text. Developer and assistant roles are rejected before dispatch so
+  external input controllers cannot inject non-user realtime session items.
 - The latest Codex-side implementation commit is
-  `e436e75` for launch metadata publication, native approval coverage, exact
+  `ea756d4` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -155,7 +158,8 @@
   listener-command thread-goal egress targeting, plus listener-warning
   targeting, extension no-listener goal-update fallback targeting, and
   app-server thread-goal fallback targeting, plus controller-origin detached
-  review fencing and realtime context/configuration override gating.
+  review fencing, realtime context/configuration override gating, and realtime
+  text role fencing.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -262,6 +266,13 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `ea756d4` is
+  `just test -p codex-app-server controller_realtime_append_text_allows_user_role_only`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 80/80, `just test -p codex-app-server realtime` passing 32/32,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -277,8 +288,8 @@
   listener-warning targeting, plus extension no-listener goal-update fallback
   targeting and app-server thread-goal fallback targeting, plus
   controller-origin detached review fencing and realtime
-  context/configuration override gating. There is no known uncommitted
-  Codex-side source diff in this checkpoint.
+  context/configuration override gating, plus realtime text role fencing. There
+  is no known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -316,6 +327,7 @@
   outside the authorized main-thread scope. Controller-origin
   `thread/realtime/start` now rejects context/configuration overrides while
   preserving realtime input/transport startup on the authorized main thread.
+  Controller-origin `thread/realtime/appendText` now rejects non-user roles.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
