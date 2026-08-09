@@ -39,6 +39,9 @@ use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ControllerSignOffResponse;
 use codex_app_server_protocol::CurrentTimeReadParams;
 use codex_app_server_protocol::CurrentTimeReadResponse;
+use codex_app_server_protocol::FileChangeApprovalDecision;
+use codex_app_server_protocol::FileChangeRequestApprovalParams;
+use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::GrantedPermissionProfile;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
@@ -2738,6 +2741,163 @@ fn controller_rejects_session_scoped_permission_approval() -> Result<()> {
                     .expect("permissions waiter should receive response")
                     .expect("turn-scoped permissions approval should resolve successfully");
             assert_eq!(permissions_result, turn_scoped_response);
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn controller_rejects_session_scoped_file_change_approval() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "controller_rejects_session_scoped_file_change_approval",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_171),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 40_172, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_173),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let prompt_recipients = harness
+                .processor
+                .controller_processor
+                .prompt_request_recipients(
+                    main_thread_id,
+                    vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                );
+            let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+                Arc::clone(&harness.processor.outgoing),
+                prompt_recipients,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+                main_thread_id,
+            );
+            let (file_change_request_id, mut wait_for_file_change) = thread_outgoing
+                .send_request(ServerRequestPayload::FileChangeRequestApproval(
+                    FileChangeRequestApprovalParams {
+                        thread_id: started.thread.id.clone(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-file-change".to_string(),
+                        started_at_ms: 0,
+                        reason: Some("Need write approval".to_string()),
+                        grant_root: None,
+                    },
+                ))
+                .await;
+            let delivered_request = read_server_request_for_connection(
+                &mut harness.outgoing_rx,
+                EXTERNAL_CONNECTION_ID,
+                &file_change_request_id,
+            )
+            .await;
+            assert!(matches!(
+                delivered_request,
+                ServerRequest::FileChangeRequestApproval { .. }
+            ));
+
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: file_change_request_id.clone(),
+                        result: serde_json::to_value(FileChangeRequestApprovalResponse {
+                            decision: FileChangeApprovalDecision::AcceptForSession,
+                        })?,
+                    },
+                )
+                .await;
+            let session_scope_error = match &file_change_request_id {
+                RequestId::Integer(request_id) => {
+                    read_error_for_connection(
+                        &mut harness.outgoing_rx,
+                        EXTERNAL_CONNECTION_ID,
+                        *request_id,
+                    )
+                    .await
+                }
+                request_id => panic!("expected integer server request id, got {request_id:?}"),
+            };
+            assert_eq!(session_scope_error.id, file_change_request_id);
+            let session_scope_error_data: ControllerErrorData = serde_json::from_value(
+                session_scope_error
+                    .error
+                    .data
+                    .expect("typed controller error"),
+            )?;
+            assert_eq!(
+                session_scope_error_data.code,
+                ControllerErrorCode::ControllerNotAllowed
+            );
+            assert_eq!(
+                session_scope_error_data.retry,
+                ControllerRetryDisposition::DoNotRetry
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait_for_file_change)
+                    .await
+                    .is_err()
+            );
+
+            let approval_response = serde_json::to_value(FileChangeRequestApprovalResponse {
+                decision: FileChangeApprovalDecision::Accept,
+            })?;
+            harness
+                .processor
+                .process_response(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    JSONRPCResponse {
+                        id: file_change_request_id,
+                        result: approval_response.clone(),
+                    },
+                )
+                .await;
+            let file_change_result =
+                tokio::time::timeout(Duration::from_secs(1), wait_for_file_change)
+                    .await
+                    .expect("file-change approval response should not time out")
+                    .expect("file-change waiter should receive response")
+                    .expect("file-change approval should resolve successfully");
+            assert_eq!(file_change_result, approval_response);
 
             harness.shutdown().await;
             Ok(())
