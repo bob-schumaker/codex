@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `67a259f`
-(`fix(tui): render realtime transcript notifications`). The recorded
+Codex-side hardening has continued through commit `ff0dd36`
+(`fix(tui): refresh active thread after app-server lag`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -302,7 +302,9 @@ cumulative goal cost was 18,710,228 tokens and 75,136 seconds (approximately
 20h 52m 16s). At the TUI realtime-error rendering slice, the cumulative goal
 cost was 19,227,569 tokens and 80,402 seconds (approximately 22h 20m 02s). At
 the TUI realtime-transcript rendering slice, the cumulative goal cost was
-19,543,576 tokens and 81,503 seconds (approximately 22h 38m 23s).
+19,543,576 tokens and 81,503 seconds (approximately 22h 38m 23s). At the TUI
+app-server lag recovery slice, the cumulative goal cost was 19,860,366 tokens
+and 82,340 seconds (approximately 22h 52m 20s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -390,6 +392,13 @@ Recorded build and validation evidence:
 | `just fix -p codex-tui` | Passed after the TUI realtime-transcript rendering slice. | Cargo reported 23.88s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI realtime-transcript rendering slice. | Cargo reported 14.53s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` and `git diff --cached --check` | Passed after the TUI realtime-transcript rendering source slice. | Subsecond. |
+| `just fmt` | Passed after the TUI app-server lag recovery slice. | Shell wall time was 6.162s. |
+| `just test -p codex-tui lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 1 test run, 1 passed, 3462 skipped. This covers active-thread resynchronization from an authoritative `thread/read(includeTurns=true)` snapshot after app-server event lag, replayed through normal TUI history rendering. | Compile reported 27.72s; nextest reported 0.103s. |
+| `just test -p codex-tui mcp_startup app_scoped_mcp_startup_notifications_do_not_render_in_active_thread active_side_thread_renders_live_mcp_startup_notifications` | Passed: 38 test runs, 38 passed, 3425 skipped. This preserves existing app-server event routing call sites after the mutable session handler signature change and keeps MCP startup lag behavior covered. | Compile reported 1.06s; nextest reported 0.609s. |
+| `just fix -p codex-tui` | Passed after the TUI app-server lag recovery slice. | Cargo reported 22.94s. |
+| `cargo insta pending-snapshots --manifest-path tui/Cargo.toml` | Passed: no pending snapshots. | Shell wall time was 0.779s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI app-server lag recovery slice. | Cargo reported 13.03s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` and `git diff --cached --check` | Passed after the TUI app-server lag recovery docs/source slice. | Subsecond. |
 
 ## Relevant implementation seams
 

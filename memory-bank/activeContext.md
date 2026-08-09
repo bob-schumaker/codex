@@ -47,7 +47,8 @@
   normal TUI history paths, plus surfacing typed controller prompt-reply
   rejections back to the external-controller connection without resolving the
   pending prompt, plus adding protocol/export coverage for controller
-  notification schemas and all canonical controller error-code wire names;
+  notification schemas and all canonical controller error-code wire names, plus
+  TUI app-server lag snapshot recovery;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -701,6 +702,21 @@
     rebuilding `codex-rs/target/debug/codex` in 14.53s with the known
     `__eh_frame` linker warning, and `git diff --check` plus
     `git diff --cached --check` passing.
+  - Refreshed the active TUI thread from app-server
+    `thread/read(includeTurns=true)` after in-process app-server event lag, then
+    replayed the authoritative snapshot through the existing normal history
+    rendering path while preserving current input state.
+  - Validated the TUI app-server lag recovery slice at commit `ff0dd36` with
+    `just fmt` passing,
+    `just test -p codex-tui lag_refresh_replays_authoritative_active_thread_snapshot`
+    passing 1/1 focused test,
+    `just test -p codex-tui mcp_startup app_scoped_mcp_startup_notifications_do_not_render_in_active_thread active_side_thread_renders_live_mcp_startup_notifications`
+    passing 38/38 focused tests,
+    `cargo insta pending-snapshots --manifest-path tui/Cargo.toml` passing with
+    no pending snapshots, `just fix -p codex-tui` passing, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 13.03s with the known `__eh_frame` linker
+    warning.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -729,7 +745,8 @@
     in-process lifecycle/state notification preservation, or controller
     prompt-rejection error surfacing, or controller notification schema
     coverage, or realtime transcript/lifecycle delivery preservation, or TUI
-    realtime-error rendering, or TUI realtime transcript rendering.
+    realtime-error rendering, or TUI realtime transcript rendering, or TUI
+    app-server lag snapshot recovery.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -763,9 +780,9 @@
   notification preservation, plus controller prompt-rejection error surfacing,
   plus controller notification schema coverage, plus reasoning-summary-part
   lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
-  transcript rendering.
+  transcript rendering, plus TUI app-server lag snapshot recovery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `67a259f`.
+  commit `ff0dd36`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
