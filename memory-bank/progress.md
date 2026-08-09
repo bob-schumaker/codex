@@ -192,8 +192,12 @@
   warning history cells, so controller-originated realtime failures are visible
   to the user instead of being silently ignored by the live app-server
   notification handler.
+- The TUI now renders app-server `thread/realtime/transcriptDelta` and
+  `thread/realtime/transcriptDone` notifications through normal history paths:
+  final user transcripts become user history cells, and assistant transcript
+  deltas/done use the existing assistant stream/consolidation path.
 - The latest Codex-side source checkpoint is
-  `b773bfe` for launch metadata publication, native approval coverage, exact
+  `67a259f` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -226,18 +230,25 @@
   summary section boundaries and realtime transcript/lifecycle events, plus typed
   controller prompt-rejection surfacing and protocol/export schema coverage for
   controller notifications and canonical controller error-code wire names, plus
-  TUI realtime-error warning rendering.
+  TUI realtime-error warning rendering, plus TUI realtime transcript rendering.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
   zsh-fork fixture failures; those failures remain separate fixture health
   issues outside the controller slice.
-- The latest focused validation for commit `b773bfe` is `just fmt` passing,
+- The focused validation for commit `b773bfe` is `just fmt` passing,
   `just test -p codex-tui live_app_server_realtime_error_notification_renders_warning`
   passing 1/1 focused test after a cold rebuild, `just fix -p codex-tui`
   passing, `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 1m34s with the known `__eh_frame` linker
   warning, and `git diff --check` passing.
+- The latest focused validation for commit `67a259f` is `just fmt` passing,
+  `just test -p codex-tui live_app_server_realtime` passing 3/3 focused tests,
+  `cargo insta pending-snapshots --manifest-path tui/Cargo.toml` passing with no
+  pending snapshots after installing `cargo-insta`, `just fix -p codex-tui`
+  passing, `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 14.53s with the known `__eh_frame` linker
+  warning, and `git diff --check` plus `git diff --cached --check` passing.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
@@ -542,7 +553,7 @@
   ingress, plus pre-participation initialize-notification suppression coverage,
   plus exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
-  notification preservation.
+  notification preservation, plus TUI realtime transcript rendering.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -624,6 +635,9 @@
   actions cannot be dropped before the TUI bridge observes them.
   Reasoning summary part-added notifications are now also in that lossless tier,
   matching the existing lossless treatment for reasoning summary text deltas.
+  Realtime transcript delta/done notifications are now also reflected by the
+  TUI through normal user/assistant history paths after the lossless bridge
+  delivers them.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

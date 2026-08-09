@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `aac4b99`
-(`fix(app-server): preserve reasoning summary part delivery`). The recorded
+Codex-side hardening has continued through commit `67a259f`
+(`fix(tui): render realtime transcript notifications`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -300,7 +300,9 @@ slice, the cumulative goal cost was 18,403,089 tokens and 74,556 seconds
 (approximately 20h 42m 36s). At the realtime controller delivery slice, the
 cumulative goal cost was 18,710,228 tokens and 75,136 seconds (approximately
 20h 52m 16s). At the TUI realtime-error rendering slice, the cumulative goal
-cost was 19,227,569 tokens and 80,402 seconds (approximately 22h 20m 02s).
+cost was 19,227,569 tokens and 80,402 seconds (approximately 22h 20m 02s). At
+the TUI realtime-transcript rendering slice, the cumulative goal cost was
+19,543,576 tokens and 81,503 seconds (approximately 22h 38m 23s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -382,6 +384,12 @@ Recorded build and validation evidence:
 | `just fix -p codex-tui` | Passed after the TUI realtime-error rendering slice. | Cargo reported 2m 18s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI realtime-error rendering slice. | Cargo reported 1m 34s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` | Passed after the TUI realtime-error rendering source slice. | Subsecond. |
+| `just fmt` | Passed after the TUI realtime-transcript rendering slice. | Shell wall time was 6.523s on the final run. |
+| `just test -p codex-tui live_app_server_realtime` | Passed: 3 test runs, 3 passed, 3459 skipped. This covers realtime error warning rendering, final user transcript rendering, and assistant transcript streaming/consolidation. | Cargo reported 11.99s; nextest reported 0.089s. |
+| `cargo insta pending-snapshots --manifest-path tui/Cargo.toml` | Passed: no pending snapshots. | Installed `cargo-insta` first in 20.61s; the scoped check then passed in 8.06s after rerunning with cargo-cache access. |
+| `just fix -p codex-tui` | Passed after the TUI realtime-transcript rendering slice. | Cargo reported 23.88s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the TUI realtime-transcript rendering slice. | Cargo reported 14.53s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` and `git diff --cached --check` | Passed after the TUI realtime-transcript rendering source slice. | Subsecond. |
 
 ## Relevant implementation seams
 

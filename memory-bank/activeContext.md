@@ -43,10 +43,11 @@
   main thread is closed or unloaded, plus preserving controller-relevant thread
   lifecycle/state notifications across the in-process TUI delivery bridge under
   backpressure, plus preserving reasoning summary section boundaries across the
-  same lossless bridge, plus surfacing typed controller prompt-reply rejections
-  back to the external-controller connection without resolving the pending
-  prompt, plus adding protocol/export coverage for controller notification
-  schemas and all canonical controller error-code wire names;
+  same lossless bridge, plus reflecting realtime transcript notifications in
+  normal TUI history paths, plus surfacing typed controller prompt-reply
+  rejections back to the external-controller connection without resolving the
+  pending prompt, plus adding protocol/export coverage for controller
+  notification schemas and all canonical controller error-code wire names;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -686,6 +687,20 @@
     passing, `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 1m34s with the known `__eh_frame` linker
     warning, and `git diff --check` passing.
+  - Rendered app-server `thread/realtime/transcriptDelta` and
+    `thread/realtime/transcriptDone` notifications through normal TUI history
+    paths: final user transcripts render as user messages, and assistant
+    transcript deltas/done use the existing assistant stream/consolidation
+    path.
+  - Validated the TUI realtime-transcript rendering slice at commit `67a259f`
+    with `just fmt` passing,
+    `just test -p codex-tui live_app_server_realtime` passing 3/3 focused
+    tests, `cargo insta pending-snapshots --manifest-path tui/Cargo.toml`
+    passing with no pending snapshots after installing `cargo-insta`,
+    `just fix -p codex-tui` passing, `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex` in 14.53s with the known
+    `__eh_frame` linker warning, and `git diff --check` plus
+    `git diff --cached --check` passing.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -714,7 +729,7 @@
     in-process lifecycle/state notification preservation, or controller
     prompt-rejection error surfacing, or controller notification schema
     coverage, or realtime transcript/lifecycle delivery preservation, or TUI
-    realtime-error rendering.
+    realtime-error rendering, or TUI realtime transcript rendering.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -747,9 +762,10 @@
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus controller prompt-rejection error surfacing,
   plus controller notification schema coverage, plus reasoning-summary-part
-  lossless delivery, plus TUI realtime-error rendering.
+  lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
+  transcript rendering.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `b773bfe`.
+  commit `67a259f`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
