@@ -278,16 +278,18 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `33c9a3e`
-(`test(tui): cover controller participation decisions`). The recorded
+Codex-side hardening has continued through commit `597b3ba`
+(`test(app-server): cover controller permission approval scope`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
 (approximately 13h 53m 13s). At the TUI participation-decision coverage slice,
 the cumulative goal cost was 16,583,966 tokens and 50,378 seconds
-(approximately 13h 59m 38s). These costs include implementation, review,
-validation, and commit preparation across the staged slices; they are not
-limited to build/test subprocess runtime.
+(approximately 13h 59m 38s). At the controller permission-approval scope
+coverage slice, the cumulative goal cost was 16,809,460 tokens and 50,781
+seconds (approximately 14h 06m 21s). These costs include implementation,
+review, validation, and commit preparation across the staged slices; they are
+not limited to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -333,6 +335,10 @@ Final build and validation evidence:
 | `just fmt` | Passed after the TUI participation-decision coverage slice. | Shell wall time was 6.216s. |
 | `just test -p codex-tui controller_participation` | Passed: 4 test runs, 4 passed, 3455 skipped. This covers the controller participation prompt snapshot plus the owning TUI emitting approved, denied, and dismissed native participation decisions to the app-layer responder. | Compile reported 40.67s; nextest reported 0.119s. |
 | `git diff --check` | Passed after the TUI participation-decision coverage slice. | Subsecond. |
+| `just fmt` | The first sandboxed run failed because `uv` could not initialize its cache under `~/.cache/uv`; rerunning with cache access passed after the controller permission-approval scope slice. | Passing run shell wall time was 6.436s. |
+| `just test -p codex-app-server controller_rejects_session_scoped_permission_approval` | Passed: 1 test run, 1 passed, 1242 skipped. This covers a controller-owned `item/permissions/requestApproval` rejecting a session-scoped response with typed `controller-not-allowed`, keeping the prompt pending, and then accepting a turn-scoped response on the same active controller connection. | Final compile reported 15.68s; nextest reported 0.583s. |
+| `just test -p codex-app-server controller` | Passed: 104 test runs, 104 passed, 1139 skipped after adding permission-approval scope coverage. | Compile reported 0.98s; nextest reported 59.317s. |
+| `git diff --check` | Passed after the controller permission-approval scope slice. | Subsecond. |
 
 ## Relevant implementation seams
 
