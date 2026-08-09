@@ -27,7 +27,9 @@
   reclaim coverage for Guardian-denied approvals, plus fencing
   controller-origin archive/delete from spawned-descendant subtree targets, plus
   skipping running-thread resume replay for controller prompts after external
-  delivery; remaining Codex-side review is centered on any other implicit
+  delivery, plus routing app-server extension fallback goal/warning egress
+  through controller-aware recipient computation; remaining Codex-side review is
+  centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
 
@@ -466,6 +468,19 @@
     `just fix -p codex-app-server` completing after unrelated fixer hunks were
     reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Routed app-server extension no-listener goal and warning fallback egress
+    through controller-aware thread recipient computation. Approved subscribed
+    external controllers now receive fallback thread-goal notifications through
+    the same main-thread subscription path as the TUI, while terminal
+    `TuiUnavailable` still suppresses main-thread fallback notifications.
+  - Validated the extension fallback targeting slice with
+    `just test -p codex-app-server controller_targeted_goal_fallback`
+    passing 2/2 focused tests, `just test -p codex-app-server extensions::tests`
+    passing 9/9 in-crate extension tests,
+    `just test -p codex-app-server controller` passing 86/86 controller tests,
+    `just fix -p codex-app-server` completing after unrelated fixer hunks were
+    reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -478,9 +493,9 @@
     generic broadcast filtering plus targeted main-thread lifecycle and status
     delivery, or thread-scoped global and listener-command thread-goal
     notification targeting, listener-warning targeting, or extension
-    no-listener goal-update fallback targeting, or app-server thread-goal
-    fallback targeting, or thread-scoped MCP OAuth completion targeting, or
-    controller-origin detached review fencing, or
+    no-listener goal/warning fallback controller targeting, or app-server
+    thread-goal fallback targeting, or thread-scoped MCP OAuth completion
+    targeting, or controller-origin detached review fencing, or
     controller-origin realtime context/configuration override gating, or
     controller-origin realtime text role fencing, or controller-origin
     section-move implicit target fencing, or controller-origin archive/delete
@@ -506,11 +521,11 @@
   fencing, plus generic broadcast filtering and targeted main-thread lifecycle
   and status delivery, plus thread-scoped global and listener-command
   thread-goal notification targeting, plus listener-warning targeting and
-  extension no-listener goal-update fallback targeting, plus app-server
+  extension no-listener goal/warning fallback controller targeting, plus app-server
   thread-goal fallback targeting, plus thread-scoped MCP OAuth completion
   targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `776fa13`.
+  commit `09768dc`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

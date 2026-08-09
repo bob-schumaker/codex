@@ -125,6 +125,11 @@
   subscribers instead of raw broadcast, preserving visibility for approved
   subscribed external controllers after generic broadcasts were filtered away
   from external-controller origins.
+- Extension no-listener goal and warning fallback egress now uses
+  controller-aware thread recipient computation in the production app-server
+  sink. Approved subscribed external controllers receive fallback goal
+  notifications for the TUI main thread, while terminal `TuiUnavailable`
+  suppresses main-thread fallback notifications.
 - App-server `thread/goal` update, clear, and snapshot fallbacks now use the
   controller-aware thread sender, preserving primary/TUI broadcasts while adding
   targeted copies for authorized external-controller recipients.
@@ -147,7 +152,7 @@
   thread-affecting approval path, so the documented TUI-primary reclaim
   invariant includes `AppCommand::ApproveGuardianDeniedAction`.
 - The latest Codex-side source checkpoint is
-  `002f2cd` for launch metadata publication, native approval coverage, exact
+  `09768dc` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -163,10 +168,13 @@
   delivery, plus thread-scoped global notification targeting and
   listener-command thread-goal egress targeting, plus listener-warning
   targeting, extension no-listener goal-update fallback targeting, and
-  app-server thread-goal fallback targeting, plus controller-origin detached
-  review fencing, realtime context/configuration override gating, and realtime
-  text role fencing, plus section-move implicit-target fencing and
-  Guardian-denied TUI approval reclaim coverage.
+  app-server thread-goal fallback targeting, plus thread-scoped MCP OAuth
+  completion targeting, plus controller-origin detached review fencing, realtime
+  context/configuration override gating, and realtime text role fencing, plus
+  section-move implicit-target fencing, Guardian-denied TUI approval reclaim
+  coverage, archive/delete spawned-descendant subtree fencing, delivered
+  controller prompt replay fencing, and extension fallback goal/warning
+  controller targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -322,6 +330,14 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `09768dc` is
+  `just test -p codex-app-server controller_targeted_goal_fallback` passing
+  2/2 focused tests, `just test -p codex-app-server extensions::tests` passing
+  9/9 in-crate extension tests, `just test -p codex-app-server controller`
+  passing 86/86 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, `just fmt` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -334,15 +350,16 @@
   subscription fencing, plus generic broadcast filtering and targeted
   main-thread lifecycle and status delivery, plus thread-scoped global
   notification targeting, listener-command thread-goal egress targeting, and
-  listener-warning targeting, plus extension no-listener goal-update fallback
-  targeting and app-server thread-goal fallback targeting, plus
+  listener-warning targeting, plus extension no-listener goal/warning fallback
+  controller targeting and app-server thread-goal fallback targeting, plus
   thread-scoped MCP OAuth completion targeting, plus controller-origin
   detached review fencing and realtime
   context/configuration override gating, plus realtime text role fencing and
   section-move implicit-target fencing, Guardian-denied TUI approval reclaim
-  coverage, archive/delete spawned-descendant subtree fencing, and delivered
-  controller prompt replay fencing. There is no known uncommitted Codex-side
-  source diff in this checkpoint.
+  coverage, archive/delete spawned-descendant subtree fencing, delivered
+  controller prompt replay fencing, and extension fallback goal/warning
+  controller targeting. There is no known uncommitted Codex-side source diff in
+  this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -429,8 +446,8 @@
   filtering and targeted main-thread lifecycle and status delivery, plus
   thread-scoped global notification targeting and listener-command thread-goal
   egress targeting, listener-warning targeting, and extension no-listener
-  goal-update fallback targeting, plus app-server thread-goal fallback
-  targeting and thread-scoped MCP OAuth completion targeting.
+  goal/warning fallback controller targeting, plus app-server thread-goal
+  fallback targeting and thread-scoped MCP OAuth completion targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
