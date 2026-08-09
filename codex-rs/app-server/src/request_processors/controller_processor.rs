@@ -688,6 +688,34 @@ impl ControllerRequestProcessor {
         self.send_controller_events(events).await;
     }
 
+    pub(crate) async fn mark_main_thread_closed(&self, thread_id: ThreadId) {
+        let events = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(coordinator) = state.coordinator.as_mut() else {
+                return;
+            };
+            let Some(main_thread_id) = coordinator.main_thread_id() else {
+                return;
+            };
+            if main_thread_id != thread_id {
+                return;
+            }
+
+            coordinator.close_main_thread();
+            let events = coordinator.drain_events();
+            state.launch_state = ControllerLaunchState::MainThreadClosed;
+            events
+        };
+
+        self.outgoing
+            .cancel_requests_for_thread(thread_id, Some(main_thread_closed()))
+            .await;
+        self.send_controller_events(events).await;
+    }
+
     async fn authorize_server_request_resolution(
         &self,
         connection_id: ConnectionId,

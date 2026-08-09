@@ -1502,6 +1502,151 @@ fn active_controller_archive_delete_reject_spawned_descendant_targets() -> Resul
 
 #[test]
 #[serial(app_server_tracing)]
+fn controller_main_thread_close_marks_launch_closed() -> Result<()> {
+    run_current_thread_test_with_stack("controller_main_thread_close_marks_launch_closed", async {
+        let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+        let mut harness =
+            TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                .await?;
+        let external_session = Arc::new(ConnectionSessionState::new());
+        let _: InitializeResponse = harness
+            .request_for_connection(
+                EXTERNAL_CONNECTION_ID,
+                ConnectionOrigin::ExternalController,
+                Arc::clone(&external_session),
+                controller_initialize_request(/*request_id*/ 39_101),
+            )
+            .await;
+        external_session.bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+        let started: ThreadStartResponse = harness
+            .request(
+                ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(39_102),
+                    params: ThreadStartParams {
+                        ephemeral: Some(false),
+                        ..ThreadStartParams::default()
+                    },
+                },
+                /*trace*/ None,
+            )
+            .await;
+        read_thread_started_notification(&mut harness.outgoing_rx).await;
+        let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+        enrollment_source.insert(controller_record(main_thread_id));
+
+        let participation: ControllerRequestParticipationResponse = harness
+            .request_for_connection(
+                EXTERNAL_CONNECTION_ID,
+                ConnectionOrigin::ExternalController,
+                Arc::clone(&external_session),
+                controller_participation_request(/*request_id*/ 39_103),
+            )
+            .await;
+        assert!(
+            participation
+                .session
+                .as_ref()
+                .and_then(|session| session.active_lease.as_ref())
+                .is_some()
+        );
+
+        let prompt_recipients = harness
+            .processor
+            .controller_processor
+            .prompt_request_recipients(
+                main_thread_id,
+                vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+            );
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            Arc::clone(&harness.processor.outgoing),
+            prompt_recipients,
+            vec![TEST_CONNECTION_ID, EXTERNAL_CONNECTION_ID],
+            main_thread_id,
+        );
+        let (prompt_request_id, wait_for_prompt) = thread_outgoing
+            .send_request(command_execution_approval_payload(
+                started.thread.id.clone(),
+            ))
+            .await;
+        let _ = read_server_request_for_connection(
+            &mut harness.outgoing_rx,
+            EXTERNAL_CONNECTION_ID,
+            &prompt_request_id,
+        )
+        .await;
+
+        harness
+            .processor
+            .controller_processor
+            .mark_main_thread_closed(main_thread_id)
+            .await;
+
+        let ownership_notification = read_controller_ownership_changed_for_connection(
+            &mut harness.outgoing_rx,
+            EXTERNAL_CONNECTION_ID,
+        )
+        .await;
+        assert_eq!(
+            ownership_notification.reason,
+            ControllerControlOwnershipChangedReason::MainThreadClosed
+        );
+        assert_eq!(ownership_notification.main_thread_id, started.thread.id);
+        assert_eq!(ownership_notification.active_lease, None);
+
+        let authorization_notification = read_controller_authorization_changed_for_connection(
+            &mut harness.outgoing_rx,
+            EXTERNAL_CONNECTION_ID,
+        )
+        .await;
+        assert_eq!(
+            authorization_notification.reason,
+            ControllerAuthorizationChangedReason::MainThreadClosed
+        );
+        assert_eq!(authorization_notification.main_thread_id, started.thread.id);
+        assert_eq!(authorization_notification.session, None);
+
+        let prompt_error = tokio::time::timeout(Duration::from_secs(1), wait_for_prompt)
+            .await
+            .expect("pending prompt should be cancelled when main thread closes")
+            .expect("prompt waiter should receive terminal error")
+            .expect_err("pending prompt should not resolve successfully");
+        let prompt_error_data: ControllerErrorData =
+            serde_json::from_value(prompt_error.data.expect("typed controller error"))?;
+        assert_eq!(
+            prompt_error_data.code,
+            ControllerErrorCode::MainThreadClosed
+        );
+
+        let read_after_close = harness
+            .request_error_for_connection(
+                EXTERNAL_CONNECTION_ID,
+                ConnectionOrigin::ExternalController,
+                Arc::clone(&external_session),
+                controller_thread_read_request(
+                    /*request_id*/ 39_105,
+                    started.thread.id.clone(),
+                ),
+            )
+            .await;
+        let read_after_close_data: ControllerErrorData =
+            serde_json::from_value(read_after_close.error.data.expect("typed controller error"))?;
+        assert_eq!(
+            read_after_close_data.code,
+            ControllerErrorCode::MainThreadClosed
+        );
+        assert_eq!(
+            read_after_close_data.retry,
+            ControllerRetryDisposition::DoNotRetry
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+#[serial(app_server_tracing)]
 fn controller_control_notifications_are_emitted_for_session_transitions() -> Result<()> {
     run_current_thread_test_with_stack(
         "controller_control_notifications_are_emitted_for_session_transitions",

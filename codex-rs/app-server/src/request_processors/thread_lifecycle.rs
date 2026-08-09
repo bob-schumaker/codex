@@ -376,6 +376,9 @@ pub(super) async fn ensure_listener_task_running(
                         }
                         pending_thread_unloads.insert(conversation_id);
                     }
+                    controller_processor
+                        .mark_main_thread_closed(conversation_id)
+                        .await;
                     unload_thread_without_subscribers(
                         thread_manager.clone(),
                         outgoing_for_task.clone(),

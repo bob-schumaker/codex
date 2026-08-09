@@ -1020,6 +1020,9 @@ impl ThreadRequestProcessor {
                 }
             }
         }
+        self.controller_processor
+            .mark_main_thread_closed(thread_id)
+            .await;
         self.finalize_thread_teardown(thread_id).await;
     }
 
