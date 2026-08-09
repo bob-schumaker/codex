@@ -845,6 +845,8 @@ async fn replayed_turn_complete_submits_restored_queued_follow_up() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
             ))],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -898,6 +900,8 @@ async fn replay_only_thread_keeps_restored_queue_visible() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
             ))],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -947,6 +951,8 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
             turns: Vec::new(),
             events: vec![],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -996,6 +1002,8 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -1025,6 +1033,8 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_state_without_
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -1076,6 +1086,8 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
                 ))),
             ],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -1208,6 +1220,8 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
             turns: Vec::new(),
             events: vec![],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -1288,6 +1302,8 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
             turns: Vec::new(),
             events: vec![],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -1340,6 +1356,8 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Interrupted),
             ))],
             input_state: Some(input_state),
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ true,
     );
@@ -3007,6 +3025,8 @@ async fn replay_snapshot_with_pending_request_suppresses_replay_notices() {
                 ))),
             ],
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -4089,6 +4109,8 @@ async fn side_thread_snapshot_does_not_refresh_from_fork_history() {
         turns: Vec::new(),
         events: Vec::new(),
         input_state: None,
+        last_sequence: 0,
+        controller_ownership_status: None,
     };
 
     assert!(!app.should_refresh_snapshot_session(
@@ -4118,6 +4140,8 @@ async fn side_thread_snapshot_skips_session_header_preamble() {
         turns: Vec::new(),
         events: Vec::new(),
         input_state: None,
+        last_sequence: 0,
+        controller_ownership_status: None,
     };
 
     app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
@@ -4289,6 +4313,8 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
             turns: Vec::new(),
             events: Vec::new(),
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -6846,6 +6872,8 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
             ],
             events: Vec::new(),
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -6936,6 +6964,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                 ),
             ))],
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -6991,6 +7021,8 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         turns: Vec::new(),
         events: Vec::new(),
         input_state: None,
+        last_sequence: 0,
+        controller_ownership_status: None,
     };
 
     app.apply_refreshed_snapshot_thread(
@@ -7140,10 +7172,11 @@ async fn controller_ownership_status_event_does_not_write_transcript_history() -
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
     while app_event_rx.try_recv().is_ok() {}
 
+    let thread_id = ThreadId::new();
     app.handle_app_server_event(
         &mut app_server,
         AppServerEvent::ControllerOwnershipStatus(Box::new(InProcessControllerOwnershipStatus {
-            main_thread_id: ThreadId::new(),
+            main_thread_id: thread_id,
             owner: InProcessControllerOwnershipStatusOwner::Controller {
                 session_id: "controller-session".to_string(),
             },
@@ -7152,6 +7185,29 @@ async fn controller_ownership_status_event_does_not_write_transcript_history() -
         })),
     )
     .await;
+
+    let snapshot = {
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("ownership status should create thread snapshot state")
+            .store
+            .lock()
+            .await;
+        store.snapshot()
+    };
+    assert_eq!(snapshot.last_sequence, 1);
+    assert_eq!(
+        snapshot.controller_ownership_status,
+        Some(InProcessControllerOwnershipStatus {
+            main_thread_id: thread_id,
+            owner: InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: "controller-session".to_string(),
+            },
+            owner_epoch: 2,
+            reason: ControllerControlOwnershipChangedReason::Acquired,
+        })
+    );
 
     let emitted_history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
         .any(|event| matches!(event, AppEvent::InsertHistoryCell(_)));

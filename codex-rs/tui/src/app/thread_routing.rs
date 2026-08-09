@@ -1477,6 +1477,11 @@ impl App {
         resume_restored_queue: bool,
     ) {
         self.refresh_mcp_startup_expected_servers_from_config();
+        tracing::debug!(
+            last_sequence = snapshot.last_sequence,
+            controller_ownership_known = snapshot.controller_ownership_status.is_some(),
+            "replaying thread snapshot"
+        );
         let should_buffer_replay = !snapshot.turns.is_empty() || !snapshot.events.is_empty();
         if should_buffer_replay {
             self.app_event_tx

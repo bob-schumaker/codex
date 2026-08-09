@@ -14,6 +14,9 @@ pub(super) struct ThreadEventSnapshot {
     pub(super) turns: Vec<Turn>,
     pub(super) events: Vec<ThreadBufferedEvent>,
     pub(super) input_state: Option<ThreadInputState>,
+    pub(super) last_sequence: u64,
+    pub(super) controller_ownership_status:
+        Option<codex_app_server_client::InProcessControllerOwnershipStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,9 @@ pub(super) struct ThreadEventStore {
     pub(super) active_turn_id: Option<String>,
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
+    pub(super) last_sequence: u64,
+    pub(super) controller_ownership_status:
+        Option<codex_app_server_client::InProcessControllerOwnershipStatus>,
     pub(super) capacity: usize,
     pub(super) active: bool,
 }
@@ -74,6 +80,8 @@ impl ThreadEventStore {
             active_turn_id: None,
             pending_interrupt_turn_id: None,
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
             capacity,
             active: false,
         }
@@ -92,6 +100,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_session(&mut self, session: ThreadSessionState, turns: Vec<Turn>) {
+        self.advance_sequence();
         self.session = Some(session);
         self.set_turns(turns);
     }
@@ -118,6 +127,7 @@ impl ThreadEventStore {
     }
 
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        self.advance_sequence();
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
@@ -174,6 +184,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn push_request(&mut self, request: ServerRequest) {
+        self.advance_sequence();
         self.pending_interactive_replay
             .note_server_request(&request);
         self.buffer
@@ -185,6 +196,14 @@ impl ThreadEventStore {
             self.pending_interactive_replay
                 .note_evicted_server_request(request.as_ref());
         }
+    }
+
+    pub(super) fn set_controller_ownership_status(
+        &mut self,
+        status: codex_app_server_client::InProcessControllerOwnershipStatus,
+    ) {
+        self.advance_sequence();
+        self.controller_ownership_status = Some(status);
     }
 
     pub(super) fn pending_replay_requests(&self) -> Vec<ServerRequest> {
@@ -262,7 +281,13 @@ impl ThreadEventStore {
                 .cloned()
                 .collect(),
             input_state: self.input_state.clone(),
+            last_sequence: self.last_sequence,
+            controller_ownership_status: self.controller_ownership_status.clone(),
         }
+    }
+
+    fn advance_sequence(&mut self) {
+        self.last_sequence = self.last_sequence.saturating_add(1);
     }
 
     pub(super) fn note_outbound_op<T>(&mut self, op: T)
@@ -564,6 +589,47 @@ mod tests {
             TurnStatus::Interrupted,
         ));
         assert_eq!(store.active_turn_id(), None);
+    }
+
+    #[test]
+    fn thread_event_store_snapshots_monotonic_sequence() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        assert_eq!(store.snapshot().last_sequence, 0);
+
+        let thread_id = ThreadId::new();
+        store.push_notification(turn_started_notification(thread_id, "turn-1"));
+        store.push_request(exec_approval_request(
+            thread_id,
+            "turn-1",
+            "command-approval",
+            /*approval_id*/ None,
+        ));
+        store.set_session(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
+        );
+
+        assert_eq!(store.snapshot().last_sequence, 3);
+    }
+
+    #[test]
+    fn thread_event_store_snapshots_controller_ownership_status() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let thread_id = ThreadId::new();
+        let status = codex_app_server_client::InProcessControllerOwnershipStatus {
+            main_thread_id: thread_id,
+            owner: codex_app_server_client::InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: "controller-session".to_string(),
+            },
+            owner_epoch: 2,
+            reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
+        };
+
+        store.set_controller_ownership_status(status.clone());
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.last_sequence, 1);
+        assert_eq!(snapshot.controller_ownership_status, Some(status));
     }
 
     #[test]

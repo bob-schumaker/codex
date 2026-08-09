@@ -69,6 +69,8 @@ async fn switching_from_ultra_thread_restores_configured_plan_effort() {
             turns: Vec::new(),
             events: Vec::new(),
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -78,6 +80,8 @@ async fn switching_from_ultra_thread_restores_configured_plan_effort() {
             turns: Vec::new(),
             events: Vec::new(),
             input_state: None,
+            last_sequence: 0,
+            controller_ownership_status: None,
         },
         /*resume_restored_queue*/ false,
     );

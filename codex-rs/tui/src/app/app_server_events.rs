@@ -66,6 +66,11 @@ impl App {
                     .open_controller_participation_prompt(*request);
             }
             AppServerEvent::ControllerOwnershipStatus(status) => {
+                {
+                    let channel = self.ensure_thread_channel(status.main_thread_id);
+                    let mut store = channel.store.lock().await;
+                    store.set_controller_ownership_status((*status).clone());
+                }
                 tracing::debug!(
                     main_thread_id = %status.main_thread_id,
                     owner = ?status.owner,
