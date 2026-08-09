@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `7359445`
-(`fix(app-server): fence stale controller prompt egress`). The recorded
+Codex-side hardening has continued through commit `9bdbda6`
+(`test(app-server): cover controller egress overflow`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -310,7 +310,9 @@ lossless-delivery slice, the cumulative goal cost was 20,165,824 tokens and
 lossless-delivery slice, the cumulative goal cost was 20,492,362 tokens and
 84,213 seconds (approximately 23h 23m 33s). At the controller prompt
 egress-fencing slice, the cumulative goal cost was 21,272,170 tokens and
-87,013 seconds (approximately 24h 10m 13s).
+87,013 seconds (approximately 24h 10m 13s). At the controller egress-overflow
+coverage slice, the cumulative goal cost was 21,524,837 tokens and 87,580
+seconds (approximately 24h 19m 40s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -427,6 +429,12 @@ Recorded build and validation evidence:
 | `just fix -p codex-app-server` | Passed after the controller prompt egress-fencing slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the source commit stayed scoped. | Cargo reported 35.10s. |
 | `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the controller prompt egress-fencing slice. | Cargo reported 41.15s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` and `git diff --cached --check` | Passed after the controller prompt egress-fencing source slice. | Subsecond. |
+| `just fmt` | Passed after the controller egress-overflow coverage slice. | Final shell wall time was 6.602s. |
+| `just test -p codex-app-server external_controller_queue_overflow` | Passed: 2 test runs, 2 passed, 1249 skipped. This covers a slow external-controller queue disconnecting only that external connection and a controller-bound prompt falling back to the TUI when queue overflow drops the controller egress before `externalDelivery`. | Compile reported 19.42s; nextest reported 0.079s. |
+| `just test -p codex-app-server outgoing_message transport` | Passed: 58 test runs, 58 passed, 1193 skipped. This covers the new overflow cases plus the existing outgoing-message prompt ownership and transport routing behavior around targeted egress, broadcast filtering, final response flush, and disconnectable versus stdio queue handling. | Compile reported 1.04s; nextest reported 15.422s. |
+| `just fix -p codex-app-server` | Passed after the controller egress-overflow coverage slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the test commit stayed scoped. | Cargo reported 25.52s. |
+| `cargo build -p codex-cli -j 4` | Passed and rebuilt `codex-rs/target/debug/codex` after the controller egress-overflow coverage slice. | Cargo reported 24.24s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` and `git diff --cached --check` | Passed after the controller egress-overflow coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 

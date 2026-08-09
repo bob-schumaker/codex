@@ -266,6 +266,12 @@ Commit 12: Add controller egress delivery and backpressure semantics.
       pending; and
     - post-delivery and begin-write controller paths avoid duplicate prompt
       redelivery while retaining the TUI-primary prompt-reclaim path.
+  - implemented checkpoint `9bdbda6`:
+    - slow external-controller queue overflow disconnects only that external
+      connection and preserves subsequent primary delivery; and
+    - controller-bound prompt overflow through the real outbound router drops
+      the controller delivery before `externalDelivery` and rebinds the still
+      pending prompt to the TUI.
   - write-failure and pre-/post-`externalDelivery` tests
   - saturated controller ingress returns `-32001` or typed
     `controller-overloaded` according to the design path being exercised

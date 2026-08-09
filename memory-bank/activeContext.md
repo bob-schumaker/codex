@@ -749,10 +749,21 @@
     reverted, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 41.15s with the known `__eh_frame` linker
     warning.
+  - Added controller egress-overflow coverage at commit `9bdbda6`: a full slow
+    external-controller writer queue disconnects only that external connection
+    while preserving subsequent primary delivery, and a controller-bound prompt
+    dropped by the real outbound router before `externalDelivery` is rebound to
+    the TUI.
+  - Validated the overflow coverage slice with `just fmt` passing,
+    `just test -p codex-app-server external_controller_queue_overflow` passing
+    2/2, `just test -p codex-app-server outgoing_message transport` passing
+    58/58, `just fix -p codex-app-server` completing after unrelated fixer
+    hunks were reverted, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 24.24s with the known `__eh_frame` linker
+    warning.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
-    targets, long-lived subscription edges, and any egress-overflow policy
-    hardening not
+    targets and long-lived subscription edges not
     covered by sign-off, authorization-expiry cleanup, exact-thread and
     collection-filtered cursor binding, prompt owner-epoch binding,
     current-time owner routing, resume/turn override gating, internally-sent
@@ -780,7 +791,8 @@
     coverage, or realtime transcript/lifecycle delivery preservation, or TUI
     realtime-error rendering, or TUI realtime transcript rendering, or TUI
     app-server lag snapshot recovery, or lossless `thread/started`
-    notification delivery, or controller prompt egress-fencing at begin-write.
+    notification delivery, or controller prompt egress-fencing at begin-write,
+    or controller egress-overflow isolation/fallback coverage.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -790,8 +802,7 @@
 ## Next Steps
 
 - Keep tightening app-server normal-interface parity around any remaining
-  implicit targets, long-lived subscription edges, and egress-overflow policy
-  hardening beyond the
+  implicit targets and long-lived subscription edges beyond the
   committed exact-thread/collection cursor binding, sign-off cleanup,
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
   current-time owner routing, resume/turn override gates, and internally-sent
@@ -817,9 +828,10 @@
   lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
   transcript rendering, plus TUI app-server lag snapshot recovery, plus
   lossless `thread/started` notification delivery, plus controller prompt
-  egress-fencing at begin-write.
+  egress-fencing at begin-write, plus controller egress-overflow
+  isolation/fallback coverage.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `7359445`.
+  commit `9bdbda6`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

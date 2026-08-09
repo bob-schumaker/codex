@@ -216,8 +216,12 @@
   serialization/send. A begun external write suppresses automatic duplicate
   TUI redelivery, while a failed pre-`externalDelivery` write clears its
   in-flight marker and falls back to the TUI when the prompt is still pending.
+- Controller egress-overflow behavior now has focused coverage. A full slow
+  external-controller writer queue disconnects only that external connection
+  and preserves subsequent primary delivery. A controller-bound prompt dropped
+  by the real outbound router before `externalDelivery` falls back to the TUI.
 - The latest Codex-side source checkpoint is
-  `7359445` for launch metadata publication, native approval coverage, exact
+  `9bdbda6` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -254,7 +258,8 @@
   TUI realtime-error warning rendering, plus TUI realtime transcript rendering,
   plus TUI app-server lag snapshot recovery, plus lossless `thread/started`
   delivery through the in-process TUI bridge, plus controller prompt egress
-  fencing at begin-write.
+  fencing at begin-write, plus controller egress-overflow isolation/fallback
+  coverage.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -292,7 +297,7 @@
   passing after unrelated app-server fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in
   19.27s with the known `__eh_frame` linker warning.
-- The latest focused validation for commit `7359445` is `just fmt` passing,
+- The focused validation for commit `7359445` was `just fmt` passing,
   `just test -p codex-app-server-transport outgoing_message` passing 4/4,
   `just test -p codex-app-server outgoing_message in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller`
   passing 131/131, `just test -p codex-app-server-transport` passing 161/161,
@@ -302,6 +307,13 @@
   `git diff --cached --check` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex` in 41.15s with the known
   `__eh_frame` linker warning.
+- The latest focused validation for commit `9bdbda6` is `just fmt` passing,
+  `just test -p codex-app-server external_controller_queue_overflow` passing
+  2/2, `just test -p codex-app-server outgoing_message transport` passing
+  58/58, `just fix -p codex-app-server` completing after unrelated app-server
+  fixer hunks were reverted, `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 24.24s with the known `__eh_frame` linker
+  warning, and `git diff --check` plus `git diff --cached --check` passing.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
@@ -580,8 +592,8 @@
 ## In Flight
 
 - Codex-side selection of the next normal-interface parity slice: remaining
-  implicit targets, long-lived subscription edges, and any egress-overflow
-  policy hardening not covered by the committed cleanup, resume/turn override gating,
+  implicit targets and long-lived subscription edges not covered by the
+  committed cleanup, resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
   controller auto-subscribe filtering, and terminal sign-off/disconnect
@@ -609,7 +621,8 @@
   notification preservation, plus TUI realtime transcript rendering, plus TUI
   app-server lag snapshot recovery, plus lossless `thread/started`
   notification delivery through the in-process TUI bridge, plus controller
-  prompt egress-fencing at begin-write.
+  prompt egress-fencing at begin-write, plus controller egress-overflow
+  isolation/fallback coverage.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -618,8 +631,7 @@
 ## Remaining
 
 - Codex app-server should route and validate any remaining server-side binding
-  for long-lived subscriptions, implicit targets, and egress-overflow policy
-  hardening.
+  for long-lived subscriptions and implicit targets.
   Exact-thread and collection-filtered pagination cursors are now
   connection-bound for controllers, including internally-sent `thread/resume`
   response cursors. Controller-origin `thread/resume` override fields and
@@ -667,6 +679,9 @@
   automatic TUI redelivery once an external write begins, and fall back to the
   TUI if a pre-`externalDelivery` write fails while the prompt is still
   pending.
+  Controller egress-overflow coverage now proves a slow external-controller
+  queue disconnects only that controller and a controller-bound prompt dropped
+  by queue overflow before `externalDelivery` rebinds to the TUI.
   Embedded in-process app-server delivery now preserves transcript deltas,
   plan/reasoning deltas, item completion, terminal notifications,
   controller-relevant thread lifecycle/state notifications, and controller
