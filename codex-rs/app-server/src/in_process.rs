@@ -174,7 +174,9 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 /// Keep this as the single classifier for both the embedded runtime writer and
 /// the app-server-client bridge so transcript, terminal, and controller
 /// ownership events cannot be dropped before the TUI can reflect canonical
-/// thread state.
+/// thread state. Realtime audio, SDP, and raw item payloads stay best-effort;
+/// realtime transcript and session lifecycle notifications are small enough
+/// and stateful enough to preserve.
 pub fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
@@ -195,6 +197,11 @@ pub fn server_notification_requires_delivery(notification: &ServerNotification) 
             | ServerNotification::ReasoningSummaryPartAdded(_)
             | ServerNotification::ReasoningSummaryTextDelta(_)
             | ServerNotification::ReasoningTextDelta(_)
+            | ServerNotification::ThreadRealtimeStarted(_)
+            | ServerNotification::ThreadRealtimeTranscriptDelta(_)
+            | ServerNotification::ThreadRealtimeTranscriptDone(_)
+            | ServerNotification::ThreadRealtimeError(_)
+            | ServerNotification::ThreadRealtimeClosed(_)
     )
 }
 
@@ -1542,6 +1549,11 @@ mod tests {
     use codex_app_server_protocol::ThreadNameUpdatedNotification;
     use codex_app_server_protocol::ThreadReadParams;
     use codex_app_server_protocol::ThreadReadResponse;
+    use codex_app_server_protocol::ThreadRealtimeClosedNotification;
+    use codex_app_server_protocol::ThreadRealtimeErrorNotification;
+    use codex_app_server_protocol::ThreadRealtimeStartedNotification;
+    use codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification;
+    use codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification;
     use codex_app_server_protocol::ThreadSearchParams;
     use codex_app_server_protocol::ThreadSearchResponse;
     use codex_app_server_protocol::ThreadSetNameParams;
@@ -4204,6 +4216,43 @@ mod tests {
                     content_index: 0,
                 },
             )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRealtimeStarted(ThreadRealtimeStartedNotification {
+                thread_id: "thread-1".to_string(),
+                realtime_session_id: Some("realtime-1".to_string()),
+                version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRealtimeTranscriptDelta(
+                ThreadRealtimeTranscriptDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    role: "user".to_string(),
+                    delta: "hello".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRealtimeTranscriptDone(
+                ThreadRealtimeTranscriptDoneNotification {
+                    thread_id: "thread-1".to_string(),
+                    role: "user".to_string(),
+                    text: "hello".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRealtimeError(ThreadRealtimeErrorNotification {
+                thread_id: "thread-1".to_string(),
+                message: "realtime failed".to_string(),
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRealtimeClosed(ThreadRealtimeClosedNotification {
+                thread_id: "thread-1".to_string(),
+                reason: Some("done".to_string()),
+            })
         ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::ItemCompleted(ItemCompletedNotification {

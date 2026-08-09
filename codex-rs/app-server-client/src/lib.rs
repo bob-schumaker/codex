@@ -153,12 +153,14 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 
 /// Returns `true` for notifications that must survive backpressure.
 ///
-/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas) and
-/// the authoritative `ItemCompleted` / `TurnCompleted` form the lossless tier
-/// of the event stream. Dropping any of these corrupts the visible assistant
-/// output or leaves surfaces waiting for a completion signal that already
-/// fired. Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
-/// best-effort and may be dropped with only cosmetic impact.
+/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas,
+/// realtime transcript/lifecycle events) and the authoritative
+/// `ItemCompleted` / `TurnCompleted` form the lossless tier of the event
+/// stream. Dropping any of these corrupts the visible assistant output or
+/// leaves surfaces waiting for a completion signal that already fired.
+/// Everything else (`CommandExecutionOutputDelta`, progress, realtime audio,
+/// raw realtime items, etc.) is best-effort and may be dropped with only
+/// cosmetic impact.
 ///
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
@@ -2567,6 +2569,59 @@ mod tests {
                             phase: None,
                             memory_citation: None,
                         },
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadRealtimeStarted(
+                    codex_app_server_protocol::ThreadRealtimeStartedNotification {
+                        thread_id: "thread".to_string(),
+                        realtime_session_id: Some("realtime".to_string()),
+                        version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadRealtimeTranscriptDelta(
+                    codex_app_server_protocol::ThreadRealtimeTranscriptDeltaNotification {
+                        thread_id: "thread".to_string(),
+                        role: "user".to_string(),
+                        delta: "hello".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadRealtimeTranscriptDone(
+                    codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification {
+                        thread_id: "thread".to_string(),
+                        role: "user".to_string(),
+                        text: "hello".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadRealtimeError(
+                    codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                        thread_id: "thread".to_string(),
+                        message: "realtime failed".to_string(),
+                    }
+                )
+            ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(Box::new(
+                codex_app_server_protocol::ServerNotification::ThreadRealtimeClosed(
+                    codex_app_server_protocol::ThreadRealtimeClosedNotification {
+                        thread_id: "thread".to_string(),
+                        reason: Some("done".to_string()),
                     }
                 )
             ))
