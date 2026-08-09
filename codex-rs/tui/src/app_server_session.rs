@@ -915,6 +915,17 @@ impl AppServerSession {
         thread_id: ThreadId,
         include_turns: bool,
     ) -> Result<Thread> {
+        Ok(self
+            .thread_read_response(thread_id, include_turns)
+            .await?
+            .thread)
+    }
+
+    pub(crate) async fn thread_read_response(
+        &mut self,
+        thread_id: ThreadId,
+        include_turns: bool,
+    ) -> Result<ThreadReadResponse> {
         let request_id = self.next_request_id();
         let response = self
             .client
@@ -927,7 +938,7 @@ impl AppServerSession {
             })
             .await;
         let mut response: ThreadReadResponse = match response {
-            Ok(response) => return Ok(response.thread),
+            Ok(response) => return Ok(response),
             Err(TypedRequestError::Server { source, .. })
                 if include_turns
                     && source.message
@@ -955,7 +966,7 @@ impl AppServerSession {
             HistoryHydrationScope::Initial,
         )
         .await?;
-        Ok(response.thread)
+        Ok(response)
     }
 
     pub(crate) async fn thread_archive(&mut self, thread_id: ThreadId) -> Result<()> {

@@ -400,13 +400,29 @@ TUI event stream only.
       normal thread state; and
     - replay logging records the recovered sequence and whether ownership state
       was present without adding ownership/status data to transcript history.
-  - open checkpoint after `dd2c93e`:
-    - this is a TUI-side snapshot bookkeeping step only. The production
-      implementation still does not expose the formal app-server
-      `threadSequence` / `lastSequence` surface or an atomic
-      app-server-owned snapshot-at-sequence containing interactive owner and
-      prompt-binding state; do not mark this commit complete until that gap is
-      implemented or the design is explicitly amended.
+  - implemented checkpoint `809b9e1`:
+    - the app-server protocol and runtime now expose the formal per-thread
+      `threadSequence` event-envelope field and `ThreadReadResponse.lastSequence`
+      snapshot field; and
+    - app-server-owned thread dispatch assigns canonical monotonic sequence
+      values to thread-scoped notifications and server requests.
+  - implemented checkpoint in the current in-process TUI sequence-preservation
+    slice:
+    - in-process app-server events preserve sequenced server notifications and
+      server requests instead of flattening them to legacy unsequenced events;
+    - `codex-app-server-client` exposes the sequenced event variants to embedded
+      TUI consumers while keeping the legacy event shape for unsequenced events;
+    - TUI lag recovery reads `ThreadReadResponse.lastSequence`, seeds the
+      `ThreadEventStore` with that authoritative app-server sequence, and drops
+      stale sequenced events at or below the refreshed snapshot sequence; and
+    - `codex-exec` normalizes sequenced in-process events with the legacy
+      request/notification variants.
+  - remaining checkpoint after the current slice:
+    - the recovery snapshot is still not a single app-server-owned atomic
+      snapshot containing interactive owner, owner epoch, and prompt-binding
+      state. Do not mark this commit complete until that atomic ownership and
+      prompt-binding snapshot is implemented or the design is explicitly
+      amended.
 
 Commit 18: Start the endpoint from embedded TUI launches only, after admission,
 ownership, enrollment, prompt fencing, reclaim, and reflection are in place.

@@ -210,7 +210,7 @@ async fn next_thread_settings_updated(
         .await
         .expect("app-server should emit an event")
         .expect("app-server event stream should remain open");
-        if let codex_app_server_client::AppServerEvent::ServerNotification(notification) = event
+        if let Some(notification) = app_server_event_notification(event)
             && let ServerNotification::ThreadSettingsUpdated(notification) = *notification
             && notification.thread_id == thread_id.to_string()
         {
@@ -218,6 +218,26 @@ async fn next_thread_settings_updated(
         }
     }
     panic!("expected ThreadSettingsUpdated for thread {thread_id}");
+}
+
+fn app_server_event_notification(
+    event: codex_app_server_client::AppServerEvent,
+) -> Option<Box<ServerNotification>> {
+    match event {
+        codex_app_server_client::AppServerEvent::ServerNotification(notification) => {
+            Some(notification)
+        }
+        codex_app_server_client::AppServerEvent::SequencedServerNotification(event) => {
+            Some(event.notification)
+        }
+        codex_app_server_client::AppServerEvent::Lagged { .. }
+        | codex_app_server_client::AppServerEvent::ControllerParticipationRequest(_)
+        | codex_app_server_client::AppServerEvent::ControllerOwnershipStatus(_)
+        | codex_app_server_client::AppServerEvent::LocalControllerEndpointUnavailable { .. }
+        | codex_app_server_client::AppServerEvent::ServerRequest(_)
+        | codex_app_server_client::AppServerEvent::SequencedServerRequest(_)
+        | codex_app_server_client::AppServerEvent::Disconnected { .. } => None,
+    }
 }
 
 #[tokio::test]
@@ -2216,7 +2236,7 @@ async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()
         .await
         .expect("app-server should emit an event")
         .expect("app-server event stream should remain open");
-        if let codex_app_server_client::AppServerEvent::ServerNotification(notification) = event
+        if let Some(notification) = app_server_event_notification(event)
             && let ServerNotification::ThreadStarted(notification) = notification.as_ref()
             && notification.thread.id == side_thread_id.to_string()
         {
@@ -7128,6 +7148,7 @@ async fn lag_refresh_replays_authoritative_active_thread_snapshot() -> Result<()
             name: Some("refreshed thread".to_string()),
             turns: authoritative_turns.clone(),
         },
+        42,
         input_state,
     )
     .await;

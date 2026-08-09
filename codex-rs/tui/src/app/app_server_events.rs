@@ -87,12 +87,36 @@ impl App {
                 );
             }
             AppServerEvent::ServerNotification(notification) => {
-                self.handle_server_notification_event(app_server_client, *notification)
-                    .await;
+                self.handle_server_notification_event(
+                    app_server_client,
+                    *notification,
+                    /*thread_sequence*/ None,
+                )
+                .await;
+            }
+            AppServerEvent::SequencedServerNotification(event) => {
+                self.handle_server_notification_event(
+                    app_server_client,
+                    *event.notification,
+                    Some(event.thread_sequence),
+                )
+                .await;
             }
             AppServerEvent::ServerRequest(request) => {
-                self.handle_server_request_event(app_server_client, *request)
-                    .await;
+                self.handle_server_request_event(
+                    app_server_client,
+                    *request,
+                    /*thread_sequence*/ None,
+                )
+                .await;
+            }
+            AppServerEvent::SequencedServerRequest(event) => {
+                self.handle_server_request_event(
+                    app_server_client,
+                    *event.request,
+                    Some(event.thread_sequence),
+                )
+                .await;
             }
             AppServerEvent::Disconnected { message } => {
                 tracing::warn!("app-server event stream disconnected: {message}");
@@ -107,11 +131,11 @@ impl App {
             return;
         };
         let input_state = self.chat_widget.capture_thread_input_state();
-        let thread = match app_server_client
-            .thread_read(thread_id, /*include_turns*/ true)
+        let response = match app_server_client
+            .thread_read_response(thread_id, /*include_turns*/ true)
             .await
         {
-            Ok(thread) => thread,
+            Ok(response) => response,
             Err(err) => {
                 tracing::warn!(
                     thread_id = %thread_id,
@@ -121,14 +145,20 @@ impl App {
                 return;
             }
         };
-        self.apply_thread_read_after_lag(thread_id, thread, input_state)
-            .await;
+        self.apply_thread_read_after_lag(
+            thread_id,
+            response.thread,
+            response.last_sequence,
+            input_state,
+        )
+        .await;
     }
 
     pub(super) async fn apply_thread_read_after_lag(
         &mut self,
         thread_id: codex_protocol::ThreadId,
         thread: codex_app_server_protocol::Thread,
+        last_sequence: u64,
         input_state: Option<crate::chatwidget::ThreadInputState>,
     ) {
         let session = self.session_state_for_thread_read(thread_id, &thread).await;
@@ -136,7 +166,7 @@ impl App {
         let snapshot = {
             let channel = self.ensure_thread_channel(thread_id);
             let mut store = channel.store.lock().await;
-            store.set_session(session, turns);
+            store.set_session_at_sequence(session, turns, last_sequence);
             store.input_state = input_state;
             store.rebase_buffer_after_session_refresh();
             store.snapshot()
@@ -148,6 +178,7 @@ impl App {
         &mut self,
         app_server_client: &AppServerSession,
         notification: ServerNotification,
+        thread_sequence: Option<u64>,
     ) {
         match &notification {
             ServerNotification::ServerRequestResolved(notification) => {
@@ -248,10 +279,18 @@ impl App {
                 let result = if self.primary_thread_id == Some(thread_id)
                     || self.primary_thread_id.is_none()
                 {
-                    self.enqueue_primary_thread_notification(notification).await
+                    self.enqueue_primary_thread_notification_at_sequence(
+                        notification,
+                        thread_sequence,
+                    )
+                    .await
                 } else {
-                    self.enqueue_thread_notification(thread_id, notification)
-                        .await
+                    self.enqueue_thread_notification_at_sequence(
+                        thread_id,
+                        notification,
+                        thread_sequence,
+                    )
+                    .await
                 };
 
                 if let Err(err) = result {
@@ -283,6 +322,7 @@ impl App {
         &mut self,
         app_server_client: &AppServerSession,
         request: ServerRequest,
+        thread_sequence: Option<u64>,
     ) {
         let thread_id = server_request_thread_id(&request);
         if thread_id.is_some_and(|thread_id| self.abandoned_side_threads.contains(&thread_id)) {
@@ -330,9 +370,11 @@ impl App {
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
-                self.enqueue_primary_thread_request(request).await
+                self.enqueue_primary_thread_request_at_sequence(request, thread_sequence)
+                    .await
             } else {
-                self.enqueue_thread_request(thread_id, request).await
+                self.enqueue_thread_request_at_sequence(thread_id, request, thread_sequence)
+                    .await
             };
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");

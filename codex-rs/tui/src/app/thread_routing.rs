@@ -954,6 +954,20 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        self.enqueue_thread_notification_at_sequence(
+            thread_id,
+            notification,
+            /*thread_sequence*/ None,
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_thread_notification_at_sequence(
+        &mut self,
+        thread_id: ThreadId,
+        notification: ServerNotification,
+        thread_sequence: Option<u64>,
+    ) -> Result<()> {
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
         }
@@ -994,10 +1008,14 @@ impl App {
                 _ => false,
             };
             let notification = if guard.active {
-                guard.push_notification_ref(&notification);
+                if !guard.push_notification_ref_at_sequence(&notification, thread_sequence) {
+                    return Ok(());
+                }
                 Some(notification)
             } else {
-                guard.push_notification(notification);
+                if !guard.push_notification_at_sequence(notification, thread_sequence) {
+                    return Ok(());
+                }
                 None
             };
             (
@@ -1120,6 +1138,16 @@ impl App {
         thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
+        self.enqueue_thread_request_at_sequence(thread_id, request, /*thread_sequence*/ None)
+            .await
+    }
+
+    pub(super) async fn enqueue_thread_request_at_sequence(
+        &mut self,
+        thread_id: ThreadId,
+        request: ServerRequest,
+        thread_sequence: Option<u64>,
+    ) -> Result<()> {
         let inactive_interactive_request = if self.active_thread_id != Some(thread_id) {
             self.interactive_request_for_thread_request(thread_id, &request)
                 .await?
@@ -1133,7 +1161,9 @@ impl App {
 
         let (should_send, pending_status) = {
             let mut guard = store.lock().await;
-            guard.push_request(request.clone());
+            if !guard.push_request_at_sequence(request.clone(), thread_sequence) {
+                return Ok(());
+            }
             (guard.active, guard.side_parent_pending_status())
         };
         let request_status = SideParentStatus::for_request(&request);
@@ -1320,13 +1350,14 @@ impl App {
         Ok(())
     }
 
-    pub(super) async fn enqueue_primary_thread_notification(
+    pub(super) async fn enqueue_primary_thread_notification_at_sequence(
         &mut self,
         notification: ServerNotification,
+        thread_sequence: Option<u64>,
     ) -> Result<()> {
         if let Some(thread_id) = self.primary_thread_id {
             return self
-                .enqueue_thread_notification(thread_id, notification)
+                .enqueue_thread_notification_at_sequence(thread_id, notification, thread_sequence)
                 .await;
         }
         self.pending_primary_events
@@ -1334,12 +1365,24 @@ impl App {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) async fn enqueue_primary_thread_request(
         &mut self,
         request: ServerRequest,
     ) -> Result<()> {
+        self.enqueue_primary_thread_request_at_sequence(request, /*thread_sequence*/ None)
+            .await
+    }
+
+    pub(super) async fn enqueue_primary_thread_request_at_sequence(
+        &mut self,
+        request: ServerRequest,
+        thread_sequence: Option<u64>,
+    ) -> Result<()> {
         if let Some(thread_id) = self.primary_thread_id {
-            return self.enqueue_thread_request(thread_id, request).await;
+            return self
+                .enqueue_thread_request_at_sequence(thread_id, request, thread_sequence)
+                .await;
         }
         self.pending_primary_events
             .push_back(ThreadBufferedEvent::Request(Box::new(request)));

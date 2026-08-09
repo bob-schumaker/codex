@@ -94,6 +94,20 @@ fn drain_active_thread_events(app: &mut App) {
     }
 }
 
+fn app_server_event_notification(event: &AppServerEvent) -> Option<&ServerNotification> {
+    match event {
+        AppServerEvent::ServerNotification(notification) => Some(notification.as_ref()),
+        AppServerEvent::SequencedServerNotification(event) => Some(event.notification.as_ref()),
+        AppServerEvent::Lagged { .. }
+        | AppServerEvent::ControllerParticipationRequest(_)
+        | AppServerEvent::ControllerOwnershipStatus(_)
+        | AppServerEvent::LocalControllerEndpointUnavailable { .. }
+        | AppServerEvent::ServerRequest(_)
+        | AppServerEvent::SequencedServerRequest(_)
+        | AppServerEvent::Disconnected { .. } => None,
+    }
+}
+
 async fn next_turn_started(
     app: &mut App,
     app_server: &mut AppServerSession,
@@ -107,8 +121,8 @@ async fn next_turn_started(
         .await
         .expect("app-server should emit a turn/start event")
         .expect("app-server event stream should remain open");
-        let started_turn_id = if let AppServerEvent::ServerNotification(notification) = &event
-            && let ServerNotification::TurnStarted(notification) = notification.as_ref()
+        let started_turn_id = if let Some(ServerNotification::TurnStarted(notification)) =
+            app_server_event_notification(&event)
             && notification.thread_id == thread_id.to_string()
         {
             Some(notification.turn.id.clone())
@@ -137,13 +151,9 @@ async fn wait_for_turn_completed(
         .expect("app-server should emit a turn/completed event")
         .expect("app-server event stream should remain open");
         let completed = matches!(
-            &event,
-            AppServerEvent::ServerNotification(notification)
-                if matches!(
-                    notification.as_ref(),
-                    ServerNotification::TurnCompleted(notification)
-                        if notification.thread_id == thread_id.to_string()
-                )
+            app_server_event_notification(&event),
+            Some(ServerNotification::TurnCompleted(notification))
+                if notification.thread_id == thread_id.to_string()
         );
         app.handle_app_server_event(app_server, event).await;
         drain_active_thread_events(app);

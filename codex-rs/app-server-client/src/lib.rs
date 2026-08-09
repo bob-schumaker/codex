@@ -33,6 +33,8 @@ pub use codex_app_server::in_process::InProcessControllerOwnershipStatusOwner;
 pub use codex_app_server::in_process::InProcessControllerParticipationRequest;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointStatus;
+pub use codex_app_server::in_process::InProcessSequencedServerNotification;
+pub use codex_app_server::in_process::InProcessSequencedServerRequest;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 pub use codex_app_server::in_process::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
@@ -110,7 +112,9 @@ pub enum AppServerEvent {
     ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
     LocalControllerEndpointUnavailable { reason: String },
     ServerNotification(Box<ServerNotification>),
+    SequencedServerNotification(Box<InProcessSequencedServerNotification>),
     ServerRequest(Box<ServerRequest>),
+    SequencedServerRequest(Box<InProcessSequencedServerRequest>),
     Disconnected { message: String },
 }
 
@@ -130,7 +134,13 @@ impl From<InProcessServerEvent> for AppServerEvent {
             InProcessServerEvent::ServerNotification(notification) => {
                 Self::ServerNotification(notification)
             }
+            InProcessServerEvent::SequencedServerNotification(event) => {
+                Self::SequencedServerNotification(event)
+            }
             InProcessServerEvent::ServerRequest(request) => Self::ServerRequest(request),
+            InProcessServerEvent::SequencedServerRequest(event) => {
+                Self::SequencedServerRequest(event)
+            }
         }
     }
 }
@@ -144,11 +154,44 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
         InProcessServerEvent::ServerNotification(notification) => {
             server_notification_requires_delivery(notification)
         }
+        InProcessServerEvent::SequencedServerNotification(event) => {
+            server_notification_requires_delivery(&event.notification)
+        }
         InProcessServerEvent::ControllerParticipationRequest(_) => true,
         InProcessServerEvent::ControllerOwnershipStatus(_) => true,
         InProcessServerEvent::LocalControllerEndpointUnavailable { .. } => true,
         _ => false,
     }
+}
+
+fn take_server_request(event: InProcessServerEvent) -> Option<ServerRequest> {
+    match event {
+        InProcessServerEvent::ServerRequest(request) => Some(*request),
+        InProcessServerEvent::SequencedServerRequest(event) => Some(*event.request),
+        InProcessServerEvent::Lagged { .. }
+        | InProcessServerEvent::ControllerParticipationRequest(_)
+        | InProcessServerEvent::ControllerOwnershipStatus(_)
+        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+        | InProcessServerEvent::ServerNotification(_)
+        | InProcessServerEvent::SequencedServerNotification(_) => None,
+    }
+}
+
+fn chatgpt_auth_tokens_refresh_request_id(event: &InProcessServerEvent) -> Option<RequestId> {
+    let request = match event {
+        InProcessServerEvent::ServerRequest(request) => request.as_ref(),
+        InProcessServerEvent::SequencedServerRequest(event) => event.request.as_ref(),
+        InProcessServerEvent::Lagged { .. }
+        | InProcessServerEvent::ControllerParticipationRequest(_)
+        | InProcessServerEvent::ControllerOwnershipStatus(_)
+        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+        | InProcessServerEvent::ServerNotification(_)
+        | InProcessServerEvent::SequencedServerNotification(_) => return None,
+    };
+    let ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } = request else {
+        return None;
+    };
+    Some(request_id.clone())
 }
 
 /// Returns `true` for notifications that must survive backpressure.
@@ -220,8 +263,8 @@ where
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     *skipped_events = skipped_events.saturating_add(1);
                     warn!("dropping in-process app-server event because consumer queue is full");
-                    if let InProcessServerEvent::ServerRequest(request) = event {
-                        reject_server_request(*request);
+                    if let Some(request) = take_server_request(event) {
+                        reject_server_request(request);
                     }
                     return ForwardEventResult::Continue;
                 }
@@ -246,8 +289,8 @@ where
         Err(mpsc::error::TrySendError::Full(event)) => {
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping in-process app-server event because consumer queue is full");
-            if let InProcessServerEvent::ServerRequest(request) = event {
-                reject_server_request(*request);
+            if let Some(request) = take_server_request(event) {
+                reject_server_request(request);
             }
             ForwardEventResult::Continue
         }
@@ -574,12 +617,9 @@ impl InProcessAppServerClient {
                         let Some(event) = event else {
                             break;
                         };
-                        if let InProcessServerEvent::ServerRequest(request) = &event
-                            && let ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } =
-                                request.as_ref()
-                        {
+                        if let Some(request_id) = chatgpt_auth_tokens_refresh_request_id(&event) {
                             let send_result = request_sender.fail_server_request(
-                                request_id.clone(),
+                                request_id,
                                 JSONRPCErrorError {
                                     code: -32000,
                                     message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
@@ -1533,6 +1573,16 @@ mod tests {
         })
     }
 
+    fn chatgpt_auth_tokens_refresh_request(request_id: RequestId) -> ServerRequest {
+        ServerRequest::ChatgptAuthTokensRefresh {
+            request_id,
+            params: codex_app_server_protocol::ChatgptAuthTokensRefreshParams {
+                reason: codex_app_server_protocol::ChatgptAuthTokensRefreshReason::Unauthorized,
+                previous_account_id: None,
+            },
+        }
+    }
+
     fn test_remote_connect_args(websocket_url: String) -> RemoteAppServerConnectArgs {
         RemoteAppServerConnectArgs {
             endpoint: RemoteAppServerEndpoint::WebSocket {
@@ -1761,6 +1811,69 @@ mod tests {
                             == codex_app_server_protocol::TurnStatus::Completed
                 )
         ));
+    }
+
+    #[test]
+    fn app_server_event_preserves_in_process_thread_sequence() {
+        let notification_event =
+            AppServerEvent::from(InProcessServerEvent::SequencedServerNotification(Box::new(
+                InProcessSequencedServerNotification {
+                    notification: Box::new(agent_message_delta_notification("hello")),
+                    thread_sequence: 12,
+                },
+            )));
+        assert!(matches!(
+            notification_event,
+            AppServerEvent::SequencedServerNotification(event)
+                if event.thread_sequence == 12
+                    && matches!(
+                        event.notification.as_ref(),
+                        ServerNotification::AgentMessageDelta(notification)
+                            if notification.delta == "hello"
+                    )
+        ));
+
+        let request_id = RequestId::Integer(7);
+        let request_event = AppServerEvent::from(InProcessServerEvent::SequencedServerRequest(
+            Box::new(InProcessSequencedServerRequest {
+                request: Box::new(chatgpt_auth_tokens_refresh_request(request_id.clone())),
+                thread_sequence: 13,
+            }),
+        ));
+        assert!(matches!(
+            request_event,
+            AppServerEvent::SequencedServerRequest(event)
+                if event.thread_sequence == 13 && event.request.id() == &request_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_in_process_event_rejects_dropped_sequenced_server_requests() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::Lagged { skipped: 1 })
+            .await
+            .expect("initial event should enqueue");
+        let mut skipped_events = 0usize;
+        let mut rejected_request_ids = Vec::new();
+        let request_id = RequestId::Integer(7);
+
+        let result = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::SequencedServerRequest(Box::new(
+                InProcessSequencedServerRequest {
+                    request: Box::new(chatgpt_auth_tokens_refresh_request(request_id.clone())),
+                    thread_sequence: 5,
+                },
+            )),
+            |request| rejected_request_ids.push(request.id().clone()),
+        )
+        .await;
+
+        assert_eq!(result, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 1);
+        assert_eq!(rejected_request_ids, vec![request_id]);
     }
 
     #[tokio::test]

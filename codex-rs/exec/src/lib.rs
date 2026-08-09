@@ -1095,10 +1095,23 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             InProcessServerEvent::ServerRequest(request) => {
                 handle_server_request(&client, *request, &mut error_seen).await;
             }
+            InProcessServerEvent::SequencedServerRequest(event) => {
+                handle_server_request(&client, *event.request, &mut error_seen).await;
+            }
             InProcessServerEvent::ControllerOwnershipStatus(_) => {}
             InProcessServerEvent::LocalControllerEndpointUnavailable { .. } => {}
-            InProcessServerEvent::ServerNotification(notification) => {
-                let mut notification = *notification;
+            event @ (InProcessServerEvent::ServerNotification(_)
+            | InProcessServerEvent::SequencedServerNotification(_)) => {
+                let mut notification = match event {
+                    InProcessServerEvent::ServerNotification(notification) => *notification,
+                    InProcessServerEvent::SequencedServerNotification(event) => *event.notification,
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::Lagged { .. } => unreachable!(),
+                };
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id

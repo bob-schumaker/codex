@@ -278,6 +278,18 @@ pub struct InProcessStartArgs {
 /// [`Lagged`](Self::Lagged) is a transport health marker, not an application
 /// event — it signals that the consumer fell behind and some events were dropped.
 #[derive(Debug, Clone)]
+pub struct InProcessSequencedServerRequest {
+    pub request: Box<ServerRequest>,
+    pub thread_sequence: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InProcessSequencedServerNotification {
+    pub notification: Box<ServerNotification>,
+    pub thread_sequence: u64,
+}
+
+#[derive(Debug, Clone)]
 pub enum InProcessServerEvent {
     /// Local-controller participation request that requires owning TUI approval.
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
@@ -288,8 +300,12 @@ pub enum InProcessServerEvent {
     LocalControllerEndpointUnavailable { reason: String },
     /// Server request that requires client response/rejection.
     ServerRequest(Box<ServerRequest>),
+    /// Server request with a canonical per-thread sequence.
+    SequencedServerRequest(Box<InProcessSequencedServerRequest>),
     /// App-server notification directed to the embedded client.
     ServerNotification(Box<ServerNotification>),
+    /// App-server notification with a canonical per-thread sequence.
+    SequencedServerNotification(Box<InProcessSequencedServerNotification>),
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
 }
@@ -1409,10 +1425,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 );
                             }
                         }
-                        OutgoingMessage::Request(request)
-                        | OutgoingMessage::SequencedRequest(
-                            codex_app_server_protocol::ServerRequestEnvelope { request, .. },
-                        ) => {
+                        OutgoingMessage::Request(request) => {
                             // Send directly to avoid cloning; on failure the
                             // original value is returned inside the error.
                             if let Err(send_error) = event_tx
@@ -1448,23 +1461,78 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     .await;
                             }
                         }
+                        OutgoingMessage::SequencedRequest(
+                            codex_app_server_protocol::ServerRequestEnvelope {
+                                request,
+                                thread_sequence,
+                            },
+                        ) => {
+                            let event = match thread_sequence {
+                                Some(thread_sequence) => InProcessServerEvent::SequencedServerRequest(
+                                    Box::new(InProcessSequencedServerRequest {
+                                        request: Box::new(request),
+                                        thread_sequence,
+                                    }),
+                                ),
+                                None => InProcessServerEvent::ServerRequest(Box::new(request)),
+                            };
+                            if let Err(send_error) = event_tx.try_send(event) {
+                                let (error, inner) = match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => (
+                                        JSONRPCErrorError {
+                                            code: OVERLOADED_ERROR_CODE,
+                                            message:
+                                                "in-process server request queue is full".to_string(),
+                                            data: None,
+                                        },
+                                        inner,
+                                    ),
+                                    mpsc::error::TrySendError::Closed(inner) => (
+                                        internal_error(
+                                            "in-process server request consumer is closed",
+                                        ),
+                                        inner,
+                                    ),
+                                };
+                                let request_id = match inner {
+                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
+                                    InProcessServerEvent::SequencedServerRequest(event) => {
+                                        event.request.id().clone()
+                                    }
+                                    _ => unreachable!("we just sent a server request variant"),
+                                };
+                                outgoing_message_sender
+                                    .notify_client_error_from_connection(
+                                        IN_PROCESS_CONNECTION_ID,
+                                        request_id,
+                                        error,
+                                    )
+                                    .await;
+                            }
+                        }
                         OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(Box::new(
-                                        notification,
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
+                            let codex_app_server_protocol::ServerNotificationEnvelope {
+                                notification,
+                                thread_sequence,
+                                emitted_at_ms: _,
+                            } = envelope;
+                            let requires_delivery = server_notification_requires_delivery(&notification);
+                            let event = match thread_sequence {
+                                Some(thread_sequence) => {
+                                    InProcessServerEvent::SequencedServerNotification(Box::new(
+                                        InProcessSequencedServerNotification {
+                                            notification: Box::new(notification),
+                                            thread_sequence,
+                                        },
+                                    ))
+                                }
+                                None => InProcessServerEvent::ServerNotification(Box::new(notification)),
+                            };
+                            if requires_delivery {
+                                if event_tx.send(event).await.is_err() {
                                     break;
                                 }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(
-                                    Box::new(notification),
-                                ))
-                            {
+                            } else if let Err(send_error) = event_tx.try_send(event) {
                                 match send_error {
                                     mpsc::error::TrySendError::Full(_) => {
                                         warn!("dropping in-process server notification (queue full)");
@@ -1793,7 +1861,9 @@ mod tests {
                     InProcessServerEvent::ControllerOwnershipStatus(_)
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
                     | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
                 }
             }
@@ -1854,7 +1924,9 @@ mod tests {
                     InProcessServerEvent::ControllerParticipationRequest(_)
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
                     | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
                 }
             }
@@ -2072,6 +2144,60 @@ mod tests {
                 .await
                 .expect("in-process runtime should shutdown cleanly");
         }
+    }
+
+    #[tokio::test]
+    async fn in_process_thread_notifications_preserve_thread_sequence() {
+        let mut client = start_test_client(SessionSource::Cli).await;
+        let response = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(3),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("request transport should work")
+            .expect("thread/start should succeed");
+        let parsed: ThreadStartResponse =
+            serde_json::from_value(response).expect("thread/start response should parse");
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("event stream should stay open")
+                {
+                    InProcessServerEvent::SequencedServerNotification(event)
+                        if matches!(
+                            event.notification.as_ref(),
+                            ServerNotification::ThreadStarted(notification)
+                                if notification.thread.id == parsed.thread.id
+                        ) =>
+                    {
+                        assert_eq!(event.thread_sequence, 1);
+                        break;
+                    }
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("thread started notification should arrive before timeout");
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
     }
 
     #[tokio::test]

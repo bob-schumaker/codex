@@ -561,6 +561,10 @@ pub(crate) async fn run_onboarding_app(
                         AppServerEvent::ServerNotification(notification) => {
                             onboarding_screen.handle_app_server_notification(*notification);
                         }
+                        AppServerEvent::SequencedServerNotification(event) => {
+                            onboarding_screen
+                                .handle_app_server_notification(*event.notification);
+                        }
                         AppServerEvent::Disconnected { message } => {
                             return Err(color_eyre::eyre::eyre!(message));
                         }
@@ -568,7 +572,8 @@ pub(crate) async fn run_onboarding_app(
                         | AppServerEvent::ControllerParticipationRequest(_)
                         | AppServerEvent::ControllerOwnershipStatus(_)
                         | AppServerEvent::LocalControllerEndpointUnavailable { .. }
-                        | AppServerEvent::ServerRequest(_) => {}
+                        | AppServerEvent::ServerRequest(_)
+                        | AppServerEvent::SequencedServerRequest(_) => {}
                     }
                 }
             }

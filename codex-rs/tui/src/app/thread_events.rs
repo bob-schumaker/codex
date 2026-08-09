@@ -51,6 +51,7 @@ pub(super) struct ThreadEventStore {
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) last_sequence: u64,
+    last_sequence_is_authoritative: bool,
     pub(super) controller_ownership_status:
         Option<codex_app_server_client::InProcessControllerOwnershipStatus>,
     pub(super) capacity: usize,
@@ -81,6 +82,7 @@ impl ThreadEventStore {
             pending_interrupt_turn_id: None,
             input_state: None,
             last_sequence: 0,
+            last_sequence_is_authoritative: false,
             controller_ownership_status: None,
             capacity,
             active: false,
@@ -105,6 +107,18 @@ impl ThreadEventStore {
         self.set_turns(turns);
     }
 
+    pub(super) fn set_session_at_sequence(
+        &mut self,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+        last_sequence: u64,
+    ) {
+        self.last_sequence = last_sequence;
+        self.last_sequence_is_authoritative = true;
+        self.session = Some(session);
+        self.set_turns(turns);
+    }
+
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
         self.buffer.retain(Self::event_survives_session_refresh);
     }
@@ -118,16 +132,40 @@ impl ThreadEventStore {
         self.turns = turns;
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push_notification(&mut self, notification: ServerNotification) {
-        self.push_notification_inner(Cow::Owned(notification));
+        self.push_notification_at_sequence(notification, /*thread_sequence*/ None);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push_notification_ref(&mut self, notification: &ServerNotification) {
-        self.push_notification_inner(Cow::Borrowed(notification));
+        self.push_notification_ref_at_sequence(notification, /*thread_sequence*/ None);
     }
 
-    fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
-        self.advance_sequence();
+    pub(super) fn push_notification_at_sequence(
+        &mut self,
+        notification: ServerNotification,
+        thread_sequence: Option<u64>,
+    ) -> bool {
+        self.push_notification_inner(Cow::Owned(notification), thread_sequence)
+    }
+
+    pub(super) fn push_notification_ref_at_sequence(
+        &mut self,
+        notification: &ServerNotification,
+        thread_sequence: Option<u64>,
+    ) -> bool {
+        self.push_notification_inner(Cow::Borrowed(notification), thread_sequence)
+    }
+
+    fn push_notification_inner(
+        &mut self,
+        notification: Cow<'_, ServerNotification>,
+        thread_sequence: Option<u64>,
+    ) -> bool {
+        if !self.apply_event_sequence(thread_sequence) {
+            return false;
+        }
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
@@ -167,7 +205,7 @@ impl ThreadEventStore {
                 | ServerNotification::ProcessOutputDelta(_)
                 | ServerNotification::ProcessExited(_)
         ) {
-            return;
+            return true;
         }
 
         self.buffer
@@ -181,10 +219,22 @@ impl ThreadEventStore {
             self.pending_interactive_replay
                 .note_evicted_server_request(request.as_ref());
         }
+        true
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push_request(&mut self, request: ServerRequest) {
-        self.advance_sequence();
+        self.push_request_at_sequence(request, /*thread_sequence*/ None);
+    }
+
+    pub(super) fn push_request_at_sequence(
+        &mut self,
+        request: ServerRequest,
+        thread_sequence: Option<u64>,
+    ) -> bool {
+        if !self.apply_event_sequence(thread_sequence) {
+            return false;
+        }
         self.pending_interactive_replay
             .note_server_request(&request);
         self.buffer
@@ -196,6 +246,7 @@ impl ThreadEventStore {
             self.pending_interactive_replay
                 .note_evicted_server_request(request.as_ref());
         }
+        true
     }
 
     pub(super) fn set_controller_ownership_status(
@@ -288,6 +339,19 @@ impl ThreadEventStore {
 
     fn advance_sequence(&mut self) {
         self.last_sequence = self.last_sequence.saturating_add(1);
+    }
+
+    fn apply_event_sequence(&mut self, thread_sequence: Option<u64>) -> bool {
+        let Some(thread_sequence) = thread_sequence else {
+            self.advance_sequence();
+            return true;
+        };
+        if self.last_sequence_is_authoritative && thread_sequence <= self.last_sequence {
+            return false;
+        }
+        self.last_sequence = thread_sequence;
+        self.last_sequence_is_authoritative = true;
+        true
     }
 
     pub(super) fn note_outbound_op<T>(&mut self, op: T)
@@ -630,6 +694,75 @@ mod tests {
         let snapshot = store.snapshot();
         assert_eq!(snapshot.last_sequence, 1);
         assert_eq!(snapshot.controller_ownership_status, Some(status));
+    }
+
+    #[test]
+    fn thread_event_store_adopts_authoritative_server_sequence() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let thread_id = ThreadId::new();
+
+        store.set_session(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            Vec::new(),
+        );
+        assert_eq!(store.snapshot().last_sequence, 1);
+
+        assert!(store.push_notification_at_sequence(
+            turn_started_notification(thread_id, "turn-1"),
+            Some(1),
+        ));
+        assert_eq!(store.snapshot().last_sequence, 1);
+        assert_eq!(store.active_turn_id(), Some("turn-1"));
+
+        assert!(store.push_request_at_sequence(
+            exec_approval_request(
+                thread_id,
+                "turn-1",
+                "command-approval",
+                /*approval_id*/ None,
+            ),
+            Some(3),
+        ));
+        assert_eq!(store.snapshot().last_sequence, 3);
+        assert!(store.has_pending_thread_approvals());
+    }
+
+    #[test]
+    fn thread_event_store_drops_stale_events_after_authoritative_snapshot() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let thread_id = ThreadId::new();
+
+        store.set_session_at_sequence(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            Vec::new(),
+            42,
+        );
+
+        assert!(!store.push_notification_at_sequence(
+            turn_started_notification(thread_id, "stale-turn"),
+            Some(41),
+        ));
+        assert_eq!(store.active_turn_id(), None);
+        assert!(store.snapshot().events.is_empty());
+        assert_eq!(store.snapshot().last_sequence, 42);
+
+        assert!(!store.push_request_at_sequence(
+            exec_approval_request(
+                thread_id,
+                "stale-turn",
+                "command-approval",
+                /*approval_id*/ None,
+            ),
+            Some(42),
+        ));
+        assert_eq!(store.has_pending_thread_approvals(), false);
+
+        assert!(store.push_notification_at_sequence(
+            turn_started_notification(thread_id, "new-turn"),
+            Some(43),
+        ));
+        assert_eq!(store.active_turn_id(), Some("new-turn"));
+        assert_eq!(store.snapshot().last_sequence, 43);
     }
 
     #[test]
