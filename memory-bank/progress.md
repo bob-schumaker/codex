@@ -422,6 +422,14 @@
   --check` and `git diff --cached --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 1.47s.
+- The latest focused validation for commit `251372e` is
+  `just test -p codex-app-server local_controller_initialize_suppresses_pre_participation_notifications in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim`
+  passing 2/2 focused tests, `just test -p codex-app-server controller`
+  passing 94/94 controller-filtered tests, `just fix -p codex-app-server`
+  completing after unrelated fixer hunks were reverted, `just fmt` passing,
+  `git diff --check` and `git diff --cached --check` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 21.75s.
 
 ## In Flight
 
@@ -449,7 +457,8 @@
   classification shared by the embedded runtime writer and app-server-client,
   terminal local-controller acceptor failure handling, bounded
   external-controller ingress overload, and separate controller control-plane
-  ingress. There is no known uncommitted Codex-side source diff in that source
+  ingress, plus pre-participation initialize-notification suppression coverage.
+  There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
@@ -518,6 +527,9 @@
   `sameConnection` retry guidance. Controller control-plane RPCs use a separate
   bounded per-connection reservation so saturated normal controller ingress does
   not prevent participation, control acquire/release, or sign-off.
+  Pre-participation local-controller socket coverage now verifies an initialized
+  controller does not receive startup config-warning notifications before native
+  participation is approved.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -558,7 +570,8 @@
   goal/warning fallback controller targeting, plus app-server thread-goal
   fallback targeting, listener server-request resolution targeting, and
   thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
-  overload and separate controller control-plane ingress.
+  overload, separate controller control-plane ingress, and pre-participation
+  initialize-notification suppression coverage.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

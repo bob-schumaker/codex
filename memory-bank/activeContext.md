@@ -554,6 +554,19 @@
     --check` and `git diff --cached --check` passing, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 1.47s.
+  - Added focused in-process local-controller coverage for the
+    pre-participation default-deny invariant: even when the embedded runtime has
+    startup config warnings queued, an initialized external-controller socket
+    receives only the `initialize` response and no runtime notifications before
+    participation is approved.
+  - Validated the pre-participation silence coverage at commit `251372e` with
+    `just test -p codex-app-server local_controller_initialize_suppresses_pre_participation_notifications in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim`
+    passing 2/2 focused tests, `just test -p codex-app-server controller`
+    passing 94/94 controller-filtered tests, `just fix -p codex-app-server`
+    completing after unrelated fixer hunks were reverted, `just fmt` passing,
+    `git diff --check` and `git diff --cached --check` passing, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 21.75s.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -576,7 +589,8 @@
     spawned-descendant subtree fencing, or delivered controller prompt replay
     fencing, or terminal local-controller acceptor failure handling, or late
     endpoint-unavailable TUI reporting, or bounded controller ingress overload,
-    or separate controller control-plane ingress.
+    or separate controller control-plane ingress, or pre-participation
+    initialize-notification suppression.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -602,9 +616,10 @@
   targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification, plus bounded per-connection external-controller
-  ingress overload and separate controller control-plane ingress.
+  ingress overload and separate controller control-plane ingress, plus
+  pre-participation initialize-notification suppression coverage.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `bcdbdff`.
+  commit `251372e`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
