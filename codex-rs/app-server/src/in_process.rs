@@ -1518,6 +1518,7 @@ mod tests {
     use codex_app_server_protocol::ControllerErrorCode;
     use codex_app_server_protocol::ControllerErrorData;
     use codex_app_server_protocol::ControllerParticipationStatus;
+    use codex_app_server_protocol::ControllerReleaseControlResponse;
     use codex_app_server_protocol::ControllerRequestParticipationParams;
     use codex_app_server_protocol::ControllerRequestParticipationResponse;
     use codex_app_server_protocol::ControllerSignOffResponse;
@@ -2539,6 +2540,248 @@ mod tests {
         )
         .await;
         expect_websocket_closed(&mut websocket).await;
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_preserves_single_active_controller_lease() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(11_001),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut first_websocket = connect_local_controller_websocket(&metadata).await;
+        let mut second_websocket = connect_local_controller_websocket(&metadata).await;
+
+        for (request_id, websocket) in [
+            (21_001, &mut first_websocket),
+            (22_001, &mut second_websocket),
+        ] {
+            send_websocket_request(
+                websocket,
+                request_id,
+                "initialize",
+                Some(serde_json::json!({
+                    "clientInfo": {
+                        "name": "codex-waveshare",
+                        "version": "0.0.0-test",
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                    },
+                })),
+            )
+            .await;
+            let initialize_response: serde_json::Value =
+                read_websocket_response(websocket, request_id).await;
+            assert!(initialize_response.get("userAgent").is_some());
+        }
+
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 21_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare-primary".to_string(),
+                description: "primary external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare-primary",
+            "primary external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+
+        let first_participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 21_002).await;
+        assert_eq!(
+            first_participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let first_session = first_participation.session.expect("approved session");
+        assert_eq!(first_session.main_thread_id, started.thread.id);
+        assert!(first_session.active_lease.is_some());
+        assert!(first_session.effective_capabilities.mutate_main_thread);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: first_session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut second_websocket,
+            /*request_id*/ 22_002,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare-secondary".to_string(),
+                description: "secondary external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare-secondary",
+            "secondary external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+
+        let second_participation: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 22_002).await;
+        assert_eq!(
+            second_participation.status,
+            ControllerParticipationStatus::Approved
+        );
+        let second_session = second_participation.session.expect("approved session");
+        assert_eq!(second_session.main_thread_id, started.thread.id);
+        assert_eq!(second_session.active_lease, None);
+        assert!(second_session.effective_capabilities.read_main_thread);
+        assert!(!second_session.effective_capabilities.acquire_control);
+        assert!(!second_session.effective_capabilities.mutate_main_thread);
+
+        send_websocket_request(
+            &mut second_websocket,
+            /*request_id*/ 22_003,
+            "controller/acquireControl",
+            None,
+        )
+        .await;
+        let acquire_conflict =
+            read_websocket_error(&mut second_websocket, /*expected_id*/ 22_003).await;
+        let acquire_conflict_data: ControllerErrorData = serde_json::from_value(
+            acquire_conflict
+                .error
+                .data
+                .expect("ownership conflict error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            acquire_conflict_data.code,
+            ControllerErrorCode::OwnershipConflict
+        );
+
+        send_websocket_typed_request(
+            &mut second_websocket,
+            /*request_id*/ 22_004,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let second_read: ThreadReadResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 22_004).await;
+        assert_eq!(second_read.thread.id, started.thread.id);
+
+        send_websocket_request(
+            &mut first_websocket,
+            /*request_id*/ 21_003,
+            "controller/releaseControl",
+            None,
+        )
+        .await;
+        let first_release: ControllerReleaseControlResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 21_003).await;
+        assert_eq!(first_release.session.active_lease, None);
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Tui,
+            /*expected_owner_epoch*/ 2,
+            ControllerControlOwnershipChangedReason::Released,
+        )
+        .await;
+
+        send_websocket_request(
+            &mut second_websocket,
+            /*request_id*/ 22_005,
+            "controller/acquireControl",
+            None,
+        )
+        .await;
+        let second_acquire: ControllerAcquireControlResponse =
+            read_websocket_response(&mut second_websocket, /*expected_id*/ 22_005).await;
+        assert!(second_acquire.session.active_lease.is_some());
+        assert!(
+            second_acquire
+                .session
+                .effective_capabilities
+                .mutate_main_thread
+        );
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: second_session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 3,
+            ControllerControlOwnershipChangedReason::Acquired,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 21_004,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "first-controller-should-not-mutate".to_string(),
+            },
+        )
+        .await;
+        let stale_first_mutation =
+            read_websocket_error(&mut first_websocket, /*expected_id*/ 21_004).await;
+        let stale_first_mutation_data: ControllerErrorData = serde_json::from_value(
+            stale_first_mutation
+                .error
+                .data
+                .expect("ownership conflict error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            stale_first_mutation_data.code,
+            ControllerErrorCode::OwnershipConflict
+        );
 
         client
             .shutdown()
