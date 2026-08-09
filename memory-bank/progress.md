@@ -414,6 +414,14 @@
   reverted, `just fmt` passing, `git diff --check` passing, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `bcdbdff` is
+  `just test -p codex-app-server connection_rpc_gate saturated_external_controller`
+  passing 10/10 focused tests, `just test -p codex-app-server controller`
+  passing 93/93 controller tests, `just fix -p codex-app-server` completing
+  after unrelated fixer hunks were reverted, `just fmt` passing, `git diff
+  --check` and `git diff --cached --check` passing, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex` in 1.47s.
 
 ## In Flight
 
@@ -439,8 +447,9 @@
   embedded in-process transcript/item delivery preservation before the
   app-server-client lossless bridge, plus centralized lossless delivery
   classification shared by the embedded runtime writer and app-server-client,
-  and terminal local-controller acceptor failure handling.
-  There is no known uncommitted Codex-side source diff in that source
+  terminal local-controller acceptor failure handling, bounded
+  external-controller ingress overload, and separate controller control-plane
+  ingress. There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
@@ -506,7 +515,9 @@
   Initialized external-controller ingress is now bounded per connection before
   serialized app-server work is enqueued. Saturated controller ingress receives
   JSON-RPC `-32001` with typed `controller-overloaded` data and
-  `sameConnection` retry guidance.
+  `sameConnection` retry guidance. Controller control-plane RPCs use a separate
+  bounded per-connection reservation so saturated normal controller ingress does
+  not prevent participation, control acquire/release, or sign-off.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -547,7 +558,7 @@
   goal/warning fallback controller targeting, plus app-server thread-goal
   fallback targeting, listener server-request resolution targeting, and
   thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
-  overload.
+  overload and separate controller control-plane ingress.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

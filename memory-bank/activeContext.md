@@ -540,6 +540,20 @@
     `just fix -p codex-app-server` completing after unrelated fixer hunks were
     reverted, `just fmt` passing, `git diff --check` passing, and
     `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex`.
+  - Split external-controller control-plane RPC ingress from normal
+    external-controller RPC ingress. Saturated normal controller requests no
+    longer prevent `controller/requestParticipation`,
+    `controller/acquireControl`, `controller/releaseControl`, or
+    `controller/signOff` from reaching dispatch, while both queues remain
+    per-connection bounded.
+  - Validated the controller control-plane ingress slice at commit `bcdbdff`
+    with `just test -p codex-app-server connection_rpc_gate saturated_external_controller`
+    passing 10/10 focused tests, `just test -p codex-app-server controller`
+    passing 93/93 controller tests, `just fix -p codex-app-server` completing
+    after unrelated fixer hunks were reverted, `just fmt` passing, `git diff
+    --check` and `git diff --cached --check` passing, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 1.47s.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -561,7 +575,8 @@
     section-move implicit target fencing, or controller-origin archive/delete
     spawned-descendant subtree fencing, or delivered controller prompt replay
     fencing, or terminal local-controller acceptor failure handling, or late
-    endpoint-unavailable TUI reporting, or bounded controller ingress overload.
+    endpoint-unavailable TUI reporting, or bounded controller ingress overload,
+    or separate controller control-plane ingress.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -587,9 +602,9 @@
   targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification, plus bounded per-connection external-controller
-  ingress overload.
+  ingress overload and separate controller control-plane ingress.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `0e9b265`.
+  commit `bcdbdff`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
