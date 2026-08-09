@@ -2732,6 +2732,73 @@ mod tests {
         )
         .await;
 
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 21_004,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let first_read_after_release: ThreadReadResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 21_004).await;
+        assert_eq!(first_read_after_release.thread.id, started.thread.id);
+
+        send_websocket_request(
+            &mut first_websocket,
+            /*request_id*/ 21_005,
+            "controller/releaseControl",
+            None,
+        )
+        .await;
+        let idempotent_first_release: ControllerReleaseControlResponse =
+            read_websocket_response(&mut first_websocket, /*expected_id*/ 21_005).await;
+        assert_eq!(idempotent_first_release.session.active_lease, None);
+        assert!(
+            idempotent_first_release
+                .session
+                .effective_capabilities
+                .read_main_thread
+        );
+        assert!(
+            idempotent_first_release
+                .session
+                .effective_capabilities
+                .acquire_control
+        );
+        assert!(
+            !idempotent_first_release
+                .session
+                .effective_capabilities
+                .mutate_main_thread
+        );
+
+        send_websocket_typed_request(
+            &mut first_websocket,
+            /*request_id*/ 21_006,
+            "thread/name/set",
+            &ThreadSetNameParams {
+                thread_id: started.thread.id.clone(),
+                name: "released-controller-should-not-mutate".to_string(),
+            },
+        )
+        .await;
+        let released_first_mutation =
+            read_websocket_error(&mut first_websocket, /*expected_id*/ 21_006).await;
+        let released_first_mutation_data: ControllerErrorData = serde_json::from_value(
+            released_first_mutation
+                .error
+                .data
+                .expect("stale ownership error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            released_first_mutation_data.code,
+            ControllerErrorCode::StaleOwnership
+        );
+
         send_websocket_request(
             &mut second_websocket,
             /*request_id*/ 22_005,
@@ -2761,7 +2828,7 @@ mod tests {
 
         send_websocket_typed_request(
             &mut first_websocket,
-            /*request_id*/ 21_004,
+            /*request_id*/ 21_007,
             "thread/name/set",
             &ThreadSetNameParams {
                 thread_id: started.thread.id.clone(),
@@ -2770,7 +2837,7 @@ mod tests {
         )
         .await;
         let stale_first_mutation =
-            read_websocket_error(&mut first_websocket, /*expected_id*/ 21_004).await;
+            read_websocket_error(&mut first_websocket, /*expected_id*/ 21_007).await;
         let stale_first_mutation_data: ControllerErrorData = serde_json::from_value(
             stale_first_mutation
                 .error
