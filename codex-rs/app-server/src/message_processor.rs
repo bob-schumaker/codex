@@ -13,6 +13,7 @@ use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
 use crate::controller_admission::admit_initialized_client_request;
 use crate::controller_admission::controller_not_allowed;
+use crate::controller_admission::controller_overloaded;
 use crate::controller_admission::controller_transport_closing;
 use crate::controller_cursor::bind_controller_response_cursors;
 use crate::controller_cursor::unbind_controller_request_cursors;
@@ -1122,41 +1123,53 @@ impl MessageProcessor {
         let error_request_id = connection_request_id.clone();
         let dequeue_reclaim_thread_id = primary_reclaim_thread_id;
         let rpc_gate = Arc::clone(&session.rpc_gate);
+        let rpc_reservation = if matches!(connection_origin, ConnectionOrigin::ExternalController) {
+            Some(
+                session
+                    .rpc_gate
+                    .try_reserve_external_controller_request()
+                    .ok_or_else(controller_overloaded)?,
+            )
+        } else {
+            None
+        };
         let session_for_request = Arc::clone(&session);
         let processor = Arc::clone(self);
         let span = request_context.span();
-        let request = QueuedInitializedRequest::new(
-            rpc_gate,
-            async move {
-                let processor_for_request = Arc::clone(&processor);
-                let result = async {
-                    if let Some(thread_id) = dequeue_reclaim_thread_id.as_deref() {
-                        processor_for_request
-                            .controller_processor
-                            .reclaim_for_primary_thread_input(thread_id)
-                            .await?;
-                    }
+        let future = async move {
+            let processor_for_request = Arc::clone(&processor);
+            let result = async {
+                if let Some(thread_id) = dequeue_reclaim_thread_id.as_deref() {
                     processor_for_request
-                        .handle_initialized_client_request(InitializedClientRequest {
-                            connection_request_id,
-                            connection_origin,
-                            admission_rule,
-                            codex_request,
-                            session: session_for_request,
-                            request_context,
-                            app_server_client_name,
-                            client_version,
-                            client_mcp_extensions,
-                        })
-                        .await
+                        .controller_processor
+                        .reclaim_for_primary_thread_input(thread_id)
+                        .await?;
                 }
-                .await;
-                if let Err(error) = result {
-                    processor.outgoing.send_error(error_request_id, error).await;
-                }
+                processor_for_request
+                    .handle_initialized_client_request(InitializedClientRequest {
+                        connection_request_id,
+                        connection_origin,
+                        admission_rule,
+                        codex_request,
+                        session: session_for_request,
+                        request_context,
+                        app_server_client_name,
+                        client_version,
+                        client_mcp_extensions,
+                    })
+                    .await
             }
-            .instrument(span),
-        );
+            .await;
+            if let Err(error) = result {
+                processor.outgoing.send_error(error_request_id, error).await;
+            }
+        }
+        .instrument(span);
+        let request = if let Some(reservation) = rpc_reservation {
+            QueuedInitializedRequest::new_with_reservation(rpc_gate, reservation, future)
+        } else {
+            QueuedInitializedRequest::new(rpc_gate, future)
+        };
 
         if let Some(scope) = serialization_scope {
             let (key, access) = RequestSerializationQueueKey::from_scope(connection_id, scope);

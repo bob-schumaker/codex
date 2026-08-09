@@ -3,6 +3,7 @@ use super::MessageProcessor;
 use super::MessageProcessorArgs;
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
+use crate::connection_rpc_gate::EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY;
 use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentRecord;
 use crate::controller_enrollment::ControllerEnrollmentSource;
@@ -1214,6 +1215,60 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
                     .expect("controller error should include data"),
             )?;
             assert_eq!(data.code, ControllerErrorCode::MainThreadUnavailable);
+            assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn saturated_external_controller_ingress_returns_typed_overload() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "saturated_external_controller_ingress_returns_typed_overload",
+        async {
+            let mut harness = TracingHarness::new().await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 30_101),
+                )
+                .await;
+            let mut reservations = Vec::new();
+            for _ in 0..EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY {
+                reservations.push(
+                    external_session
+                        .rpc_gate
+                        .try_reserve_external_controller_request()
+                        .expect("external controller ingress permit should be available"),
+                );
+            }
+
+            let error = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_list_request(/*request_id*/ 30_102),
+                )
+                .await;
+
+            assert_eq!(error.error.code, crate::error_code::OVERLOADED_ERROR_CODE);
+            assert_eq!(
+                error.error.message,
+                "external controller ingress is overloaded; retry later"
+            );
+            let data: ControllerErrorData = serde_json::from_value(
+                error
+                    .error
+                    .data
+                    .expect("controller overload should include typed data"),
+            )?;
+            assert_eq!(data.code, ControllerErrorCode::ControllerOverloaded);
             assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
             harness.shutdown().await;
             Ok(())

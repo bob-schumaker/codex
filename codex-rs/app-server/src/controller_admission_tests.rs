@@ -8,6 +8,7 @@ use super::TargetExtraction;
 use super::admit_initialized_client_request;
 use super::client_request_rule;
 use super::continuation_rule_for;
+use super::controller_overloaded;
 use super::server_request_response_rule;
 use crate::transport::ConnectionOrigin;
 use codex_app_server_protocol::ClientRequest;
@@ -117,6 +118,18 @@ fn unclassified_initialized_methods_are_denied() {
         .expect_err("unclassified initialized methods should be denied");
 
     assert_controller_not_allowed(error);
+}
+
+#[test]
+fn controller_overload_error_uses_typed_controller_data() {
+    let error = controller_overloaded();
+
+    assert_eq!(error.code, crate::error_code::OVERLOADED_ERROR_CODE);
+    let data: ControllerErrorData =
+        serde_json::from_value(error.data.expect("controller error should include data"))
+            .expect("controller error data should deserialize");
+    assert_eq!(data.code, ControllerErrorCode::ControllerOverloaded);
+    assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
 }
 
 #[test]

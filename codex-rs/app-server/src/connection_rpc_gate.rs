@@ -1,7 +1,11 @@
 use std::future::Future;
 
 use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
+
+pub(crate) const EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY: usize = 128;
 
 /// Per-connection gate for initialized RPC handler execution.
 ///
@@ -11,6 +15,12 @@ use tokio_util::task::TaskTracker;
 pub(crate) struct ConnectionRpcGate {
     accepting: Mutex<bool>,
     tasks: TaskTracker,
+    external_controller_rpc_permits: std::sync::Arc<Semaphore>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ConnectionRpcReservation {
+    _permit: OwnedSemaphorePermit,
 }
 
 impl ConnectionRpcGate {
@@ -19,7 +29,20 @@ impl ConnectionRpcGate {
         Self {
             accepting: Mutex::new(accepting),
             tasks: TaskTracker::new(),
+            external_controller_rpc_permits: std::sync::Arc::new(Semaphore::new(
+                EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY,
+            )),
         }
+    }
+
+    pub(crate) fn try_reserve_external_controller_request(
+        &self,
+    ) -> Option<ConnectionRpcReservation> {
+        self.external_controller_rpc_permits
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(|permit| ConnectionRpcReservation { _permit: permit })
     }
 
     pub(crate) async fn run<F>(&self, future: F)
@@ -57,6 +80,11 @@ impl ConnectionRpcGate {
     #[cfg(test)]
     fn inflight_count(&self) -> usize {
         self.tasks.len()
+    }
+
+    #[cfg(test)]
+    fn available_external_controller_request_permits(&self) -> usize {
+        self.external_controller_rpc_permits.available_permits()
     }
 }
 
@@ -234,5 +262,26 @@ mod tests {
             .expect("handler body should still be waiting");
         run_task.await.expect("run task should complete");
         assert_eq!(gate.inflight_count(), 0);
+    }
+
+    #[test]
+    fn external_controller_reservations_are_bounded_and_released() {
+        let gate = ConnectionRpcGate::new();
+        let mut reservations = Vec::new();
+
+        for _ in 0..EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY {
+            reservations.push(
+                gate.try_reserve_external_controller_request()
+                    .expect("permit should be available"),
+            );
+        }
+
+        assert!(gate.try_reserve_external_controller_request().is_none());
+        assert_eq!(gate.available_external_controller_request_permits(), 0);
+
+        reservations.pop();
+
+        assert_eq!(gate.available_external_controller_request_permits(), 1);
+        assert!(gate.try_reserve_external_controller_request().is_some());
     }
 }

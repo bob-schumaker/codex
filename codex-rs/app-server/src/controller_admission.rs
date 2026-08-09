@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::transport::ConnectionOrigin;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
@@ -354,6 +355,26 @@ pub(crate) fn controller_transport_closing() -> JSONRPCErrorError {
             serde_json::to_value(ControllerErrorData {
                 code: ControllerErrorCode::TransportClosing,
                 retry: ControllerRetryDisposition::DoNotRetry,
+                retry_after_ms: None,
+                launch_state: None,
+                main_thread_id: None,
+                session_id: None,
+                authorization_epoch: None,
+                owner_epoch: None,
+            })
+            .unwrap_or(serde_json::Value::Null),
+        ),
+    }
+}
+
+pub(crate) fn controller_overloaded() -> JSONRPCErrorError {
+    JSONRPCErrorError {
+        code: OVERLOADED_ERROR_CODE,
+        message: "external controller ingress is overloaded; retry later".to_string(),
+        data: Some(
+            serde_json::to_value(ControllerErrorData {
+                code: ControllerErrorCode::ControllerOverloaded,
+                retry: ControllerRetryDisposition::SameConnection,
                 retry_after_ms: None,
                 launch_state: None,
                 main_thread_id: None,

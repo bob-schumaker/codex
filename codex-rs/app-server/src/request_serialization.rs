@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use crate::connection_rpc_gate::ConnectionRpcGate;
+use crate::connection_rpc_gate::ConnectionRpcReservation;
 use crate::outgoing_message::ConnectionId;
 
 type BoxFutureUnit = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -116,6 +117,7 @@ impl RequestSerializationQueueKey {
 
 pub(crate) struct QueuedInitializedRequest {
     gate: Option<Arc<ConnectionRpcGate>>,
+    _reservation: Option<ConnectionRpcReservation>,
     future: BoxFutureUnit,
 }
 
@@ -126,6 +128,19 @@ impl QueuedInitializedRequest {
     ) -> Self {
         Self {
             gate: Some(gate),
+            _reservation: None,
+            future: Box::pin(future),
+        }
+    }
+
+    pub(crate) fn new_with_reservation(
+        gate: Arc<ConnectionRpcGate>,
+        reservation: ConnectionRpcReservation,
+        future: impl Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        Self {
+            gate: Some(gate),
+            _reservation: Some(reservation),
             future: Box::pin(future),
         }
     }
@@ -133,12 +148,17 @@ impl QueuedInitializedRequest {
     fn new_background(future: impl Future<Output = ()> + Send + 'static) -> Self {
         Self {
             gate: None,
+            _reservation: None,
             future: Box::pin(future),
         }
     }
 
     pub(crate) async fn run(self) {
-        let Self { gate, future } = self;
+        let Self {
+            gate,
+            _reservation,
+            future,
+        } = self;
         match gate {
             Some(gate) => gate.run(future).await,
             None => future.await,
@@ -317,6 +337,7 @@ impl RequestSerializationQueues {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_rpc_gate::EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tokio::sync::broadcast;
@@ -692,6 +713,45 @@ mod tests {
                 .expect("timed out waiting for queue to drain"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn external_controller_reservation_is_released_after_request_runs() {
+        let queues = RequestSerializationQueues::default();
+        let key = RequestSerializationQueueKey::Global("test");
+        let gate = gate();
+        let request_reservation = gate
+            .try_reserve_external_controller_request()
+            .expect("request reservation should be available");
+        let mut held_reservations = Vec::new();
+        for _ in 1..EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY {
+            held_reservations.push(
+                gate.try_reserve_external_controller_request()
+                    .expect("filler reservation should be available"),
+            );
+        }
+        assert!(gate.try_reserve_external_controller_request().is_none());
+        let (ran_tx, ran_rx) = oneshot::channel::<()>();
+
+        queues
+            .enqueue(
+                key,
+                RequestSerializationAccess::Exclusive,
+                QueuedInitializedRequest::new_with_reservation(
+                    Arc::clone(&gate),
+                    request_reservation,
+                    async move {
+                        ran_tx.send(()).expect("receiver should be open");
+                    },
+                ),
+            )
+            .await;
+
+        timeout(queue_drain_timeout(), ran_rx)
+            .await
+            .expect("queued request should run")
+            .expect("sender should be open");
+        assert!(gate.try_reserve_external_controller_request().is_some());
     }
 
     #[tokio::test]
