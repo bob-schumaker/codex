@@ -336,6 +336,8 @@ At the downstream process-liveness discovery filter slice, the cumulative goal
 cost was 26,215,467 tokens and 104,044 seconds (approximately 28h 54m 04s).
 At the Herdr-driven native approval smoke slice, the cumulative goal cost was
 26,440,707 tokens and 104,451 seconds (approximately 29h 00m 51s).
+At the downstream presentation/slot-preservation slice, the cumulative goal cost
+was 26,608,921 tokens and 104,835 seconds (approximately 29h 07m 15s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -509,6 +511,7 @@ Recorded build and validation evidence:
 | `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>` | Passed after the owning TUIs approved the native `codex-waveshare` participation prompts: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. The first run timed out while participation was pending because the prompts were missed. This is downstream inventory/persistence evidence only; the checked-in downstream smoke binary explicitly does not perform Codex mutation, `thread/resume`, or removal reconciliation. | Passing run wall time was 7.710s. Isolated root was `/private/tmp/codex-external-smoke.gvtgFu`. |
 | Downstream commit `508880c` (`fix(host): filter stale Codex controller launches`) | Passed focused and full downstream host validation after adding `processId` decoding/liveness filtering to `LocalControllerDiscovery` and regression coverage using real AF_UNIX socket metadata. This implements the discovery-contract requirement to ignore dead process records before launch presentation or controller connection. | `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter LocalControllerDiscoveryTests` passed 1/1 in 5.115s; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 56/56 in 3.087s; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 0.475s; downstream `pre-commit run --files ...` passed. |
 | Temporary Herdr workspace `w16` with Codex panes `w16:p1` and `w16:p2` plus downstream smoke pane `w16:p3` | Passed after driving each native `Allow codex-waveshare to control this session?` prompt by sending Enter to the owning Codex TUI pane. The first Herdr-driven attempt timed out at the smoke deadline while approval was still pending; the rerun passed: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. This validates terminal-driven native approval plus connection/inventory/persistence against two temporary live Codex TUIs, and remains non-mutating downstream evidence. | Passing run was reported by Herdr at 4s. Passing isolated root was `/private/tmp/codex-external-herdr-smoke.oNh2Hi`; the timed-out root was `/private/tmp/codex-external-herdr-smoke.baEaLc`. |
+| Downstream commit `5a963b4` (`fix(host): preserve discovered Codex slot state`) | Passed after adding downstream host logic that maps live but not-yet-approved/connected launches to non-offline slot statuses and preserves existing slot assignments while filling free slots deterministically for newly discovered Codex sessions. This covers the basic presentation-state and auto-assignment preservation rules; it is not file-watch/full-rescan or mutating `thread/resume` evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ProtocolTests/testV7MapPreservesExistingRoutesAndFillsFreeSlotsDeterministically\|OperationalStateTests/testLiveButUnapprovedLaunchesDoNotRenderOfflineStatus'` passed 2/2; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 58/58; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -560,6 +563,15 @@ accepted the first selection item in each owning Codex TUI pane. This is useful
 for repeatable connection validation, but it inherits the current smoke binary's
 scope: inventory and route persistence only, not `thread/resume` mutation or
 removed-launch reconciliation.
+
+Downstream presentation note: downstream commit `5a963b4` now keeps product slot
+assignment separate from launch authorization by preserving existing assignments
+and deterministically filling free slots for newly discovered sessions. It also
+maps live non-connected launch states such as `awaitingApproval`,
+`approvalUnavailable`, `discovered`, and `connectionUnavailable` to non-offline
+physical slot states rather than `unavailable`. Runtime metadata watching,
+five-launch live discovery evidence, and mutating resume/removal evidence remain
+separate follow-up gates.
 
 ## Relevant implementation seams
 

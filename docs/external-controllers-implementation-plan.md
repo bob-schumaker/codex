@@ -513,6 +513,13 @@ External slice B: Decouple launch health, authorization, and slot assignment.
     launches all present as online/non-offline states
   - only dead process, missing metadata, invalid socket, or terminal
     `tui-unavailable`/`main-thread-closed` states present as offline
+  - implemented checkpoint in downstream commit `5a963b4`
+    (`fix(host): preserve discovered Codex slot state`):
+    - downstream `HostSessionBridge` maps live non-connected launch states to
+      `needsApproval` or `unknown` slot states instead of `unavailable`;
+    - terminal/lost launch state remains `unavailable`; and
+    - focused downstream operational-state coverage plus the full downstream
+      host test suite passed.
 
 External slice C: Auto-assign newly discovered launches when the product wants a
 slot-backed display.
@@ -530,6 +537,12 @@ slot-backed display.
     local-controller launch
   - restart of the controller host preserves explicit assignments and assigns
     only newly discovered unassigned launches to free slots
+  - implemented checkpoint in downstream commit `5a963b4`
+    (`fix(host): preserve discovered Codex slot state`):
+    - `TwelveSlotMap.assignDiscovered` preserves already assigned routes,
+      skips duplicates, and fills free slots in launch/thread order; and
+    - `BLECentral` now uses that merge operation instead of replacing the whole
+      slot map from the latest inventory projection.
 
 ### 9. Hardening and cleanup
 

@@ -28,6 +28,11 @@
   UI: two Codex TUI panes rendered `Allow codex-waveshare to control this
   session?`, Herdr sent Enter to both, and the downstream connection smoke
   passed with two launches and exact launch-scoped route persistence.
+- Downstream presentation and slot projection now preserve existing product
+  assignments, fill free slots deterministically for newly discovered Codex
+  sessions, and render live non-connected launch states as `needsApproval` or
+  `unknown` instead of offline/unavailable. This is committed downstream as
+  `5a963b4` (`fix(host): preserve discovered Codex slot state`).
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -686,6 +691,14 @@
   while approval was pending; the rerun passed in 4s after Herdr accepted both
   native controller prompts. Passing isolated root:
   `/private/tmp/codex-external-herdr-smoke.oNh2Hi`.
+- Downstream presentation/slot preservation validation for commit `5a963b4`
+  passed focused
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ProtocolTests/testV7MapPreservesExistingRoutesAndFillsFreeSlotsDeterministically|OperationalStateTests/testLiveButUnapprovedLaunchesDoNotRenderOfflineStatus'`
+  with 2/2 tests, full
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  with 58/58 tests,
+  `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
+  and downstream `pre-commit run --files ...`.
 
 ## In Flight
 
@@ -694,8 +707,8 @@
   launch-availability, in-process recovery, and controller participation
   auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- Downstream controller-host discovery and display behavior for all live Codex
-  launches, including non-Herdr launches.
+- Downstream controller-host discovery behavior for all live Codex launches,
+  including non-Herdr launches and metadata watch/full-rescan behavior.
 
 ## Remaining
 
@@ -807,14 +820,11 @@
   to the granted main-thread listener and validates controller-owned approval
   resolution plus reflected command/turn completion over the published socket.
 - Downstream controller host should discover all live launches through
-  local-controller metadata watching/rescanning.
-- Downstream display should separate:
-  - launch liveness,
-  - participation/authorization state,
-  - active input ownership, and
-  - product slot assignment.
-- Downstream auto-assignment should preserve explicit slots and fill free slots
-  deterministically for newly discovered live launches.
+  local-controller metadata watching/rescanning; current downstream discovery is
+  still refresh/poll oriented.
+- Downstream needs runtime evidence that five live Codex launches, including
+  Herdr and non-Herdr launches, are discovered and assigned/offered after the
+  watch/full-rescan path is in place.
 - Downstream mutating acceptance remains unproven by the currently checked-in
   smoke binary because it explicitly reports `no Codex mutation requested`; any
   product gate that requires `thread/resume`, control mutation, or removed-launch

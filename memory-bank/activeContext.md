@@ -14,11 +14,13 @@
   Herdr workspace after Herdr drove each owning Codex TUI's native
   `Allow codex-waveshare to control this session?` prompt. Downstream commit
   `508880c` now filters stale local-controller metadata by `processId` liveness
-  before producing discovery endpoints. Remaining known work is downstream
-  controller-host presentation-state separation, deterministic slot
-  auto-assignment, and any downstream mutating `thread/resume`/removed-launch
-  acceptance rerun against the published `$CODEX_HOME/local-controllers`
-  metadata contract.
+  before producing discovery endpoints. Downstream commit `5a963b4` now keeps
+  live but unapproved/discovered launches from rendering as offline and fills
+  newly discovered sessions into free slots without replacing existing slot
+  assignments. Remaining known work is downstream metadata watch/full-rescan
+  runtime discovery, five-launch/non-Herdr runtime validation, and any downstream
+  mutating `thread/resume`/removed-launch acceptance rerun against the published
+  `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
 
@@ -808,11 +810,19 @@
     downstream `swift test --package-path host/FirstVerticalSliceHost`, downstream
     `swift build --package-path host/FirstVerticalSliceHost`, and downstream
     `pre-commit run --files ...`.
+  - Implemented and committed downstream presentation/slot preservation at
+    `5a963b4` (`fix(host): preserve discovered Codex slot state`).
+    `HostSessionBridge` now maps live non-connected launch states to
+    non-offline slot statuses, and `TwelveSlotMap.assignDiscovered` preserves
+    existing assignments while filling free slots in deterministic launch/thread
+    order. Validation passed with focused downstream `ProtocolTests` and
+    `OperationalStateTests`, full downstream `swift test`, downstream
+    `swift build`, and downstream `pre-commit run --files ...`.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery/full
-    rescans of `$CODEX_HOME/local-controllers`, launch-health versus
-    authorization versus slot-assignment state separation, and deterministic
-    auto-assignment.
+    rescans of `$CODEX_HOME/local-controllers` and runtime validation that all
+    live Codex launches, including non-Herdr launches, are discovered and
+    assigned/offered.
 - Not started:
   - Downstream mutating acceptance rerun across multiple live Codex launches
     after the downstream smoke/host covers `thread/resume`, control mutation, or
@@ -825,8 +835,8 @@
   prompt, egress, subscription, or in-process recovery gap until a narrower
   downstream finding identifies one.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
-- Fix downstream status mapping so pending/unapproved/released live launches do
-  not display as offline.
+- Run a runtime five-launch downstream validation that includes Herdr and
+  non-Herdr Codex launches after the watch/full-rescan path is in place.
 - Extend or rerun the downstream multi-launch controller smoke if mutating
   `thread/resume`/removal evidence is required; the current checked-in smoke is
   status-only and prints `no Codex mutation requested`.
