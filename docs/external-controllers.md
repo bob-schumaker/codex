@@ -2,7 +2,7 @@
 
 ## Status
 
-Internal design specification. This document describes the intended architecture; it does not describe an available CLI or app-server API.
+Internal design and implementation-tracking specification for experimental local external-controller support. The public controller surface remains experimental and gated by app-server v2 experimental API opt-in.
 
 ## Purpose
 
@@ -183,7 +183,7 @@ An approved controller may call experimental `controller/signOff` to relinquish 
 
 The new public controller methods use the v2 singular-resource naming convention and are all gated by `initialize.capabilities.experimentalApi`:
 
-- `controller/requestParticipation` takes `ControllerRequestParticipationParams { controllerName, description }` and returns `ControllerRequestParticipationResponse { status, session }`, where `status` is `approved` or `rejected` and `session` is a required nullable `ControllerSession`. `ControllerSession` contains session ID, main thread ID, explicitly nullable `activeLease`, authorization epoch, `effectiveCapabilities`, and advisory lease/session expiry durations. Rejection has `session: null` and typed denial data. `main-thread-unavailable` is not a rejection status; it is a typed retryable error until the launch reaches a terminal no-main-thread state.
+- `controller/requestParticipation` takes `ControllerRequestParticipationParams { controllerName, description }` and returns `ControllerRequestParticipationResponse { status, session, denial }`, where `status` is `approved` or `rejected`, `session` is a required nullable `ControllerSession`, and `denial` is required nullable typed denial data. `ControllerSession` contains session ID, main thread ID, explicitly nullable `activeLease`, authorization epoch, `effectiveCapabilities`, and advisory lease/session expiry durations. Rejection has `session: null` and typed `denial` data. `main-thread-unavailable` is not a rejection status; it is a typed retryable error until the launch reaches a terminal no-main-thread state.
 - `controller/authorizationChanged` and `controller/controlOwnershipChanged` each include session ID, main thread ID, reason enum, authorization/owner epochs, and a monotonically increasing controller-session sequence. They are controller control-plane notifications, never TUI state inputs. The TUI receives the corresponding typed in-process ownership-status event in `threadSequence` order. Terminal revocation fences queued events before its notification.
 - `controller/acquireControl` and `controller/releaseControl` take no payload and return the updated `ControllerSession`. Acquire returns only after its ownership transition completes. Release returns after its ownership transition completes, or immediately with `activeLease: null` when the live session already has no active lease. `controller/signOff` returns only after terminal revocation completes; its response is exempted from teardown.
 - Canonical experimental errors are: `experimental-not-enabled`, `participation-required`, `enrollment-denied`, `main-thread-unavailable`, `main-thread-closed`, `tui-unavailable`, `ownership-conflict`, `stale-ownership`, `controller-not-allowed`, `transport-closing`, `different-thread-target`, `authorization-expired`, `lease-expired`, and `controller-overloaded`. Each error includes typed data sufficient to decide whether retry on the same connection is allowed.
@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `8af69bc`
-(`fix(app-server): reject persistent controller approvals`). The recorded
+Codex-side hardening has continued through commit `d3e24e0`
+(`test(app-server): cover controller control-plane overload`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -291,7 +291,9 @@ seconds (approximately 14h 06m 21s). At the controller file-change approval
 scope coverage slice, the cumulative goal cost was 17,263,388 tokens and 71,702
 seconds (approximately 19h 55m 02s). At the persistent controller approval
 rejection slice, the cumulative goal cost was 17,496,049 tokens and 72,273
-seconds (approximately 20h 04m 33s). These costs include implementation,
+seconds (approximately 20h 04m 33s). At the controller control-plane overload
+coverage slice, the cumulative goal cost was 17,786,148 tokens and 73,074
+seconds (approximately 20h 17m 54s). These costs include implementation,
 review, validation, and commit preparation across the staged slices; they are
 not limited to build/test subprocess runtime.
 
@@ -351,6 +353,10 @@ Final build and validation evidence:
 | `just test -p codex-app-server controller_rejects_persistent_command_approval_decisions` | Passed: 1 test run, 1 passed, 1244 skipped. This covers an active controller rejecting command approval decisions that would persist beyond the connection-bound lease: exec-policy amendments and network-policy amendments. Each rejected prompt remained pending and then resolved with a non-persistent `decline`. | Compile reported 1m 09s; nextest reported 0.659s. |
 | `just test -p codex-app-server controller` | Passed: 106 test runs, 106 passed, 1139 skipped after adding persistent command-approval rejection coverage. | Compile reported 1.14s; nextest reported 62.721s. |
 | `git diff --check` | Passed after the persistent controller approval rejection slice. | Subsecond. |
+| `just fmt` | Passed after the controller control-plane overload coverage slice. | Shell wall time was 7.627s. |
+| `just test -p codex-app-server saturated_external_controller_control_ingress_returns_typed_overload` | Passed: 1 test run, 1 passed, 1245 skipped. This covers an initialized external controller receiving typed `controller-overloaded` data when the controller control-plane ingress reservation pool is exhausted before `controller/requestParticipation` dispatch. | Compile reported 1m 03s; nextest reported 0.546s. |
+| `just test -p codex-app-server saturated_external_controller` | Passed: 3 test runs, 3 passed, 1243 skipped across normal ingress overload, control-plane ingress overload, and normal-saturation allowing release/acquire/sign-off control-plane dispatch. | Compile reported 1.06s; nextest reported 1.212s. |
+| `git diff --check` | Passed after the controller control-plane overload coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 
