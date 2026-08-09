@@ -278,12 +278,12 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `347ba1f`
-(`test(app-server): cover controller metadata publish route`). The recorded
+Codex-side hardening has continued through commit `4878186`
+(`test(app-server): cover embedded controller nonce rejection`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
-44,738 seconds (approximately 12h 25m 38s). At the in-process metadata publish
-validation slice, the cumulative goal cost was 16,220,093 tokens and 49,110
-seconds (approximately 13h 38m 30s). These costs include implementation, review,
+44,738 seconds (approximately 12h 25m 38s). At the embedded nonce rejection
+validation slice, the cumulative goal cost was 16,311,647 tokens and 49,531
+seconds (approximately 13h 45m 31s). These costs include implementation, review,
 validation, and commit preparation across the staged slices; they are not limited
 to build/test subprocess runtime.
 
@@ -319,6 +319,10 @@ Final build and validation evidence:
 | `just test -p codex-app-server local_controller_main_thread_publish_updates_discovery_metadata` | Passed: 1 test run, 1 passed, 1239 skipped. This covers the in-process TUI publish command updating the actual local-controller discovery metadata file, and verifies a later publish does not replace the immutable main-thread ID. | Compile reported 20.53s; nextest reported 0.595s. |
 | `just test -p codex-app-server local_controller_` | Passed: 11 test runs, 11 passed, 1229 skipped after adding the metadata publish route test. | Compile reported 1.10s; nextest reported 36.461s. |
 | `git diff --check` | Passed after the in-process metadata publish route coverage slice. | Subsecond. |
+| `just fmt` | Passed after the embedded nonce rejection coverage slice. | Shell wall time was 6.274s on the final run. |
+| `just test -p codex-app-server local_controller_endpoint_rejects_missing_or_wrong_launch_nonce` | First attempt failed to compile because the new test helper used the module's protocol `Result` alias instead of `std::result::Result`; the helper signature was corrected. Final run passed: 1 test run, 1 passed, 1240 skipped. This covers missing and wrong launch nonce rejection over the embedded endpoint, followed by a valid nonce connection. | Final compile reported 17.10s; nextest reported 0.557s. |
+| `just test -p codex-app-server local_controller_` | Passed: 12 test runs, 12 passed, 1229 skipped after adding the embedded nonce rejection test. | Compile reported 0.98s; nextest reported 35.925s. |
+| `git diff --check` | Passed after the embedded nonce rejection coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 
