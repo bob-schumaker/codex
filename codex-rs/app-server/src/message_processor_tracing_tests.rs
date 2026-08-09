@@ -1278,6 +1278,124 @@ fn saturated_external_controller_ingress_returns_typed_overload() -> Result<()> 
 
 #[test]
 #[serial(app_server_tracing)]
+fn saturated_external_controller_normal_ingress_allows_control_plane() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "saturated_external_controller_normal_ingress_allows_control_plane",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 30_201),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+            let started = harness
+                .start_thread(/*request_id*/ 30_202, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 30_203),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .expect("approved session")
+                    .active_lease
+                    .is_some()
+            );
+
+            let mut normal_reservations = Vec::new();
+            for _ in 0..EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY {
+                normal_reservations.push(
+                    external_session
+                        .rpc_gate
+                        .try_reserve_external_controller_request()
+                        .expect("external controller normal ingress permit should be available"),
+                );
+            }
+
+            let error = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_thread_list_request(/*request_id*/ 30_204),
+                )
+                .await;
+            let data: ControllerErrorData = serde_json::from_value(
+                error
+                    .error
+                    .data
+                    .expect("controller overload should include typed data"),
+            )?;
+            assert_eq!(data.code, ControllerErrorCode::ControllerOverloaded);
+
+            let released: ControllerReleaseControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 30_205,
+                        "controller/releaseControl",
+                    ),
+                )
+                .await;
+            assert_eq!(released.session.active_lease, None);
+
+            let reacquired: ControllerAcquireControlResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(
+                        /*request_id*/ 30_206,
+                        "controller/acquireControl",
+                    ),
+                )
+                .await;
+            assert!(reacquired.session.active_lease.is_some());
+
+            let _: ControllerSignOffResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_no_params_request(/*request_id*/ 30_207, "controller/signOff"),
+                )
+                .await;
+
+            assert_eq!(
+                normal_reservations.len(),
+                EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY
+            );
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
 fn active_controller_archive_delete_reject_spawned_descendant_targets() -> Result<()> {
     run_current_thread_test_with_stack(
         "active_controller_archive_delete_reject_spawned_descendant_targets",

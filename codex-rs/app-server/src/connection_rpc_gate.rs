@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
 
 pub(crate) const EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY: usize = 128;
+pub(crate) const EXTERNAL_CONTROLLER_CONTROL_RPC_QUEUE_CAPACITY: usize = 16;
 
 /// Per-connection gate for initialized RPC handler execution.
 ///
@@ -16,6 +17,7 @@ pub(crate) struct ConnectionRpcGate {
     accepting: Mutex<bool>,
     tasks: TaskTracker,
     external_controller_rpc_permits: std::sync::Arc<Semaphore>,
+    external_controller_control_rpc_permits: std::sync::Arc<Semaphore>,
 }
 
 #[derive(Debug)]
@@ -32,6 +34,9 @@ impl ConnectionRpcGate {
             external_controller_rpc_permits: std::sync::Arc::new(Semaphore::new(
                 EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY,
             )),
+            external_controller_control_rpc_permits: std::sync::Arc::new(Semaphore::new(
+                EXTERNAL_CONTROLLER_CONTROL_RPC_QUEUE_CAPACITY,
+            )),
         }
     }
 
@@ -39,6 +44,16 @@ impl ConnectionRpcGate {
         &self,
     ) -> Option<ConnectionRpcReservation> {
         self.external_controller_rpc_permits
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(|permit| ConnectionRpcReservation { _permit: permit })
+    }
+
+    pub(crate) fn try_reserve_external_controller_control_request(
+        &self,
+    ) -> Option<ConnectionRpcReservation> {
+        self.external_controller_control_rpc_permits
             .clone()
             .try_acquire_owned()
             .ok()
@@ -85,6 +100,12 @@ impl ConnectionRpcGate {
     #[cfg(test)]
     fn available_external_controller_request_permits(&self) -> usize {
         self.external_controller_rpc_permits.available_permits()
+    }
+
+    #[cfg(test)]
+    fn available_external_controller_control_request_permits(&self) -> usize {
+        self.external_controller_control_rpc_permits
+            .available_permits()
     }
 }
 
@@ -283,5 +304,47 @@ mod tests {
 
         assert_eq!(gate.available_external_controller_request_permits(), 1);
         assert!(gate.try_reserve_external_controller_request().is_some());
+    }
+
+    #[test]
+    fn external_controller_control_reservations_are_independent() {
+        let gate = ConnectionRpcGate::new();
+        let mut normal_reservations = Vec::new();
+        for _ in 0..EXTERNAL_CONTROLLER_RPC_QUEUE_CAPACITY {
+            normal_reservations.push(
+                gate.try_reserve_external_controller_request()
+                    .expect("normal permit should be available"),
+            );
+        }
+        assert!(gate.try_reserve_external_controller_request().is_none());
+
+        let mut control_reservations = Vec::new();
+        for _ in 0..EXTERNAL_CONTROLLER_CONTROL_RPC_QUEUE_CAPACITY {
+            control_reservations.push(
+                gate.try_reserve_external_controller_control_request()
+                    .expect("control permit should be available"),
+            );
+        }
+
+        assert!(
+            gate.try_reserve_external_controller_control_request()
+                .is_none()
+        );
+        assert_eq!(gate.available_external_controller_request_permits(), 0);
+        assert_eq!(
+            gate.available_external_controller_control_request_permits(),
+            0
+        );
+
+        control_reservations.pop();
+
+        assert_eq!(
+            gate.available_external_controller_control_request_permits(),
+            1
+        );
+        assert!(
+            gate.try_reserve_external_controller_control_request()
+                .is_some()
+        );
     }
 }

@@ -1124,12 +1124,16 @@ impl MessageProcessor {
         let dequeue_reclaim_thread_id = primary_reclaim_thread_id;
         let rpc_gate = Arc::clone(&session.rpc_gate);
         let rpc_reservation = if matches!(connection_origin, ConnectionOrigin::ExternalController) {
-            Some(
-                session
+            let reservation = match &codex_request {
+                ClientRequest::ControllerRequestParticipation { .. }
+                | ClientRequest::ControllerAcquireControl { .. }
+                | ClientRequest::ControllerReleaseControl { .. }
+                | ClientRequest::ControllerSignOff { .. } => session
                     .rpc_gate
-                    .try_reserve_external_controller_request()
-                    .ok_or_else(controller_overloaded)?,
-            )
+                    .try_reserve_external_controller_control_request(),
+                _ => session.rpc_gate.try_reserve_external_controller_request(),
+            };
+            Some(reservation.ok_or_else(controller_overloaded)?)
         } else {
             None
         };
