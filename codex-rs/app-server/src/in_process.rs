@@ -1684,8 +1684,24 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use app_test_support::MockResponsesConfig;
+    #[cfg(unix)]
+    use app_test_support::create_final_assistant_message_sse_response;
+    #[cfg(unix)]
+    use app_test_support::create_mock_responses_server_sequence;
+    #[cfg(unix)]
+    use app_test_support::create_shell_command_sse_response;
     use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::ClientInfo;
+    #[cfg(unix)]
+    use codex_app_server_protocol::CommandExecutionApprovalDecision;
+    #[cfg(unix)]
+    use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+    #[cfg(unix)]
+    use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+    #[cfg(unix)]
+    use codex_app_server_protocol::CommandExecutionStatus;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ControllerAcquireControlResponse;
     use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
@@ -1721,6 +1737,8 @@ mod tests {
     use codex_app_server_protocol::ItemStartedNotification;
     use codex_app_server_protocol::JSONRPCError;
     use codex_app_server_protocol::JSONRPCRequest;
+    #[cfg(unix)]
+    use codex_app_server_protocol::JSONRPCResponse;
     use codex_app_server_protocol::McpServerStartupState;
     use codex_app_server_protocol::McpServerStatusUpdatedNotification;
     use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
@@ -1770,8 +1788,14 @@ mod tests {
     use codex_app_server_protocol::TurnPlanStep;
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_app_server_protocol::TurnPlanUpdatedNotification;
+    #[cfg(unix)]
+    use codex_app_server_protocol::TurnStartParams;
+    #[cfg(unix)]
+    use codex_app_server_protocol::TurnStartResponse;
     use codex_app_server_protocol::TurnStartedNotification;
     use codex_app_server_protocol::TurnStatus;
+    #[cfg(unix)]
+    use codex_app_server_protocol::UserInput;
     use codex_app_server_protocol::WarningNotification;
     use codex_core::config::ConfigBuilder;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -3252,6 +3276,26 @@ mod tests {
     #[tokio::test]
     async fn local_controller_socket_uses_main_thread_interface_and_tui_reclaim() {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let responses = vec![
+            create_shell_command_sse_response(
+                vec![
+                    "/bin/sh".to_string(),
+                    "-lc".to_string(),
+                    "printf controller-e2e".to_string(),
+                ],
+                /*workdir*/ None,
+                Some(5000),
+                "controller-e2e-call",
+            )
+            .expect("shell command response should build"),
+            create_final_assistant_message_sse_response("controller approval accepted")
+                .expect("final assistant response should build"),
+        ];
+        let server = create_mock_responses_server_sequence(responses).await;
+        MockResponsesConfig::new(&server.uri())
+            .with_approval_policy("untrusted")
+            .write(codex_home.path())
+            .expect("mock responses config should write");
         let args = build_test_start_args(
             codex_home.path(),
             SessionSource::Cli,
@@ -3408,6 +3452,162 @@ mod tests {
         .await;
         let _: ThreadSetNameResponse =
             read_websocket_response(&mut websocket, /*expected_id*/ 20_004).await;
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_012,
+            "turn/start",
+            &TurnStartParams {
+                thread_id: started.thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "run the controller approval probe".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..TurnStartParams::default()
+            },
+        )
+        .await;
+
+        let mut controller_turn: Option<TurnStartResponse> = None;
+        let mut command_approval: Option<JSONRPCRequest> = None;
+        timeout(Duration::from_secs(10), async {
+            while controller_turn.is_none() || command_approval.is_none() {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(20_012) =>
+                    {
+                        controller_turn = Some(
+                            serde_json::from_value(response.result)
+                                .expect("turn/start response should parse"),
+                        );
+                    }
+                    JSONRPCMessage::Request(request)
+                        if request.method == "item/commandExecution/requestApproval" =>
+                    {
+                        command_approval = Some(request);
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    message => {
+                        panic!("unexpected websocket message during controller turn: {message:?}");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("controller turn and approval request should arrive before timeout");
+        let controller_turn = controller_turn.expect("turn/start response should be captured");
+        let command_approval = command_approval.expect("command approval should be captured");
+        let JSONRPCRequest {
+            id: command_approval_request_id,
+            params: command_approval_params,
+            ..
+        } = command_approval;
+        let command_approval_params: CommandExecutionRequestApprovalParams =
+            serde_json::from_value(
+                command_approval_params.expect("command approval request should include params"),
+            )
+            .expect("command approval params should parse");
+        assert_eq!(command_approval_params.thread_id, started.thread.id);
+        assert_eq!(command_approval_params.turn_id, controller_turn.turn.id);
+        assert_eq!(command_approval_params.item_id, "controller-e2e-call");
+
+        write_websocket_message(
+            &mut websocket,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: command_approval_request_id.clone(),
+                result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                    decision: CommandExecutionApprovalDecision::Accept,
+                })
+                .expect("approval response should serialize"),
+            }),
+        )
+        .await;
+
+        let mut saw_controller_request_resolved = false;
+        let mut saw_controller_command_completed = false;
+        let mut saw_controller_turn_completed = false;
+        let mut controller_completion_messages = Vec::new();
+        let controller_completion_result = timeout(Duration::from_secs(10), async {
+            while !saw_controller_request_resolved
+                || !saw_controller_command_completed
+                || !saw_controller_turn_completed
+            {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Notification(notification)
+                        if notification.method == "serverRequest/resolved" =>
+                    {
+                        controller_completion_messages.push(notification.method.clone());
+                        let resolved: ServerRequestResolvedNotification = serde_json::from_value(
+                            notification
+                                .params
+                                .expect("serverRequest/resolved should include params"),
+                        )
+                        .expect("serverRequest/resolved params should parse");
+                        controller_completion_messages.push(format!(
+                            "serverRequest/resolved: thread_id={}, request_id={:?}",
+                            resolved.thread_id, resolved.request_id
+                        ));
+                        assert_eq!(resolved.thread_id, started.thread.id);
+                        assert_eq!(resolved.request_id, command_approval_request_id);
+                        saw_controller_request_resolved = true;
+                    }
+                    JSONRPCMessage::Notification(notification)
+                        if notification.method == "item/completed" =>
+                    {
+                        controller_completion_messages.push(notification.method.clone());
+                        let completed: ItemCompletedNotification = serde_json::from_value(
+                            notification
+                                .params
+                                .expect("item/completed should include params"),
+                        )
+                        .expect("item/completed params should parse");
+                        controller_completion_messages
+                            .push(format!("item/completed: {:?}", completed.item));
+                        if let ThreadItem::CommandExecution { id, status, .. } = completed.item
+                            && id == "controller-e2e-call"
+                        {
+                            assert_eq!(status, CommandExecutionStatus::Completed);
+                            saw_controller_command_completed = true;
+                        }
+                    }
+                    JSONRPCMessage::Notification(notification)
+                        if notification.method == "turn/completed" =>
+                    {
+                        controller_completion_messages.push(notification.method.clone());
+                        let completed: TurnCompletedNotification = serde_json::from_value(
+                            notification
+                                .params
+                                .expect("turn/completed should include params"),
+                        )
+                        .expect("turn/completed params should parse");
+                        controller_completion_messages.push(format!(
+                            "turn/completed: thread_id={}, turn_id={}",
+                            completed.thread_id, completed.turn.id
+                        ));
+                        if completed.thread_id == started.thread.id
+                            && completed.turn.id == controller_turn.turn.id
+                        {
+                            saw_controller_turn_completed = true;
+                        }
+                    }
+                    JSONRPCMessage::Notification(notification) => {
+                        controller_completion_messages.push(notification.method);
+                    }
+                    message => {
+                        panic!(
+                            "unexpected websocket message while waiting for controller turn completion: {message:?}"
+                        );
+                    }
+                }
+            }
+        })
+        .await;
+        if let Err(err) = controller_completion_result {
+            panic!(
+                "controller-owned turn should complete before timeout: {err:?}; observed messages: {controller_completion_messages:?}"
+            );
+        }
+        assert!(saw_controller_command_completed);
 
         let _: ThreadSetNameResponse = serde_json::from_value(
             client

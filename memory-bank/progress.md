@@ -10,6 +10,12 @@
   embedded-unavailable, launch-failed, best-effort startup, required startup,
   immutable `mainThreadId` metadata publication, and existing Unix
   control-socket/default `unix://` behavior all have focused coverage.
+- Approved local-controller participation now immediately subscribes the
+  controller connection to the granted TUI main-thread listener when the
+  approved session advertises `subscribeMainThread`, so a controller that
+  connects after the main thread already exists receives listener-ordered
+  `serverRequest/resolved`, item completion, turn completion, and other normal
+  main-thread notifications for its actions.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -281,13 +287,15 @@
   fencing, plus TUI in-process ownership-status history-exclusion coverage,
   plus TUI snapshot-local sequence/ownership-state bookkeeping, app-server-owned
   in-process recovery snapshots carrying ownership status/epoch and pending
-  prompt replay, and the reconciled Codex-side Commit 18 availability/publication
-  behavior.
+  prompt replay, the reconciled Codex-side Commit 18 availability/publication
+  behavior, and the Codex-side Commit 19 controller participation
+  auto-subscribe/e2e reflection behavior.
 - Focused app-server controller tests pass. The latest full
-  `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
-  retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
-  zsh-fork fixture failures; those failures remain separate fixture health
-  issues outside the controller slice.
+  `just test -p codex-app-server` run ended 1254 passed, 2 flaky passed on
+  retry, 5 failed, and 1 skipped. The exact failure rerun reproduced two
+  remote-thread-store deadline tests and three zsh-fork deadline/mock-request
+  tests; those failures remain separate fixture health issues outside the
+  controller slice.
 - The focused validation for commit `b773bfe` is `just fmt` passing,
   `just test -p codex-tui live_app_server_realtime_error_notification_renders_warning`
   passing 1/1 focused test after a cold rebuild, `just fix -p codex-tui`
@@ -641,21 +649,32 @@
   with 4/4 tests, and
   `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket`
   with 18/18 tests.
+- Controller participation auto-subscribe/e2e validation passed `just fmt`,
+  `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim`
+  with 1/1 focused test,
+  `just test -p codex-app-server local_controller controller` with 114/114
+  controller and local-controller tests, `just fix -p codex-app-server` after
+  unrelated fixer hunks were reverted, `git diff --check`, and
+  `cargo build -p codex-cli --bin codex`, which rebuilt
+  `codex-rs/target/debug/codex` as `codex-cli 0.147.1`.
 
 ## In Flight
 
 - No concrete Codex-side source gap is currently confirmed after the
   normal-interface, reclaim/reflection, prompt, egress, subscription,
-  launch-availability, and in-process recovery audits. New Codex work should
-  start from a fresh, narrow downstream finding rather than a generic parity
-  search.
+  launch-availability, in-process recovery, and controller participation
+  auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
+  downstream finding rather than a generic parity search.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
 ## Remaining
 
 - No concrete Codex app-server subscription or implicit-target gap is known in
-  the current source checkpoint.
+  the current source checkpoint. Approved local-controller participation now
+  attaches the controller connection to the granted main-thread listener so the
+  external controller sees the same reflected main-thread events after
+  participation as the TUI-facing app-server interface.
   Exact-thread and collection-filtered pagination cursors are now
   connection-bound for controllers, including internally-sent `thread/resume`
   response cursors. Controller-origin `thread/resume` override fields and
@@ -755,6 +774,9 @@
   `thread/read` fallback. Codex-side Commit 18 availability/publication behavior
   is also validated for embedded, daemon-backed, explicit remote,
   policy-disabled, best-effort unavailable, and policy-required launch modes.
+  Codex-side Commit 19 e2e reflection now auto-subscribes approved controllers
+  to the granted main-thread listener and validates controller-owned approval
+  resolution plus reflected command/turn completion over the published socket.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -805,6 +827,8 @@
   exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
+- Treat the current remote-thread-store deadline failures as a separate fixture
+  health issue unless a future controller change newly affects that cluster.
 - Do not expect a local-controller launch to become available again after a
   native `TuiUnavailable` decision; a fresh Codex launch should publish fresh
   metadata and require a new controller participation request.

@@ -327,6 +327,9 @@ At the in-process recovery-snapshot slice, the cumulative goal cost was
 24,507,618 tokens and 98,385 seconds (approximately 27h 19m 45s).
 At the availability reconciliation slice, the cumulative goal cost was
 24,982,209 tokens and 100,159 seconds (approximately 27h 49m 19s).
+At the controller participation auto-subscribe and e2e approval slice, the
+cumulative goal cost was 25,650,619 tokens and 102,284 seconds (approximately
+28h 24m 44s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -490,6 +493,13 @@ Recorded build and validation evidence:
 | `just test -p codex-tui external_controller_availability embedded_app_server_requests_best_effort_controller_endpoint embedded_app_server_can_disable_controller_endpoint_by_policy embedded_app_server_can_require_controller_endpoint_by_policy embedded_app_server_start_failure_is_returned` | Passed: 9 test runs, 9 passed, 3460 skipped. This covers embedded-supported, embedded-unavailable, policy-disabled, launch-failed, daemon-unsupported, remote-unsupported, best-effort startup, disabled startup, required startup, and startup failure propagation. | Compile reported 24.32s; nextest reported 1.082s. |
 | `just test -p codex-app-server best_effort_local_controller_endpoint_failure_allows_startup enabled_local_controller_endpoint_failure_fails_startup local_controller_main_thread_publish_updates_discovery_metadata local_controller_socket_retries_participation_after_main_thread_publish` | Passed: 4 test runs, 4 passed, 1256 skipped. This covers best-effort endpoint failure continuing startup, required endpoint failure aborting startup, metadata `mainThreadId` publication without replacing the immutable main-thread binding, and retryable same-connection participation before main-thread readiness. | Compile reported 20.10s; nextest reported 5.850s. |
 | `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket` | Passed: 18 test runs, 18 passed, 143 skipped. This covers local-controller metadata, nonce, peer-credential, cleanup, acceptor-failure reporting, main-thread metadata republication, and existing Unix control-socket/default `unix://` parsing and WebSocket upgrade behavior. | Compile reported 1.02s; nextest reported 0.300s. |
+| `just fmt` | Passed after the controller participation auto-subscribe and e2e approval slice, including the final rerun after removing unrelated fixer hunks. | Final shell wall time was 6.442s. |
+| `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim` | Passed: 1 test run, 1 passed, 1259 skipped after adding controller-resolved approval coverage and subscribing approved controllers to the granted main-thread listener during participation. This now covers local-controller socket parity, controller `turn/start`, controller receipt and resolution of `item/commandExecution/requestApproval`, listener-ordered `serverRequest/resolved`, command completion, turn completion, TUI reclaim, stale ownership, read-after-reclaim, reacquire, and final state. | Final compile reported 15.21s; nextest reported 7.009s. |
+| `just test -p codex-app-server local_controller controller` | Passed: 114 test runs, 114 passed, 1146 skipped after the controller participation auto-subscribe runtime fix. This covers the local-controller socket/native approval paths together with controller admission, lease ownership, prompt response, notification targeting, subscription cleanup, and bounded ingress/egress behavior. | Compile reported 0.77s; nextest reported 47.336s. |
+| `just test -p codex-app-server` | Attempted after the controller participation auto-subscribe slice. Controller/local-controller coverage passed, but the full crate run still reported 1254 passed, 2 flaky passed on retry, 5 failed, and 1 skipped. Rerunning the five failures reproduced the same failures, all outside the touched controller path: two remote-thread-store deadline tests and three zsh-fork deadline/mock-request tests. | Full run compile reported 0.81s; nextest reported 217.442s. Exact failure rerun returned 0 passed, 5 failed, 1255 skipped. |
+| `just fix -p codex-app-server` | Passed after the controller participation auto-subscribe slice. It auto-fixed two unrelated lint sites; those hunks were reviewed and reverted so the commit stayed scoped to controller behavior. | Cargo reported 36.09s. |
+| `git diff --check` | Passed after the controller participation auto-subscribe source slice. | Subsecond. |
+| `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; `./codex-rs/target/debug/codex --version` reported `codex-cli 0.147.1`, and the final binary size was 757,129,080 bytes. | Cargo reported 29.76s with the known `__eh_frame section too large` linker warning. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -511,6 +521,17 @@ policy-required launch failure, daemon-backed, and explicit remote launch modes
 produce the documented availability states. The remaining discovery,
 presentation, and auto-assignment work is downstream controller-host product
 work against the published metadata contract.
+
+End-to-end controller note: the current source satisfies Commit 19's Codex-side
+embedded-runtime scenario. Approved controller participation now subscribes the
+controller connection to the granted main-thread listener immediately when the
+session advertises `subscribeMainThread`, so a controller that connects after
+the TUI main thread already exists receives the same listener-ordered
+notifications for its main-thread actions as the TUI-facing app-server
+interface. The focused socket e2e validates normal app-server parity,
+controller-resolved command approval, command and turn completion visibility,
+TUI reclaim, stale controller mutation rejection, standing read access after
+reclaim, controller reacquire, final thread state, and sign-off.
 
 ## Relevant implementation seams
 

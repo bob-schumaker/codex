@@ -1,14 +1,14 @@
 # Active Context
 
-- Current focus: Codex-side Commit 18 availability/publication behavior is
-  implemented and freshly revalidated. Embedded TUI launches request and report
-  the local-controller endpoint by policy, metadata publishes `mainThreadId`
-  once the immutable main thread exists, best-effort and required endpoint
-  failures diverge as designed, late acceptor failure reaches the TUI as
-  `embedded-unavailable`, and existing Unix control-socket/default `unix://`
-  behavior remains covered. The current source audit has no confirmed remaining
-  Codex-side subscription, implicit-target, launch-availability, or recovery
-  gap. Remaining known work is downstream controller-host discovery,
+- Current focus: Codex-side Commit 19 controller participation
+  auto-subscribe/e2e behavior is implemented and validated. Approved
+  local-controller participation now attaches the external-controller
+  connection to the granted main-thread listener immediately, so controller
+  actions over the normal app-server surface reflect through the same
+  listener-ordered events the TUI bridge observes. The current source audit has
+  no confirmed remaining Codex-side subscription, implicit-target,
+  launch-availability, TUI reclaim/reflection, prompt, egress, or in-process
+  recovery gap. Remaining known work is downstream controller-host discovery,
   presentation-state separation, deterministic slot auto-assignment, and the
   downstream multi-launch acceptance rerun against the published
   `$CODEX_HOME/local-controllers` metadata contract.
@@ -754,6 +754,28 @@
     passing 4/4, and
     `just test -p codex-app-server-transport local_controller control_socket listen_unix_socket`
     passing 18/18.
+  - Closed the Codex-side Commit 19 e2e reflection gap: approved
+    `controller/requestParticipation` with `subscribeMainThread` now immediately
+    subscribes the controller connection to the granted TUI main-thread listener.
+    The focused local-controller socket e2e now covers controller `turn/start`,
+    controller receipt and resolution of
+    `item/commandExecution/requestApproval`, listener-ordered
+    `serverRequest/resolved`, command completion, turn completion, TUI reclaim,
+    stale ownership rejection, read-after-reclaim, reacquire, final thread
+    state, and sign-off.
+  - Validated the controller participation auto-subscribe/e2e slice with
+    `just fmt` passing, the focused
+    `just test -p codex-app-server local_controller_socket_uses_main_thread_interface_and_tui_reclaim`
+    passing 1/1,
+    `just test -p codex-app-server local_controller controller` passing
+    114/114, `just fix -p codex-app-server` passing after unrelated fixer hunks
+    were reverted, `git diff --check` passing, and
+    `cargo build -p codex-cli --bin codex` rebuilding
+    `codex-rs/target/debug/codex` as `codex-cli 0.147.1`.
+  - Reran the full `just test -p codex-app-server` for the current slice. It
+    still fails only in unrelated fixture clusters: two remote-thread-store
+    deadline tests and three zsh-fork deadline/mock-request tests reproduced on
+    exact rerun.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery/full
     rescans of `$CODEX_HOME/local-controllers`, launch-health versus

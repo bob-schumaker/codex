@@ -537,6 +537,31 @@ Commit 19: Add the full end-to-end scenario.
 - Validation:
   - `just test -p codex-app-server`
   - `just test -p codex-tui`
+  - implemented checkpoint in the current controller participation
+    auto-subscribe and e2e approval slice:
+    - approved `controller/requestParticipation` with
+      `subscribeMainThread` now immediately subscribes the controller
+      connection to the granted main-thread listener, so a controller that
+      connects after the thread already exists receives the same thread
+      notifications as the TUI-facing app-server interface;
+    - the local-controller socket e2e launches an embedded runtime, discovers
+      the endpoint, approves a Codex Micro-style controller, verifies normal
+      app-server parity for the granted main thread, resolves a command
+      approval through the controller, observes listener-ordered
+      `serverRequest/resolved`, command completion, and turn completion,
+      performs thread-affecting TUI reclaim, verifies stale controller mutation
+      rejection plus standing read access after reclaim, reacquires control, and
+      verifies final thread state and sign-off; and
+    - `just test -p codex-app-server local_controller controller` passed
+      114/114 controller and local-controller tests for this slice.
+    - The full `just test -p codex-app-server` run still had unrelated
+      fixture failures outside the touched controller path: two
+      remote-thread-store deadline tests and three zsh-fork deadline/mock-request
+      tests reproduced on exact rerun.
+    - `just fix -p codex-app-server` passed after unrelated fixer hunks were
+      reviewed and reverted, `git diff --check` passed, and
+      `cargo build -p codex-cli --bin codex` rebuilt
+      `codex-rs/target/debug/codex` as `codex-cli 0.147.1`.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

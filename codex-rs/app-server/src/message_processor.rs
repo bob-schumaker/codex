@@ -1418,16 +1418,26 @@ impl MessageProcessor {
                 .clients_revoke(params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ControllerRequestParticipation { params, .. } => self
-                .controller_processor
-                .request_participation(
-                    connection_id,
-                    connection_origin,
-                    session.controller_credential_proof(),
-                    params,
-                )
-                .await
-                .map(|response| Some(response.into())),
+            ClientRequest::ControllerRequestParticipation { params, .. } => {
+                let response = self
+                    .controller_processor
+                    .request_participation(
+                        connection_id,
+                        connection_origin,
+                        session.controller_credential_proof(),
+                        params,
+                    )
+                    .await?;
+                if let Some(session) = response.session.as_ref()
+                    && session.effective_capabilities.subscribe_main_thread
+                    && let Ok(thread_id) = ThreadId::from_string(&session.main_thread_id)
+                {
+                    self.thread_processor
+                        .try_attach_thread_listener(thread_id, vec![connection_id])
+                        .await;
+                }
+                Ok(Some(response.into()))
+            }
             ClientRequest::ControllerAcquireControl { .. } => self
                 .unsubscribe_controller_on_missing_session_error(
                     connection_id,
