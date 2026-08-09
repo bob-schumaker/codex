@@ -1517,10 +1517,12 @@ mod tests {
     use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
     use codex_app_server_protocol::ControllerErrorCode;
     use codex_app_server_protocol::ControllerErrorData;
+    use codex_app_server_protocol::ControllerParticipationDenial;
     use codex_app_server_protocol::ControllerParticipationStatus;
     use codex_app_server_protocol::ControllerReleaseControlResponse;
     use codex_app_server_protocol::ControllerRequestParticipationParams;
     use codex_app_server_protocol::ControllerRequestParticipationResponse;
+    use codex_app_server_protocol::ControllerRetryDisposition;
     use codex_app_server_protocol::ControllerSignOffResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::ItemCompletedNotification;
@@ -1674,12 +1676,12 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn approve_next_native_controller_participation(
+    async fn expect_next_native_controller_participation(
         client: &mut InProcessClientHandle,
         expected_controller_name: &str,
         expected_description: &str,
         expected_main_thread_id: &str,
-    ) {
+    ) -> InProcessControllerParticipationRequest {
         let native_request = timeout(Duration::from_secs(2), async {
             loop {
                 match client
@@ -1700,8 +1702,9 @@ mod tests {
         })
         .await
         .expect("native participation request should arrive before timeout");
+        let native_request = *native_request;
         assert_eq!(
-            *native_request,
+            native_request,
             InProcessControllerParticipationRequest {
                 request_id: native_request.request_id,
                 controller_name: expected_controller_name.to_string(),
@@ -1709,6 +1712,23 @@ mod tests {
                 main_thread_id: expected_main_thread_id.to_string(),
             }
         );
+        native_request
+    }
+
+    #[cfg(unix)]
+    async fn approve_next_native_controller_participation(
+        client: &mut InProcessClientHandle,
+        expected_controller_name: &str,
+        expected_description: &str,
+        expected_main_thread_id: &str,
+    ) {
+        let native_request = expect_next_native_controller_participation(
+            client,
+            expected_controller_name,
+            expected_description,
+            expected_main_thread_id,
+        )
+        .await;
         client
             .respond_to_controller_participation_request(
                 native_request.request_id,
@@ -2237,6 +2257,196 @@ mod tests {
             wrong_thread_mutation_data.code,
             ControllerErrorCode::DifferentThreadTarget
         );
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_rejected_participation_stays_denied_until_reapproved() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(10_201),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("thread/start transport should work")
+                .expect("thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_201,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let initialize_response: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_201).await;
+        assert!(initialize_response.get("userAgent").is_some());
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_202,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        let native_request = expect_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+        client
+            .respond_to_controller_participation_request(
+                native_request.request_id,
+                NativeControllerParticipationDecision::Rejected {
+                    reason: "user rejected controller".to_string(),
+                },
+            )
+            .expect("native rejection should send");
+
+        let rejected: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_202).await;
+        assert_eq!(
+            rejected,
+            ControllerRequestParticipationResponse {
+                status: ControllerParticipationStatus::Rejected,
+                session: None,
+                denial: Some(ControllerParticipationDenial {
+                    message: "user rejected controller".to_string(),
+                    data: ControllerErrorData {
+                        code: ControllerErrorCode::EnrollmentDenied,
+                        retry: ControllerRetryDisposition::SameConnection,
+                        retry_after_ms: None,
+                        launch_state: None,
+                        main_thread_id: None,
+                        session_id: None,
+                        authorization_epoch: None,
+                        owner_epoch: None,
+                    },
+                }),
+            }
+        );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_203,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let denied_read = read_websocket_error(&mut websocket, /*expected_id*/ 20_203).await;
+        let denied_read_data: ControllerErrorData = serde_json::from_value(
+            denied_read
+                .error
+                .data
+                .expect("participation-required error should include data"),
+        )
+        .expect("controller error data should parse");
+        assert_eq!(
+            denied_read_data,
+            ControllerErrorData {
+                code: ControllerErrorCode::ParticipationRequired,
+                retry: ControllerRetryDisposition::DoNotRetry,
+                retry_after_ms: None,
+                launch_state: None,
+                main_thread_id: None,
+                session_id: None,
+                authorization_epoch: None,
+                owner_epoch: None,
+            }
+        );
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_204,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+
+        let approved: ControllerRequestParticipationResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_204).await;
+        assert_eq!(approved.status, ControllerParticipationStatus::Approved);
+        let session = approved.session.expect("approved session");
+        assert_eq!(session.main_thread_id, started.thread.id);
+        assert!(session.active_lease.is_some());
+        expect_next_controller_ownership_status(
+            &mut client,
+            started.thread.id.as_str(),
+            InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: session.session_id.clone(),
+            },
+            /*expected_owner_epoch*/ 1,
+            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+        )
+        .await;
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_205,
+            "thread/read",
+            &ThreadReadParams {
+                thread_id: started.thread.id.clone(),
+                include_turns: false,
+            },
+        )
+        .await;
+        let read: ThreadReadResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_205).await;
+        assert_eq!(read.thread.id, started.thread.id);
 
         client
             .shutdown()
