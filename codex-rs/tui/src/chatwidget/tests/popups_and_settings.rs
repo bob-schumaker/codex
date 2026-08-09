@@ -2,6 +2,7 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::chatwidget::connectors::ConnectorsCacheState;
 use codex_app_server_client::InProcessControllerParticipationRequest;
+use codex_app_server_client::NativeControllerParticipationDecision;
 use codex_app_server_client::NativeControllerParticipationRequestId;
 use codex_app_server_protocol::HookErrorInfo;
 use codex_app_server_protocol::HooksListEntry;
@@ -82,17 +83,87 @@ async fn plugins_popup_loading_state_snapshot() {
 async fn controller_participation_prompt_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.open_controller_participation_prompt(InProcessControllerParticipationRequest {
-        request_id: NativeControllerParticipationRequestId(7),
-        controller_name: "codex-waveshare".to_string(),
-        description: "USB hardware controller".to_string(),
-        main_thread_id: "thread-123".to_string(),
-    });
+    chat.open_controller_participation_prompt(controller_participation_request(7));
 
     assert_chatwidget_snapshot!(
         "controller_participation_prompt",
         render_bottom_popup(&chat, /*width*/ 100)
     );
+}
+
+#[tokio::test]
+async fn controller_participation_allow_sends_approved_decision() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_controller_participation_prompt(controller_participation_request(7));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_controller_participation_response(
+        &mut rx,
+        NativeControllerParticipationRequestId(7),
+        NativeControllerParticipationDecision::Approved,
+    );
+}
+
+#[tokio::test]
+async fn controller_participation_deny_sends_rejected_decision() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_controller_participation_prompt(controller_participation_request(8));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_controller_participation_response(
+        &mut rx,
+        NativeControllerParticipationRequestId(8),
+        NativeControllerParticipationDecision::Rejected {
+            reason: "controller participation rejected by TUI user".to_string(),
+        },
+    );
+}
+
+#[tokio::test]
+async fn controller_participation_escape_sends_dismissed_decision() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_controller_participation_prompt(controller_participation_request(9));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_controller_participation_response(
+        &mut rx,
+        NativeControllerParticipationRequestId(9),
+        NativeControllerParticipationDecision::Rejected {
+            reason: "controller participation prompt was dismissed".to_string(),
+        },
+    );
+}
+
+fn controller_participation_request(request_id: u64) -> InProcessControllerParticipationRequest {
+    InProcessControllerParticipationRequest {
+        request_id: NativeControllerParticipationRequestId(request_id),
+        controller_name: "codex-waveshare".to_string(),
+        description: "USB hardware controller".to_string(),
+        main_thread_id: "thread-123".to_string(),
+    }
+}
+
+fn assert_controller_participation_response(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    expected_request_id: NativeControllerParticipationRequestId,
+    expected_decision: NativeControllerParticipationDecision,
+) {
+    match rx.try_recv() {
+        Ok(AppEvent::RespondControllerParticipation {
+            request_id,
+            decision,
+        }) => {
+            assert_eq!(request_id, expected_request_id);
+            assert_eq!(decision, expected_decision);
+        }
+        Ok(other) => panic!("expected controller participation response, got {other:?}"),
+        Err(err) => panic!("expected controller participation response, got {err}"),
+    }
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[tokio::test]
