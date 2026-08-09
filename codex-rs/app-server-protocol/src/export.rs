@@ -2964,6 +2964,8 @@ permissionProfile?: string | null};
             "ControllerAcquireControlResponse",
             "ControllerReleaseControlResponse",
             "ControllerSignOffResponse",
+            "ControllerAuthorizationChangedNotification",
+            "ControllerControlOwnershipChangedNotification",
             "ControllerErrorData",
         ] {
             assert_eq!(flat_v2_bundle_json.contains(controller_schema), false);
@@ -3061,6 +3063,8 @@ permissionProfile?: string | null};
             "ControllerAcquireControlResponse.json",
             "ControllerReleaseControlResponse.json",
             "ControllerSignOffResponse.json",
+            "ControllerAuthorizationChangedNotification.json",
+            "ControllerControlOwnershipChangedNotification.json",
             "ControllerErrorData.json",
         ] {
             assert_eq!(output_dir.join("v2").join(schema).exists(), false);
@@ -3115,12 +3119,16 @@ permissionProfile?: string | null};
             "ControllerAcquireControlResponse.json",
             "ControllerReleaseControlResponse.json",
             "ControllerSignOffResponse.json",
+            "ControllerAuthorizationChangedNotification.json",
+            "ControllerControlOwnershipChangedNotification.json",
         ] {
             assert!(output_dir.join("v2").join(schema).exists());
         }
 
         let flat_v2_bundle_json =
             fs::read_to_string(output_dir.join("codex_app_server_protocol.v2.schemas.json"))?;
+        assert!(flat_v2_bundle_json.contains("ControllerAuthorizationChangedNotification"));
+        assert!(flat_v2_bundle_json.contains("ControllerControlOwnershipChangedNotification"));
         assert!(flat_v2_bundle_json.contains("ControllerErrorData"));
         assert!(flat_v2_bundle_json.contains("main-thread-unavailable"));
         assert!(flat_v2_bundle_json.contains("controller-overloaded"));

@@ -106,6 +106,29 @@ fn controller_session_serializes_capabilities_and_nullable_lease() {
 
 #[test]
 fn controller_notifications_serialize_control_plane_fields() {
+    let notification = ControllerAuthorizationChangedNotification {
+        session_id: "controller-session-1".to_string(),
+        main_thread_id: "thread-1".to_string(),
+        reason: ControllerAuthorizationChangedReason::Expired,
+        authorization_epoch: 4,
+        owner_epoch: 9,
+        session_sequence: 13,
+        session: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(notification).expect("notification should serialize"),
+        json!({
+            "sessionId": "controller-session-1",
+            "mainThreadId": "thread-1",
+            "reason": "expired",
+            "authorizationEpoch": 4,
+            "ownerEpoch": 9,
+            "sessionSequence": 13,
+            "session": null
+        })
+    );
+
     let notification = ControllerControlOwnershipChangedNotification {
         session_id: "controller-session-1".to_string(),
         main_thread_id: "thread-1".to_string(),
@@ -132,6 +155,51 @@ fn controller_notifications_serialize_control_plane_fields() {
 
 #[test]
 fn controller_error_data_uses_canonical_kebab_case_codes() {
+    let codes = [
+        (
+            ControllerErrorCode::ExperimentalNotEnabled,
+            "experimental-not-enabled",
+        ),
+        (
+            ControllerErrorCode::ParticipationRequired,
+            "participation-required",
+        ),
+        (ControllerErrorCode::EnrollmentDenied, "enrollment-denied"),
+        (
+            ControllerErrorCode::MainThreadUnavailable,
+            "main-thread-unavailable",
+        ),
+        (ControllerErrorCode::MainThreadClosed, "main-thread-closed"),
+        (ControllerErrorCode::TuiUnavailable, "tui-unavailable"),
+        (ControllerErrorCode::OwnershipConflict, "ownership-conflict"),
+        (ControllerErrorCode::StaleOwnership, "stale-ownership"),
+        (
+            ControllerErrorCode::ControllerNotAllowed,
+            "controller-not-allowed",
+        ),
+        (ControllerErrorCode::TransportClosing, "transport-closing"),
+        (
+            ControllerErrorCode::DifferentThreadTarget,
+            "different-thread-target",
+        ),
+        (
+            ControllerErrorCode::AuthorizationExpired,
+            "authorization-expired",
+        ),
+        (ControllerErrorCode::LeaseExpired, "lease-expired"),
+        (
+            ControllerErrorCode::ControllerOverloaded,
+            "controller-overloaded",
+        ),
+    ];
+
+    for (code, expected) in codes {
+        assert_eq!(
+            serde_json::to_value(code).expect("code should serialize"),
+            json!(expected)
+        );
+    }
+
     let data = ControllerErrorData {
         code: ControllerErrorCode::MainThreadUnavailable,
         retry: ControllerRetryDisposition::SameConnection,
