@@ -1,3 +1,4 @@
+use super::thread_lifecycle_controller_egress::controller_aware_thread_outgoing;
 use super::*;
 use codex_core::McpManager;
 use codex_mcp::McpServerSource;
@@ -10,6 +11,8 @@ pub(crate) struct McpRequestProcessor {
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
+    thread_state_manager: ThreadStateManager,
+    controller_processor: ControllerRequestProcessor,
 }
 
 impl McpRequestProcessor {
@@ -18,12 +21,16 @@ impl McpRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
+        thread_state_manager: ThreadStateManager,
+        controller_processor: ControllerRequestProcessor,
     ) -> Self {
         Self {
             auth_manager,
             thread_manager,
             outgoing,
             config_manager,
+            thread_state_manager,
+            controller_processor,
         }
     }
 
@@ -222,6 +229,8 @@ impl McpRequestProcessor {
         let notification_thread_id = thread_id;
         let outgoing = Arc::clone(&self.outgoing);
         let thread_manager = Arc::clone(&self.thread_manager);
+        let thread_state_manager = self.thread_state_manager.clone();
+        let controller_processor = self.controller_processor.clone();
 
         tokio::spawn(async move {
             let (success, error) = match handle.wait().await {
@@ -232,18 +241,82 @@ impl McpRequestProcessor {
                 thread_manager.invalidate_mcp_runtimes().await;
             }
 
-            let notification = ServerNotification::McpServerOauthLoginCompleted(
-                McpServerOauthLoginCompletedNotification {
-                    name: notification_name,
-                    thread_id: notification_thread_id,
-                    success,
-                    error,
-                },
-            );
-            outgoing.send_server_notification(notification).await;
+            let notification = McpServerOauthLoginCompletedNotification {
+                name: notification_name,
+                thread_id: notification_thread_id,
+                success,
+                error,
+            };
+            Self::send_oauth_login_completed_notification_inner(
+                outgoing,
+                thread_state_manager,
+                controller_processor,
+                notification,
+            )
+            .await;
         });
 
         Ok(McpServerOauthLoginResponse { authorization_url })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn send_oauth_login_completed_notification(
+        &self,
+        notification: McpServerOauthLoginCompletedNotification,
+    ) {
+        Self::send_oauth_login_completed_notification_inner(
+            Arc::clone(&self.outgoing),
+            self.thread_state_manager.clone(),
+            self.controller_processor.clone(),
+            notification,
+        )
+        .await;
+    }
+
+    async fn send_oauth_login_completed_notification_inner(
+        outgoing: Arc<OutgoingMessageSender>,
+        thread_state_manager: ThreadStateManager,
+        controller_processor: ControllerRequestProcessor,
+        notification: McpServerOauthLoginCompletedNotification,
+    ) {
+        match notification
+            .thread_id
+            .as_deref()
+            .map(ThreadId::from_string)
+            .transpose()
+        {
+            Ok(Some(thread_id)) => {
+                let thread_outgoing = controller_aware_thread_outgoing(
+                    thread_id,
+                    &thread_state_manager,
+                    &controller_processor,
+                    &outgoing,
+                )
+                .await;
+                thread_outgoing
+                    .send_global_server_notification(
+                        ServerNotification::McpServerOauthLoginCompleted(notification),
+                    )
+                    .await;
+            }
+            Ok(None) => {
+                outgoing
+                    .send_server_notification(ServerNotification::McpServerOauthLoginCompleted(
+                        notification,
+                    ))
+                    .await;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to parse MCP OAuth completion thread id for controller targeting: {err}"
+                );
+                outgoing
+                    .send_server_notification(ServerNotification::McpServerOauthLoginCompleted(
+                        notification,
+                    ))
+                    .await;
+            }
+        }
     }
 
     async fn list_mcp_server_status(

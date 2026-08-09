@@ -44,6 +44,7 @@ use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
@@ -794,6 +795,40 @@ async fn read_controller_notification_for_connection(
         ) {
             return notification.notification;
         }
+    }
+}
+
+async fn read_mcp_oauth_completed_notification_for_connection(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    expected_connection_id: ConnectionId,
+) -> McpServerOauthLoginCompletedNotification {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for MCP OAuth completion notification")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = envelope
+        else {
+            continue;
+        };
+        acknowledge_write(write_complete_tx);
+        if connection_id != expected_connection_id {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
+        else {
+            continue;
+        };
+        let ServerNotification::McpServerOauthLoginCompleted(notification) =
+            notification.notification
+        else {
+            continue;
+        };
+        return notification;
     }
 }
 
@@ -2438,6 +2473,88 @@ fn auto_attach_filters_external_controller_subscriptions_to_main_thread() -> Res
                 .await;
             assert!(secondary_subscriptions.contains(&TEST_CONNECTION_ID));
             assert!(!secondary_subscriptions.contains(&EXTERNAL_CONNECTION_ID));
+
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn thread_scoped_mcp_oauth_completion_targets_external_controller_subscriber() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "thread_scoped_mcp_oauth_completion_targets_external_controller_subscriber",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_with_controller_enrollment_source(enrollment_source.clone())
+                    .await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 40_401),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let main = harness
+                .start_thread(/*request_id*/ 40_402, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&main.thread.id)?;
+            enrollment_source.insert(controller_record(main_thread_id));
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 40_403),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+
+            harness
+                .processor
+                .connection_initialized(
+                    EXTERNAL_CONNECTION_ID,
+                    external_session.request_attestation(),
+                )
+                .await;
+            harness
+                .processor
+                .try_attach_thread_listener_for_initialized_connections(
+                    main_thread_id,
+                    vec![(EXTERNAL_CONNECTION_ID, ConnectionOrigin::ExternalController)],
+                )
+                .await;
+
+            let expected = McpServerOauthLoginCompletedNotification {
+                name: "server-a".to_string(),
+                thread_id: Some(main_thread_id.to_string()),
+                success: true,
+                error: None,
+            };
+            harness
+                .processor
+                .mcp_processor
+                .send_oauth_login_completed_notification(expected.clone())
+                .await;
+
+            assert_eq!(
+                read_mcp_oauth_completed_notification_for_connection(
+                    &mut harness.outgoing_rx,
+                    EXTERNAL_CONNECTION_ID,
+                )
+                .await,
+                expected,
+            );
 
             harness.shutdown().await;
             Ok(())
