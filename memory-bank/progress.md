@@ -62,6 +62,11 @@
   owner-aware recipient path are now bound to the interactive owner epoch that
   delivered the prompt; the same controller cannot resolve an old prompt after
   release/reacquire under a newer lease.
+- External-controller prompt-reply rejections are now surfaced to the
+  originating controller connection without resolving the pending prompt.
+  Controller-owned approval prompts reject `acceptForSession` with typed
+  `controller-not-allowed` / `DoNotRetry`; a later valid `accept` or `cancel`
+  from the current owner can still resolve the original prompt.
 - `currentTime/read` now uses the same owner-aware recipient path as other
   thread-scoped interactive server requests. Active external controllers receive
   the current-time request for the TUI main thread, and replies are bound to the

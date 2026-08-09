@@ -42,7 +42,8 @@
   without limit, plus marking the controller launch terminal when the immutable
   main thread is closed or unloaded, plus preserving controller-relevant thread
   lifecycle/state notifications across the in-process TUI delivery bridge under
-  backpressure;
+  backpressure, plus surfacing typed controller prompt-reply rejections back to
+  the external-controller connection without resolving the pending prompt;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -625,6 +626,19 @@
     only because `.pre-commit-config.yaml` is not present, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Surfaced external-controller server-request reply rejections back to the
+    originating controller connection without consuming the pending prompt
+    callback. Controller-owned approval prompts now reject `acceptForSession`
+    with typed `controller-not-allowed` / `DoNotRetry`, then remain pending so
+    a valid `accept` or `cancel` from the current owner can still resolve the
+    prompt.
+  - Validated the prompt-rejection surfacing slice at commit `ca5186e` with
+    `just test -p codex-app-server controller_control_plane_round_trips_after_enrollment`
+    passing 1/1 focused test, `just fmt` passing, scoped
+    `just fix -p codex-app-server` completing after the known unrelated fixer
+    hunks were reverted, `git diff --check` and `git diff --cached --check`
+    passing, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 23.66s.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -650,7 +664,8 @@
     or separate controller control-plane ingress, or pre-participation
     initialize-notification suppression, or exhaustive TUI command reclaim
     classification, or terminal main-thread-close launch handling, or
-    in-process lifecycle/state notification preservation.
+    in-process lifecycle/state notification preservation, or controller
+    prompt-rejection error surfacing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -680,9 +695,9 @@
   pre-participation initialize-notification suppression coverage, plus
   exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
-  notification preservation.
+  notification preservation, plus controller prompt-rejection error surfacing.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `3bf6c0d`.
+  commit `ca5186e`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
