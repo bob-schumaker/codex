@@ -293,6 +293,15 @@
 - The latest focused validation for commit `002f2cd` is
   `just test -p codex-tui controller_reclaim` passing 4/4 focused tests, and
   `just fmt` passing.
+- The latest focused validation for commit `45806b1` is
+  `just test -p codex-app-server active_controller_archive_delete_reject_spawned_descendant_targets`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 82/82 controller tests,
+  `just test -p codex-app-server thread_archive` passing 6/6 archive tests,
+  `just test -p codex-app-server thread_delete` passing 5/5 delete tests,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -309,9 +318,9 @@
   targeting and app-server thread-goal fallback targeting, plus
   controller-origin detached review fencing and realtime
   context/configuration override gating, plus realtime text role fencing and
-  section-move implicit-target fencing and Guardian-denied TUI approval reclaim
-  coverage. There is no known uncommitted Codex-side source diff in this
-  checkpoint.
+  section-move implicit-target fencing, Guardian-denied TUI approval reclaim
+  coverage, and archive/delete spawned-descendant subtree fencing. There is no
+  known uncommitted Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -351,6 +360,10 @@
   preserving realtime input/transport startup on the authorized main thread.
   Controller-origin `thread/realtime/appendText` now rejects non-user roles.
   Controller-origin `thread/section/move` now rejects `beforeThreadId`.
+  Controller-origin `thread/archive` and `thread/delete` now reject
+  spawned-descendant subtree targets before handler dispatch, preserving normal
+  TUI subtree behavior while preventing controller implicit secondary-thread
+  mutation.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:

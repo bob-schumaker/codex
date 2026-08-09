@@ -23,10 +23,11 @@
   controller-origin realtime startup context/configuration overrides and
   realtime text role injection, plus fencing controller-origin section moves
   from ordering the main thread relative to another thread, plus focused TUI
-  reclaim coverage for Guardian-denied approvals; remaining
-  Codex-side review is centered on implicit targets, egress transactionality,
-  and subscription edges while downstream discovery/display consumes the
-  published local-controller metadata contract.
+  reclaim coverage for Guardian-denied approvals, plus fencing
+  controller-origin archive/delete from spawned-descendant subtree targets;
+  remaining Codex-side review is centered on any other implicit targets, egress
+  transactionality, and subscription edges while downstream discovery/display
+  consumes the published local-controller metadata contract.
 
 ## Current Status
 
@@ -423,6 +424,19 @@
   - Validated the TUI reclaim coverage with
     `just test -p codex-tui controller_reclaim` passing 4/4 focused tests, then
     ran `just fmt`.
+  - Fenced active external-controller `thread/archive` and `thread/delete`
+    before handler dispatch when the authorized main thread has spawned
+    descendants, preserving TUI subtree archive/delete behavior while blocking
+    controller implicit secondary-thread targets.
+  - Validated the archive/delete subtree fence with
+    `just test -p codex-app-server active_controller_archive_delete_reject_spawned_descendant_targets`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 82/82 controller tests,
+    `just test -p codex-app-server thread_archive` passing 6/6 archive tests,
+    `just test -p codex-app-server thread_delete` passing 5/5 delete tests,
+    `just fix -p codex-app-server` completing after unrelated fixer hunks were
+    reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+    rebuilding `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -439,7 +453,8 @@
     fallback targeting, or controller-origin detached review fencing, or
     controller-origin realtime context/configuration override gating, or
     controller-origin realtime text role fencing, or controller-origin
-    section-move implicit target fencing.
+    section-move implicit target fencing, or controller-origin archive/delete
+    spawned-descendant subtree fencing.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -463,7 +478,7 @@
   extension no-listener goal-update fallback targeting, plus app-server
   thread-goal fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `9b6d3a2`.
+  commit `45806b1`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
