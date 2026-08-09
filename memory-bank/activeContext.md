@@ -13,9 +13,9 @@
   main thread, and removing controller main-thread subscriptions before
   terminal sign-off/disconnect revocation events, and filtering generic
   broadcasts away from external controllers while explicitly targeting
-  authorized main-thread lifecycle notifications; remaining Codex-side review
-  is centered on implicit targets, egress transactionality, and subscription
-  edges while downstream
+  authorized main-thread lifecycle notifications and status-change
+  notifications; remaining Codex-side review is centered on implicit targets,
+  egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
 
 ## Current Status
@@ -284,6 +284,16 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Added controller-aware `thread/status/changed` targeting so authorized
+    external subscribers receive the granted main thread's status updates even
+    though generic broadcasts no longer reach external-controller origins.
+  - Validated the status-targeting slice with
+    `just test -p codex-app-server status_change_targets_authorized_main_thread_external_controller`
+    passing 1/1 focused test, `just test -p codex-app-server thread_status`
+    passing 15/15, `just test -p codex-app-server controller` passing 72/72,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -293,7 +303,8 @@
     resume cursor binding, idempotent acquire, controller notifications, or
     serialized-request priority/dequeue reclaim, or controller auto-subscribe
     filtering, or terminal sign-off/disconnect subscription fencing, or
-    generic broadcast filtering plus targeted main-thread lifecycle delivery.
+    generic broadcast filtering plus targeted main-thread lifecycle and status
+    delivery.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -312,9 +323,9 @@
   serialized-request priority and dequeue-time TUI reclaim, plus controller
   auto-subscribe filtering, plus terminal sign-off/disconnect subscription
   fencing, plus generic broadcast filtering and targeted main-thread lifecycle
-  delivery.
+  and status delivery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `5d54a58`.
+  commit `280c679`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

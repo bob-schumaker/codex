@@ -107,8 +107,12 @@
   external-controller origins. Controller-visible thread archive/delete/name
   and unarchive lifecycle notifications are explicitly retargeted to authorized
   external subscribers for the granted main thread.
+- `thread/status/changed` notifications are now also controller-targeted for
+  authorized external subscribers to the granted main thread, preserving normal
+  main-thread status visibility after generic broadcasts are filtered away from
+  external-controller origins.
 - The latest Codex-side implementation commit is
-  `5d54a58` for launch metadata publication, native approval coverage, exact
+  `280c679` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -120,7 +124,8 @@
   emission, plus serialized-request priority, dequeue-time TUI reclaim, and
   controller auto-subscribe filtering, plus terminal sign-off/disconnect
   subscription fencing, plus external-controller broadcast filtering and
-  targeted main-thread lifecycle delivery.
+  targeted main-thread lifecycle delivery, plus targeted main-thread status
+  delivery.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -167,6 +172,13 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, and `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `280c679` is
+  `just test -p codex-app-server status_change_targets_authorized_main_thread_external_controller`
+  passing 1/1 focused test, `just test -p codex-app-server thread_status`
+  passing 15/15, `just test -p codex-app-server controller` passing 72/72,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -177,8 +189,8 @@
   controller notification work, serialized-request priority/dequeue reclaim,
   controller auto-subscribe filtering, and terminal sign-off/disconnect
   subscription fencing, plus generic broadcast filtering and targeted
-  main-thread lifecycle delivery. There is no known uncommitted Codex-side
-  source diff in this checkpoint.
+  main-thread lifecycle and status delivery. There is no known uncommitted
+  Codex-side source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -203,7 +215,8 @@
   authorized main thread. Terminal sign-off/disconnect paths now remove
   subscriptions before terminal revocation events or notifications. Generic
   broadcasts now skip external controllers, and main-thread lifecycle
-  notifications are retargeted only to authorized external subscribers.
+  notifications plus `thread/status/changed` notifications are retargeted only
+  to authorized external subscribers.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -238,7 +251,7 @@
   disconnect-revocation, disconnect-subscription-cleanup, and queued
   primary-reclaim paths, plus automatic subscription attach filtering and
   terminal sign-off/disconnect subscription fencing, plus generic broadcast
-  filtering and targeted main-thread lifecycle delivery.
+  filtering and targeted main-thread lifecycle and status delivery.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
