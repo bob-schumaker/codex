@@ -278,8 +278,8 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `597b3ba`
-(`test(app-server): cover controller permission approval scope`). The recorded
+Codex-side hardening has continued through commit `05dff9e`
+(`test(app-server): cover controller file-change approval scope`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -287,9 +287,11 @@ error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
 the cumulative goal cost was 16,583,966 tokens and 50,378 seconds
 (approximately 13h 59m 38s). At the controller permission-approval scope
 coverage slice, the cumulative goal cost was 16,809,460 tokens and 50,781
-seconds (approximately 14h 06m 21s). These costs include implementation,
-review, validation, and commit preparation across the staged slices; they are
-not limited to build/test subprocess runtime.
+seconds (approximately 14h 06m 21s). At the controller file-change approval
+scope coverage slice, the cumulative goal cost was 17,263,388 tokens and 71,702
+seconds (approximately 19h 55m 02s). These costs include implementation, review,
+validation, and commit preparation across the staged slices; they are not
+limited to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -339,6 +341,10 @@ Final build and validation evidence:
 | `just test -p codex-app-server controller_rejects_session_scoped_permission_approval` | Passed: 1 test run, 1 passed, 1242 skipped. This covers a controller-owned `item/permissions/requestApproval` rejecting a session-scoped response with typed `controller-not-allowed`, keeping the prompt pending, and then accepting a turn-scoped response on the same active controller connection. | Final compile reported 15.68s; nextest reported 0.583s. |
 | `just test -p codex-app-server controller` | Passed: 104 test runs, 104 passed, 1139 skipped after adding permission-approval scope coverage. | Compile reported 0.98s; nextest reported 59.317s. |
 | `git diff --check` | Passed after the controller permission-approval scope slice. | Subsecond. |
+| `just fmt` | Passed after the controller file-change approval scope slice. | Shell wall time was 6.905s. |
+| `just test -p codex-app-server controller_rejects_session_scoped_file_change_approval` | Passed: 1 test run, 1 passed, 1243 skipped. This covers a controller-owned `item/fileChange/requestApproval` rejecting `acceptForSession` with typed `controller-not-allowed`, keeping the prompt pending, and then accepting a non-session-scoped response on the same active controller connection. | Compile reported 16.67s; nextest reported 0.594s. |
+| `just test -p codex-app-server controller` | Passed: 105 test runs, 105 passed, 1139 skipped after adding file-change approval scope coverage. | Compile reported 1.02s; nextest reported 58.822s. |
+| `git diff --check` | Passed after the controller file-change approval scope slice. | Subsecond. |
 
 ## Relevant implementation seams
 
