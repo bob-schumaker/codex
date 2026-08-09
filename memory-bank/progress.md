@@ -103,8 +103,12 @@
 - Automatic thread-created listener attachment now preserves normal initialized
   client behavior while filtering external controllers to their authorized main
   thread only, preventing controller subscription bleed to secondary threads.
+- Generic broadcast and initialization notifications are now filtered away from
+  external-controller origins. Controller-visible thread archive/delete/name
+  and unarchive lifecycle notifications are explicitly retargeted to authorized
+  external subscribers for the granted main thread.
 - The latest Codex-side implementation commit is
-  `354c4dc` for launch metadata publication, native approval coverage, exact
+  `5d54a58` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -115,7 +119,8 @@
   cleanup, plus controller authorization/control-ownership notification
   emission, plus serialized-request priority, dequeue-time TUI reclaim, and
   controller auto-subscribe filtering, plus terminal sign-off/disconnect
-  subscription fencing.
+  subscription fencing, plus external-controller broadcast filtering and
+  targeted main-thread lifecycle delivery.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -152,6 +157,16 @@
   after unrelated fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `5d54a58` is
+  `just test -p codex-app-server lifecycle_notification_recipients_include_only_authorized_main_thread_controllers`
+  passing 1/1 focused test, the focused transport filter tests
+  `broadcast_skips_external_controller_connections` and
+  `targeted_messages_reach_external_controller_connections` passing 2/2,
+  `just test -p codex-app-server transport` passing 28/28,
+  `just test -p codex-app-server controller` passing 71/71,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, and `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`.
 
 ## In Flight
 
@@ -161,8 +176,9 @@
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
   controller auto-subscribe filtering, and terminal sign-off/disconnect
-  subscription fencing. There is no known uncommitted Codex-side source diff in
-  this checkpoint.
+  subscription fencing, plus generic broadcast filtering and targeted
+  main-thread lifecycle delivery. There is no known uncommitted Codex-side
+  source diff in this checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -185,7 +201,9 @@
   queued primary thread input reclaims ownership again at dequeue time.
   Automatic subscription attach now filters external controllers to the
   authorized main thread. Terminal sign-off/disconnect paths now remove
-  subscriptions before terminal revocation events or notifications.
+  subscriptions before terminal revocation events or notifications. Generic
+  broadcasts now skip external controllers, and main-thread lifecycle
+  notifications are retargeted only to authorized external subscribers.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -219,7 +237,8 @@
   authorization-expiry cleanup, terminal TUI-unavailable,
   disconnect-revocation, disconnect-subscription-cleanup, and queued
   primary-reclaim paths, plus automatic subscription attach filtering and
-  terminal sign-off/disconnect subscription fencing.
+  terminal sign-off/disconnect subscription fencing, plus generic broadcast
+  filtering and targeted main-thread lifecycle delivery.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue

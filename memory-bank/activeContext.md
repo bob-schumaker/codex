@@ -11,7 +11,9 @@
   controller work with dequeue-time reclaim, and filtering automatic listener
   attachment so external controllers only auto-subscribe to their authorized
   main thread, and removing controller main-thread subscriptions before
-  terminal sign-off/disconnect revocation events; remaining Codex-side review
+  terminal sign-off/disconnect revocation events, and filtering generic
+  broadcasts away from external controllers while explicitly targeting
+  authorized main-thread lifecycle notifications; remaining Codex-side review
   is centered on implicit targets, egress transactionality, and subscription
   edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -265,6 +267,23 @@
     passing 68/68 controller tests, `just fix -p codex-app-server` after
     reverting unrelated fixer hunks, and `cargo build -p codex-cli -j 4`
     rebuilding `codex-rs/target/debug/codex`.
+  - Filtered generic broadcast and initialization notifications away from
+    external-controller origins so pre-participation controllers and approved
+    controllers do not receive process-wide or unrelated-thread broadcasts.
+  - Added controller-aware lifecycle notification targeting for
+    thread archive, delete, rename, and unarchive updates so authorized
+    external subscribers still receive the granted main thread's normal
+    lifecycle notifications after generic broadcasts are filtered.
+  - Validated the broadcast-filter slice with
+    `just test -p codex-app-server lifecycle_notification_recipients_include_only_authorized_main_thread_controllers`
+    passing 1/1 focused test, the focused transport filter tests
+    `broadcast_skips_external_controller_connections` and
+    `targeted_messages_reach_external_controller_connections` passing 2/2,
+    `just test -p codex-app-server transport` passing 28/28,
+    `just test -p codex-app-server controller` passing 71/71,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -273,7 +292,8 @@
     current-time owner routing, resume/turn override gating, internally-sent
     resume cursor binding, idempotent acquire, controller notifications, or
     serialized-request priority/dequeue reclaim, or controller auto-subscribe
-    filtering, or terminal sign-off/disconnect subscription fencing.
+    filtering, or terminal sign-off/disconnect subscription fencing, or
+    generic broadcast filtering plus targeted main-thread lifecycle delivery.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -291,9 +311,10 @@
   controller authorization/ownership notification emission, plus
   serialized-request priority and dequeue-time TUI reclaim, plus controller
   auto-subscribe filtering, plus terminal sign-off/disconnect subscription
-  fencing.
+  fencing, plus generic broadcast filtering and targeted main-thread lifecycle
+  delivery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `354c4dc`.
+  commit `5d54a58`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
