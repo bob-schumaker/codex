@@ -1215,6 +1215,23 @@ impl MessageProcessor {
                     }
                 };
                 reject_controller_tui_only_params(&codex_request)?;
+                match &codex_request {
+                    ClientRequest::ThreadArchive { params, .. } => {
+                        self.reject_controller_descendant_thread_targets(
+                            "thread/archive",
+                            &params.thread_id,
+                        )
+                        .await?;
+                    }
+                    ClientRequest::ThreadDelete { params, .. } => {
+                        self.reject_controller_descendant_thread_targets(
+                            "thread/delete",
+                            &params.thread_id,
+                        )
+                        .await?;
+                    }
+                    _ => {}
+                }
                 unbind_controller_request_cursors(
                     &mut codex_request,
                     connection_id,
@@ -1928,6 +1945,26 @@ impl MessageProcessor {
 }
 
 impl MessageProcessor {
+    async fn reject_controller_descendant_thread_targets(
+        &self,
+        method: &str,
+        thread_id: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let subtree_thread_ids = self
+            .thread_processor
+            .state_db_spawn_subtree_thread_ids(thread_id)
+            .await?;
+        if subtree_thread_ids.len() <= 1 {
+            return Ok(());
+        }
+
+        Err(controller_not_allowed(&format!(
+            "external controller {method} may not target spawned descendant threads"
+        )))
+    }
+
     async fn unsubscribe_controller_if_session_missing(&self, connection_id: ConnectionId) {
         if let Some(main_thread_id) = self
             .controller_processor

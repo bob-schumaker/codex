@@ -48,6 +48,8 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
+use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -69,6 +71,9 @@ use codex_login::AuthManager;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_state::StateRuntime;
+use codex_utils_absolute_path::test_support::PathExt;
 use opentelemetry::global;
 use opentelemetry::trace::SpanId;
 use opentelemetry::trace::SpanKind;
@@ -182,6 +187,7 @@ impl ControllerEnrollmentSource for TestControllerEnrollmentSource {
 struct TracingHarness {
     _server: MockServer,
     _codex_home: TempDir,
+    state_db: Option<Arc<StateRuntime>>,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
@@ -196,17 +202,36 @@ impl TracingHarness {
     async fn new_with_controller_enrollment_source(
         controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     ) -> Result<Self> {
+        Self::new_inner(controller_enrollment_source, /*use_state_db*/ false).await
+    }
+
+    async fn new_inner(
+        controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
+        use_state_db: bool,
+    ) -> Result<Self> {
         let server = create_mock_responses_server_repeating_assistant("Done").await;
         let codex_home = TempDir::new()?;
         let config = Arc::new(build_test_config(codex_home.path(), &server.uri()).await?);
+        let state_db = if use_state_db {
+            Some(
+                StateRuntime::init(
+                    codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+                    "mock_provider".into(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let (processor, outgoing_rx) =
-            build_test_processor(config, controller_enrollment_source).await;
+            build_test_processor(config, controller_enrollment_source, state_db.clone()).await;
         let tracing = init_test_tracing();
         tracing.exporter.reset();
         tracing::callsite::rebuild_interest_cache();
         let mut harness = Self {
             _server: server,
             _codex_home: codex_home,
+            state_db,
             processor,
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
@@ -395,6 +420,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 async fn build_test_processor(
     config: Arc<Config>,
     controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
+    state_db: Option<Arc<StateRuntime>>,
 ) -> (
     Arc<MessageProcessor>,
     mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
@@ -428,7 +454,7 @@ async fn build_test_processor(
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         feedback: CodexFeedback::new(),
         log_db: None,
-        state_db: None,
+        state_db,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
         auth_manager,
@@ -1154,6 +1180,112 @@ fn external_controller_origin_is_denied_before_initialized_dispatch() -> Result<
             )?;
             assert_eq!(data.code, ControllerErrorCode::MainThreadUnavailable);
             assert_eq!(data.retry, ControllerRetryDisposition::SameConnection);
+            harness.shutdown().await;
+            Ok(())
+        },
+    )
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn active_controller_archive_delete_reject_spawned_descendant_targets() -> Result<()> {
+    run_current_thread_test_with_stack(
+        "active_controller_archive_delete_reject_spawned_descendant_targets",
+        async {
+            let enrollment_source = Arc::new(TestControllerEnrollmentSource::default());
+            let mut harness =
+                TracingHarness::new_inner(enrollment_source.clone(), /*use_state_db*/ true).await?;
+            let external_session = Arc::new(ConnectionSessionState::new());
+            let _: InitializeResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_initialize_request(/*request_id*/ 39_001),
+                )
+                .await;
+            external_session
+                .bind_controller_credential_proof(controller_proof(EXTERNAL_CONNECTION_ID));
+
+            let started = harness
+                .start_thread(/*request_id*/ 39_002, /*trace*/ None)
+                .await;
+            let main_thread_id = ThreadId::from_string(&started.thread.id)?;
+            let child_thread_id = ThreadId::from_string("00000000-0000-7000-8000-000000000222")?;
+            harness
+                .state_db
+                .as_ref()
+                .expect("state db should be enabled for this harness")
+                .upsert_thread_spawn_edge(
+                    main_thread_id,
+                    child_thread_id,
+                    DirectionalThreadSpawnEdgeStatus::Open,
+                )
+                .await?;
+            enrollment_source.insert(controller_record(main_thread_id));
+
+            let participation: ControllerRequestParticipationResponse = harness
+                .request_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    controller_participation_request(/*request_id*/ 39_003),
+                )
+                .await;
+            assert_eq!(
+                participation.status,
+                ControllerParticipationStatus::Approved
+            );
+            assert!(
+                participation
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.active_lease.as_ref())
+                    .is_some()
+            );
+
+            let archive_error = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    ClientRequest::ThreadArchive {
+                        request_id: RequestId::Integer(39_004),
+                        params: ThreadArchiveParams {
+                            thread_id: started.thread.id.clone(),
+                        },
+                    },
+                )
+                .await;
+            assert_eq!(
+                archive_error.error.message,
+                "external controller thread/archive may not target spawned descendant threads"
+            );
+            let archive_data: ControllerErrorData =
+                serde_json::from_value(archive_error.error.data.expect("typed controller error"))?;
+            assert_eq!(archive_data.code, ControllerErrorCode::ControllerNotAllowed);
+
+            let delete_error = harness
+                .request_error_for_connection(
+                    EXTERNAL_CONNECTION_ID,
+                    ConnectionOrigin::ExternalController,
+                    Arc::clone(&external_session),
+                    ClientRequest::ThreadDelete {
+                        request_id: RequestId::Integer(39_005),
+                        params: ThreadDeleteParams {
+                            thread_id: started.thread.id.clone(),
+                        },
+                    },
+                )
+                .await;
+            assert_eq!(
+                delete_error.error.message,
+                "external controller thread/delete may not target spawned descendant threads"
+            );
+            let delete_data: ControllerErrorData =
+                serde_json::from_value(delete_error.error.data.expect("typed controller error"))?;
+            assert_eq!(delete_data.code, ControllerErrorCode::ControllerNotAllowed);
+
             harness.shutdown().await;
             Ok(())
         },

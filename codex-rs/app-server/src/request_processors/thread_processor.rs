@@ -1636,7 +1636,7 @@ impl ThreadRequestProcessor {
         Ok((ThreadArchiveResponse {}, archived_thread_ids))
     }
 
-    pub(super) async fn state_db_spawn_subtree_thread_ids(
+    pub(crate) async fn state_db_spawn_subtree_thread_ids(
         &self,
         thread_id: ThreadId,
     ) -> Result<Vec<ThreadId>, JSONRPCErrorError> {
