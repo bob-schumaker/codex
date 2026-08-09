@@ -278,14 +278,16 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `adc093f`
-(`fix(app-server): type controller experimental opt-in errors`). The recorded
+Codex-side hardening has continued through commit `33c9a3e`
+(`test(tui): cover controller participation decisions`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
-(approximately 13h 53m 13s). These costs include implementation, review,
-validation, and commit preparation across the staged slices; they are not limited
-to build/test subprocess runtime.
+(approximately 13h 53m 13s). At the TUI participation-decision coverage slice,
+the cumulative goal cost was 16,583,966 tokens and 50,378 seconds
+(approximately 13h 59m 38s). These costs include implementation, review,
+validation, and commit preparation across the staged slices; they are not
+limited to build/test subprocess runtime.
 
 The repository `docs/` tree is plain authored Markdown for this spec. No
 `docs/Makefile`, Sphinx `conf.py`, or docs index file was present, so there was
@@ -328,6 +330,9 @@ Final build and validation evidence:
 | `just test -p codex-app-server local_controller_` | Passed: 13 test runs, 13 passed, 1229 skipped after adding the experimental opt-in typed error path. | Compile reported 1.07s; nextest reported 38.642s. |
 | `just test -p codex-app-server controller` | Passed: 103 test runs, 103 passed, 1139 skipped after the pre-dispatch controller error change. | Compile reported 0.77s; nextest reported 54.176s. |
 | `git diff --check` | Passed after the experimental opt-in typed error slice. | Subsecond. |
+| `just fmt` | Passed after the TUI participation-decision coverage slice. | Shell wall time was 6.216s. |
+| `just test -p codex-tui controller_participation` | Passed: 4 test runs, 4 passed, 3455 skipped. This covers the controller participation prompt snapshot plus the owning TUI emitting approved, denied, and dismissed native participation decisions to the app-layer responder. | Compile reported 40.67s; nextest reported 0.119s. |
+| `git diff --check` | Passed after the TUI participation-decision coverage slice. | Subsecond. |
 
 ## Relevant implementation seams
 
