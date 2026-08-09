@@ -278,12 +278,12 @@ External ingress is quota-limited per connection before shared runtime admission
 Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
-Codex-side hardening has continued through commit `4878186`
-(`test(app-server): cover embedded controller nonce rejection`). The recorded
+Codex-side hardening has continued through commit `adc093f`
+(`fix(app-server): type controller experimental opt-in errors`). The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
-44,738 seconds (approximately 12h 25m 38s). At the embedded nonce rejection
-validation slice, the cumulative goal cost was 16,311,647 tokens and 49,531
-seconds (approximately 13h 45m 31s). These costs include implementation, review,
+44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
+error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
+(approximately 13h 53m 13s). These costs include implementation, review,
 validation, and commit preparation across the staged slices; they are not limited
 to build/test subprocess runtime.
 
@@ -323,6 +323,11 @@ Final build and validation evidence:
 | `just test -p codex-app-server local_controller_endpoint_rejects_missing_or_wrong_launch_nonce` | First attempt failed to compile because the new test helper used the module's protocol `Result` alias instead of `std::result::Result`; the helper signature was corrected. Final run passed: 1 test run, 1 passed, 1240 skipped. This covers missing and wrong launch nonce rejection over the embedded endpoint, followed by a valid nonce connection. | Final compile reported 17.10s; nextest reported 0.557s. |
 | `just test -p codex-app-server local_controller_` | Passed: 12 test runs, 12 passed, 1229 skipped after adding the embedded nonce rejection test. | Compile reported 0.98s; nextest reported 35.925s. |
 | `git diff --check` | Passed after the embedded nonce rejection coverage slice. | Subsecond. |
+| `just fmt` | Passed after the experimental opt-in typed error slice. | Shell wall time was 6.368s. |
+| `just test -p codex-app-server local_controller_endpoint_requires_experimental_api_opt_in` | Passed: 1 test run, 1 passed, 1241 skipped. This covers an initialized local-controller socket without experimental API opt-in receiving typed `experimental-not-enabled` controller error data, then a reconnect with opt-in successfully reaching native TUI approval. | Compile reported 24.92s; nextest reported 7.116s. |
+| `just test -p codex-app-server local_controller_` | Passed: 13 test runs, 13 passed, 1229 skipped after adding the experimental opt-in typed error path. | Compile reported 1.07s; nextest reported 38.642s. |
+| `just test -p codex-app-server controller` | Passed: 103 test runs, 103 passed, 1139 skipped after the pre-dispatch controller error change. | Compile reported 0.77s; nextest reported 54.176s. |
+| `git diff --check` | Passed after the experimental opt-in typed error slice. | Subsecond. |
 
 ## Relevant implementation seams
 
