@@ -246,10 +246,23 @@ impl AppCommand {
 
     pub(crate) fn controller_reclaim_effect(&self) -> ControllerReclaimEffect {
         match self {
+            Self::Interrupt
+            | Self::CleanBackgroundTerminals
+            | Self::RunUserShellCommand { .. }
+            | Self::UserTurn { .. }
+            | Self::OverrideTurnContext { .. }
+            | Self::ExecApproval { .. }
+            | Self::PatchApproval { .. }
+            | Self::ResolveElicitation { .. }
+            | Self::UserInputAnswer { .. }
+            | Self::RequestPermissionsResponse { .. }
+            | Self::ReloadUserConfig
+            | Self::Compact
+            | Self::SetThreadName { .. }
+            | Self::Review { .. }
+            | Self::ApproveGuardianDeniedAction { .. } => ControllerReclaimEffect::ThreadAffecting,
             // Skills refreshes update TUI metadata and do not mutate or drive the main thread.
             Self::ListSkills { .. } => ControllerReclaimEffect::DisplayOnly,
-            // New coordinator-facing commands must be conservative by default until reviewed.
-            _ => ControllerReclaimEffect::ThreadAffecting,
         }
     }
 }
