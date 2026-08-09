@@ -734,9 +734,25 @@
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 19.27s with the known `__eh_frame` linker
     warning.
+  - Fenced controller-bound prompt egress at commit `7359445`: queued
+    controller prompts now carry connection-bound write permits, every outbound
+    writer revalidates at begin-write, automatic redelivery/replay treats a
+    begun external write as committed for duplicate-prevention, and a failed
+    pre-`externalDelivery` write removes its in-flight marker so the still
+    pending prompt can fall back to the TUI.
+  - Validated the egress-fencing slice with `just fmt` passing,
+    `just test -p codex-app-server-transport outgoing_message` passing 4/4,
+    `just test -p codex-app-server outgoing_message in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller`
+    passing 131/131, `just test -p codex-app-server-transport` passing
+    161/161, scoped `just fix` for `codex-app-server-transport` and
+    `codex-app-server` completing after unrelated app-server fixer hunks were
+    reverted, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex` in 41.15s with the known `__eh_frame` linker
+    warning.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
-    targets, egress transactionality, and long-lived subscription edges not
+    targets, long-lived subscription edges, and any egress-overflow policy
+    hardening not
     covered by sign-off, authorization-expiry cleanup, exact-thread and
     collection-filtered cursor binding, prompt owner-epoch binding,
     current-time owner routing, resume/turn override gating, internally-sent
@@ -764,7 +780,7 @@
     coverage, or realtime transcript/lifecycle delivery preservation, or TUI
     realtime-error rendering, or TUI realtime transcript rendering, or TUI
     app-server lag snapshot recovery, or lossless `thread/started`
-    notification delivery.
+    notification delivery, or controller prompt egress-fencing at begin-write.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -774,7 +790,8 @@
 ## Next Steps
 
 - Keep tightening app-server normal-interface parity around any remaining
-  implicit targets, egress transactionality, and subscription edges beyond the
+  implicit targets, long-lived subscription edges, and egress-overflow policy
+  hardening beyond the
   committed exact-thread/collection cursor binding, sign-off cleanup,
   authorization-expiry cleanup, idempotent acquire, prompt owner-epoch binding,
   current-time owner routing, resume/turn override gates, and internally-sent
@@ -799,9 +816,10 @@
   plus controller notification schema coverage, plus reasoning-summary-part
   lossless delivery, plus TUI realtime-error rendering, plus TUI realtime
   transcript rendering, plus TUI app-server lag snapshot recovery, plus
-  lossless `thread/started` notification delivery.
+  lossless `thread/started` notification delivery, plus controller prompt
+  egress-fencing at begin-write.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `4d9b974`.
+  commit `7359445`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

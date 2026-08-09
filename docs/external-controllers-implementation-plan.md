@@ -256,6 +256,16 @@ Commit 12: Add controller egress delivery and backpressure semantics.
   - `codex-rs/app-server/src/transport.rs`
   - controller session/coordinator module
 - Validation:
+  - implemented checkpoint `7359445`:
+    - queued controller-bound prompts carry a connection-bound write permit;
+    - all outbound writers revalidate the permit at begin-write before
+      serialization/send;
+    - automatic redelivery/replay treats a begun controller write as already
+      committed for duplicate-prevention, while a failed write removes that
+      in-flight marker and falls back to the TUI when the prompt is still
+      pending; and
+    - post-delivery and begin-write controller paths avoid duplicate prompt
+      redelivery while retaining the TUI-primary prompt-reclaim path.
   - write-failure and pre-/post-`externalDelivery` tests
   - saturated controller ingress returns `-32001` or typed
     `controller-overloaded` according to the design path being exercised

@@ -210,8 +210,14 @@
   start/diff/plan state, hook state, item start, Guardian review state,
   terminal interaction echo, and model safety/verification status before the
   TUI bridge can drop them under backpressure.
+- Controller-bound prompt egress is now fenced at begin-write. Queued
+  controller prompts carry connection-bound write permits; stdio, websocket,
+  remote-control, and in-process outbound writers revalidate before
+  serialization/send. A begun external write suppresses automatic duplicate
+  TUI redelivery, while a failed pre-`externalDelivery` write clears its
+  in-flight marker and falls back to the TUI when the prompt is still pending.
 - The latest Codex-side source checkpoint is
-  `a040081` for launch metadata publication, native approval coverage, exact
+  `7359445` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -247,7 +253,8 @@
   controller notifications and canonical controller error-code wire names, plus
   TUI realtime-error warning rendering, plus TUI realtime transcript rendering,
   plus TUI app-server lag snapshot recovery, plus lossless `thread/started`
-  delivery through the in-process TUI bridge.
+  delivery through the in-process TUI bridge, plus controller prompt egress
+  fencing at begin-write.
 - Focused app-server controller tests pass. The latest full
   `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
   retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
@@ -275,7 +282,7 @@
   passing with no pending snapshots, `just fix -p codex-tui` passing, and
   `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in
   13.03s with the known `__eh_frame` linker warning.
-- The latest focused validation for commit `4d9b974` is `just fmt` passing,
+- The focused validation for commit `4d9b974` was `just fmt` passing,
   `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
   passing 1/1 focused test, `just test -p codex-app-server-client
   event_requires_delivery_marks_transcript_and_terminal_events` passing 1/1
@@ -285,6 +292,16 @@
   passing after unrelated app-server fixer hunks were reverted, and
   `cargo build -p codex-cli -j 4` rebuilding `codex-rs/target/debug/codex` in
   19.27s with the known `__eh_frame` linker warning.
+- The latest focused validation for commit `7359445` is `just fmt` passing,
+  `just test -p codex-app-server-transport outgoing_message` passing 4/4,
+  `just test -p codex-app-server outgoing_message in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller`
+  passing 131/131, `just test -p codex-app-server-transport` passing 161/161,
+  scoped `just fix -p codex-app-server-transport` and
+  `just fix -p codex-app-server` completing after unrelated app-server fixer
+  hunks were reverted, `just fmt` passing, `git diff --check` and
+  `git diff --cached --check` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex` in 41.15s with the known
+  `__eh_frame` linker warning.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
@@ -563,8 +580,8 @@
 ## In Flight
 
 - Codex-side selection of the next normal-interface parity slice: remaining
-  implicit targets, egress transactionality, and long-lived subscription edges
-  not covered by the committed cleanup, resume/turn override gating,
+  implicit targets, long-lived subscription edges, and any egress-overflow
+  policy hardening not covered by the committed cleanup, resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
   controller notification work, serialized-request priority/dequeue reclaim,
   controller auto-subscribe filtering, and terminal sign-off/disconnect
@@ -591,7 +608,8 @@
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus TUI realtime transcript rendering, plus TUI
   app-server lag snapshot recovery, plus lossless `thread/started`
-  notification delivery through the in-process TUI bridge.
+  notification delivery through the in-process TUI bridge, plus controller
+  prompt egress-fencing at begin-write.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -600,7 +618,8 @@
 ## Remaining
 
 - Codex app-server should route and validate any remaining server-side binding
-  for long-lived subscriptions, implicit targets, and egress transactionality.
+  for long-lived subscriptions, implicit targets, and egress-overflow policy
+  hardening.
   Exact-thread and collection-filtered pagination cursors are now
   connection-bound for controllers, including internally-sent `thread/resume`
   response cursors. Controller-origin `thread/resume` override fields and
@@ -643,6 +662,11 @@
   Running-thread resume replay now skips prompts that already crossed external
   delivery to a controller, so ownership changes or TUI resume do not duplicate
   delivered controller prompts to another connection.
+  Queued controller-bound prompts now also carry connection-bound write
+  permits, revalidate at begin-write in every outbound writer, avoid duplicate
+  automatic TUI redelivery once an external write begins, and fall back to the
+  TUI if a pre-`externalDelivery` write fails while the prompt is still
+  pending.
   Embedded in-process app-server delivery now preserves transcript deltas,
   plan/reasoning deltas, item completion, terminal notifications,
   controller-relevant thread lifecycle/state notifications, and controller
