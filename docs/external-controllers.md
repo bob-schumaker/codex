@@ -332,6 +332,10 @@ cumulative goal cost was 25,650,619 tokens and 102,284 seconds (approximately
 28h 24m 44s).
 At the downstream inventory/persistence smoke slice, the cumulative goal cost
 was 25,828,117 tokens and 102,665 seconds (approximately 28h 31m 05s).
+At the downstream process-liveness discovery filter slice, the cumulative goal
+cost was 26,215,467 tokens and 104,044 seconds (approximately 28h 54m 04s).
+At the Herdr-driven native approval smoke slice, the cumulative goal cost was
+26,440,707 tokens and 104,451 seconds (approximately 29h 00m 51s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -503,6 +507,8 @@ Recorded build and validation evidence:
 | `git diff --check` | Passed after the controller participation auto-subscribe source slice. | Subsecond. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; `./codex-rs/target/debug/codex --version` reported `codex-cli 0.147.1`, and the final binary size was 757,129,080 bytes. | Cargo reported 29.76s with the known `__eh_frame section too large` linker warning. |
 | `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>` | Passed after the owning TUIs approved the native `codex-waveshare` participation prompts: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. The first run timed out while participation was pending because the prompts were missed. This is downstream inventory/persistence evidence only; the checked-in downstream smoke binary explicitly does not perform Codex mutation, `thread/resume`, or removal reconciliation. | Passing run wall time was 7.710s. Isolated root was `/private/tmp/codex-external-smoke.gvtgFu`. |
+| Downstream commit `508880c` (`fix(host): filter stale Codex controller launches`) | Passed focused and full downstream host validation after adding `processId` decoding/liveness filtering to `LocalControllerDiscovery` and regression coverage using real AF_UNIX socket metadata. This implements the discovery-contract requirement to ignore dead process records before launch presentation or controller connection. | `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter LocalControllerDiscoveryTests` passed 1/1 in 5.115s; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 56/56 in 3.087s; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 0.475s; downstream `pre-commit run --files ...` passed. |
+| Temporary Herdr workspace `w16` with Codex panes `w16:p1` and `w16:p2` plus downstream smoke pane `w16:p3` | Passed after driving each native `Allow codex-waveshare to control this session?` prompt by sending Enter to the owning Codex TUI pane. The first Herdr-driven attempt timed out at the smoke deadline while approval was still pending; the rerun passed: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. This validates terminal-driven native approval plus connection/inventory/persistence against two temporary live Codex TUIs, and remains non-mutating downstream evidence. | Passing run was reported by Herdr at 4s. Passing isolated root was `/private/tmp/codex-external-herdr-smoke.oNh2Hi`; the timed-out root was `/private/tmp/codex-external-herdr-smoke.baEaLc`. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -542,6 +548,18 @@ inventory, and isolated assignment-persistence check against live local Codex
 metadata. That binary prints `no Codex mutation requested`; it is not evidence
 for downstream `thread/resume`, control mutation, or removed-launch
 reconciliation.
+
+Downstream discovery note: downstream commit `508880c` now decodes
+`processId` from Codex local-controller metadata and filters records whose
+process is no longer live. This closes the stale metadata/process-liveness
+portion of the external discovery contract for the current downstream host.
+
+Herdr validation note: a temporary Herdr workspace can drive the same native
+TUI participation UI a user sees. The downstream smoke passed when Herdr
+accepted the first selection item in each owning Codex TUI pane. This is useful
+for repeatable connection validation, but it inherits the current smoke binary's
+scope: inventory and route persistence only, not `thread/resume` mutation or
+removed-launch reconciliation.
 
 ## Relevant implementation seams
 

@@ -20,6 +20,14 @@
   bounded two-launch discovery/native-participation/inventory/persistence run
   against live Codex local-controller metadata after the owning TUIs approve
   `codex-waveshare`.
+- Downstream `LocalControllerDiscovery` now filters stale Codex
+  local-controller metadata by decoded `processId` liveness before producing a
+  controller endpoint. This is committed downstream as `508880c`
+  (`fix(host): filter stale Codex controller launches`).
+- Temporary Herdr workspace validation can drive the native controller approval
+  UI: two Codex TUI panes rendered `Allow codex-waveshare to control this
+  session?`, Herdr sent Enter to both, and the downstream connection smoke
+  passed with two launches and exact launch-scoped route persistence.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -666,6 +674,18 @@
   after native TUI approval. The first attempt timed out while prompts were
   missed; the passing attempt reported `launches: 2`, exact launch-scoped route
   persistence, and `no Codex mutation requested`.
+- Downstream process-liveness filtering validation for commit `508880c` passed
+  focused
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter LocalControllerDiscoveryTests`
+  with 1/1 test, full
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  with 56/56 tests, `swift build --package-path .../FirstVerticalSliceHost`,
+  and downstream `pre-commit run --files ...`.
+- Herdr-driven connection validation used temporary workspace `w16`, Codex TUI
+  panes `w16:p1`/`w16:p2`, and smoke pane `w16:p3`. The first attempt timed out
+  while approval was pending; the rerun passed in 4s after Herdr accepted both
+  native controller prompts. Passing isolated root:
+  `/private/tmp/codex-external-herdr-smoke.oNh2Hi`.
 
 ## In Flight
 
@@ -675,8 +695,7 @@
   auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
 - Downstream controller-host discovery and display behavior for all live Codex
-  launches, including non-Herdr launches and stale metadata whose process is no
-  longer live.
+  launches, including non-Herdr launches.
 
 ## Remaining
 
@@ -789,9 +808,6 @@
   resolution plus reflected command/turn completion over the published socket.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
-- Downstream `LocalControllerDiscovery` still needs process-liveness/stale-record
-  filtering; the current implementation validates owner-private metadata and
-  socket paths but does not parse or check `processId`.
 - Downstream display should separate:
   - launch liveness,
   - participation/authorization state,
@@ -810,9 +826,9 @@
   valid Codex launches.
 - A product that maps "not approved" or "not active owner" to offline will
   misrepresent live Codex sessions.
-- A product that trusts stale local-controller socket files without checking
-  metadata `processId` liveness can display dead launches or choose a dead
-  endpoint for a controller connection.
+- Keep downstream discovery tests covering metadata `processId` liveness so
+  stale local-controller records do not re-enter inventory after future
+  discovery changes.
 - The implementation plan must continue to avoid durable enrollment or reusable
   controller credentials unless a future design explicitly changes that
   decision.

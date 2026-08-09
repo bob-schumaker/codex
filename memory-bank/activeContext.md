@@ -10,11 +10,15 @@
   launch-availability, TUI reclaim/reflection, prompt, egress, or in-process
   recovery gap. A downstream two-launch smoke now passes discovery, native
   participation, aggregate inventory, and isolated route persistence after
-  operator approval. Remaining known work is downstream controller-host stale
-  metadata/process-liveness filtering, presentation-state separation,
-  deterministic slot auto-assignment, and any downstream mutating
-  `thread/resume`/removed-launch acceptance rerun against the published
-  `$CODEX_HOME/local-controllers` metadata contract.
+  operator approval. A repeat connection smoke also passed from a temporary
+  Herdr workspace after Herdr drove each owning Codex TUI's native
+  `Allow codex-waveshare to control this session?` prompt. Downstream commit
+  `508880c` now filters stale local-controller metadata by `processId` liveness
+  before producing discovery endpoints. Remaining known work is downstream
+  controller-host presentation-state separation, deterministic slot
+  auto-assignment, and any downstream mutating `thread/resume`/removed-launch
+  acceptance rerun against the published `$CODEX_HOME/local-controllers`
+  metadata contract.
 
 ## Current Status
 
@@ -787,11 +791,28 @@
     launch-scoped route persistence, and `no Codex mutation requested`.
     Treat this as downstream inventory/persistence evidence, not as
     `thread/resume` or removed-launch evidence.
+  - Repeated the downstream connection smoke through a temporary Herdr workspace
+    (`w16`) with two Codex TUI panes (`w16:p1`, `w16:p2`) and one smoke pane
+    (`w16:p3`). Herdr observed both native `Allow codex-waveshare to control
+    this session?` prompts and sent Enter to each owning TUI. The first attempt
+    timed out at the smoke deadline while approval was still pending; the rerun
+    passed in 4s with two launches, exact launch-scoped route persistence, and
+    `no Codex mutation requested`.
+  - Implemented and committed downstream process-liveness discovery filtering
+    at `508880c` (`fix(host): filter stale Codex controller launches`).
+    `LocalControllerDiscovery` now decodes Codex metadata `processId` and
+    rejects dead-process records before presenting endpoints. Focused regression
+    coverage creates private metadata plus real AF_UNIX sockets and proves dead
+    records are ignored. Validation passed with focused
+    `swift test --package-path ... --filter LocalControllerDiscoveryTests`, full
+    downstream `swift test --package-path host/FirstVerticalSliceHost`, downstream
+    `swift build --package-path host/FirstVerticalSliceHost`, and downstream
+    `pre-commit run --files ...`.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery/full
-    rescans of `$CODEX_HOME/local-controllers`, stale metadata/process-liveness
-    filtering, launch-health versus authorization versus slot-assignment state
-    separation, and deterministic auto-assignment.
+    rescans of `$CODEX_HOME/local-controllers`, launch-health versus
+    authorization versus slot-assignment state separation, and deterministic
+    auto-assignment.
 - Not started:
   - Downstream mutating acceptance rerun across multiple live Codex launches
     after the downstream smoke/host covers `thread/resume`, control mutation, or
@@ -804,9 +825,6 @@
   prompt, egress, subscription, or in-process recovery gap until a narrower
   downstream finding identifies one.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
-- Add downstream process-liveness/stale-record filtering; the current
-  downstream `LocalControllerDiscovery` validates owner-private metadata and
-  sockets but does not parse/check `processId`.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
 - Extend or rerun the downstream multi-launch controller smoke if mutating

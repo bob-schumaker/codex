@@ -487,6 +487,15 @@ External slice A: Watch and rescan the local-controller metadata directory.
   - kill one TUI and verify only that launch becomes offline/removed
   - verify a metadata update that fills `mainThreadId` transitions from
     `starting` to discovered without requiring a controller reconnect
+  - implemented checkpoint in downstream commit `508880c`
+    (`fix(host): filter stale Codex controller launches`):
+    - downstream `LocalControllerDiscovery` decodes `processId` and filters
+      metadata whose process is no longer live before producing an endpoint;
+    - focused regression coverage creates owner-private launch metadata plus
+      real AF_UNIX socket files and proves a dead-process record is ignored; and
+    - downstream `swift test --package-path host/FirstVerticalSliceHost`,
+      `swift build --package-path host/FirstVerticalSliceHost`, and
+      `pre-commit run --files ...` passed.
 
 External slice B: Decouple launch health, authorization, and slot assignment.
 
@@ -569,6 +578,12 @@ Commit 19: Add the full end-to-end scenario.
       assignment persistence. Its checked-in binary currently reports `no Codex
       mutation requested`, so downstream `thread/resume`, control mutation, and
       removed-launch reconciliation remain unproven by that smoke.
+    - A repeat run used a temporary Herdr workspace with two Codex TUI panes and
+      one smoke pane, then drove the native `Allow codex-waveshare to control
+      this session?` prompts by sending Enter to each owning TUI pane. The first
+      attempt crossed the smoke deadline while approval was still pending; the
+      rerun passed in 4s with two launches and exact launch-scoped route
+      persistence.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.
