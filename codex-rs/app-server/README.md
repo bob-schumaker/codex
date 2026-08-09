@@ -1612,6 +1612,9 @@ The TUI remains primary. Any thread-affecting TUI input against a
 controller-owned main thread cancels that controller's active input lease,
 rebinds outstanding prompts to the TUI, and then executes the TUI input. Display
 actions such as scrolling or focus changes do not reclaim control.
+Thread-affecting input includes TUI-originated approval or user-input responses;
+those responses may resolve or reject the prompt after reclaiming ownership, even
+if the prompt had already been delivered to the controller.
 
 Controller clients receive control-plane notifications:
 
