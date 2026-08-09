@@ -10,18 +10,18 @@ use pretty_assertions::assert_eq;
 use super::ThreadSequenceTracker;
 use super::notification_thread_id;
 
-#[tokio::test]
-async fn tracker_advances_per_thread() {
+#[test]
+fn tracker_advances_per_thread() {
     let tracker = ThreadSequenceTracker::default();
     let first_thread = ThreadId::new();
     let second_thread = ThreadId::new();
 
-    assert_eq!(tracker.current(first_thread).await, 0);
-    assert_eq!(tracker.advance(first_thread).await, 1);
-    assert_eq!(tracker.advance(first_thread).await, 2);
-    assert_eq!(tracker.advance(second_thread).await, 1);
-    assert_eq!(tracker.current(first_thread).await, 2);
-    assert_eq!(tracker.current(second_thread).await, 1);
+    assert_eq!(tracker.current(first_thread), 0);
+    assert_eq!(tracker.advance(first_thread), 1);
+    assert_eq!(tracker.advance(first_thread), 2);
+    assert_eq!(tracker.advance(second_thread), 1);
+    assert_eq!(tracker.current(first_thread), 2);
+    assert_eq!(tracker.current(second_thread), 1);
 }
 
 #[test]

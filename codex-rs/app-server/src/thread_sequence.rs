@@ -1,8 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use codex_app_server_protocol::ServerNotification;
 use codex_protocol::ThreadId;
-use tokio::sync::Mutex;
 
 /// Tracks app-server-owned, per-thread sequence numbers for live thread events.
 #[derive(Default)]
@@ -11,17 +11,20 @@ pub(crate) struct ThreadSequenceTracker {
 }
 
 impl ThreadSequenceTracker {
-    pub(crate) async fn advance(&self, thread_id: ThreadId) -> u64 {
-        let mut sequences = self.sequences.lock().await;
+    pub(crate) fn advance(&self, thread_id: ThreadId) -> u64 {
+        let mut sequences = self
+            .sequences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let sequence = sequences.entry(thread_id).or_default();
         *sequence = sequence.saturating_add(1);
         *sequence
     }
 
-    pub(crate) async fn current(&self, thread_id: ThreadId) -> u64 {
+    pub(crate) fn current(&self, thread_id: ThreadId) -> u64 {
         self.sequences
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&thread_id)
             .copied()
             .unwrap_or_default()

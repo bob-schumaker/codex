@@ -24,6 +24,7 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::InProcessThreadSnapshot;
 use codex_app_server_client::NativeControllerParticipationDecision;
 use codex_app_server_client::NativeControllerParticipationRequestId;
 use codex_app_server_client::TypedRequestError;
@@ -967,6 +968,31 @@ impl AppServerSession {
         )
         .await?;
         Ok(response)
+    }
+
+    pub(crate) async fn in_process_thread_snapshot(
+        &mut self,
+        thread_id: ThreadId,
+        include_turns: bool,
+    ) -> Result<Option<InProcessThreadSnapshot>> {
+        if !self.uses_embedded_app_server() {
+            return Ok(None);
+        }
+        let mut snapshot = self
+            .client
+            .thread_snapshot(thread_id, include_turns)
+            .await
+            .wrap_err("failed to request in-process thread snapshot")?
+            .map_err(|err| color_eyre::eyre::eyre!("thread snapshot failed: {err:?}"))?;
+        self.hydrate_initial_thread_history(
+            &mut snapshot.thread,
+            /*turn_cursor*/ None,
+            /*item_cursor*/ None,
+            /*config*/ None,
+            HistoryHydrationScope::Initial,
+        )
+        .await?;
+        Ok(Some(snapshot))
     }
 
     pub(crate) async fn thread_archive(&mut self, thread_id: ThreadId) -> Result<()> {

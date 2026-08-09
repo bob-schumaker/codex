@@ -147,8 +147,8 @@ struct PendingCallbackEntry {
 
 #[derive(Clone)]
 pub(crate) struct PendingRequestReplay {
-    request: ServerRequest,
-    thread_sequence: Option<u64>,
+    pub(crate) request: ServerRequest,
+    pub(crate) thread_sequence: Option<u64>,
 }
 
 struct ExternalDeliveryWritePermit {
@@ -427,8 +427,8 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn thread_sequence(&self, thread_id: ThreadId) -> u64 {
-        self.thread_sequences.current(thread_id).await
+    pub(crate) fn thread_sequence(&self, thread_id: ThreadId) -> u64 {
+        self.thread_sequences.current(thread_id)
     }
 
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
@@ -494,11 +494,8 @@ impl OutgoingMessageSender {
         RequestId::Integer(self.next_server_request_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    async fn next_thread_sequence(&self, thread_id: Option<ThreadId>) -> Option<u64> {
-        match thread_id {
-            Some(thread_id) => Some(self.thread_sequences.advance(thread_id).await),
-            None => None,
-        }
+    fn next_thread_sequence(&self, thread_id: Option<ThreadId>) -> Option<u64> {
+        thread_id.map(|thread_id| self.thread_sequences.advance(thread_id))
     }
 
     pub(crate) async fn send_request_to_connections(
@@ -510,11 +507,11 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
-        let thread_sequence = self.next_thread_sequence(thread_id).await;
 
         let (tx_approve, rx_approve) = oneshot::channel();
-        {
+        let thread_sequence = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let thread_sequence = self.next_thread_sequence(thread_id);
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
@@ -530,7 +527,8 @@ impl OutgoingMessageSender {
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
             );
-        }
+            thread_sequence
+        };
 
         let outgoing_message = server_request_outgoing_message(request.clone(), thread_sequence);
         let send_result = match connection_ids {
@@ -586,11 +584,11 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
-        let thread_sequence = self.next_thread_sequence(thread_id).await;
 
         let (tx_approve, rx_approve) = oneshot::channel();
-        {
+        let thread_sequence = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let thread_sequence = self.next_thread_sequence(thread_id);
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
@@ -607,7 +605,8 @@ impl OutgoingMessageSender {
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
             );
-        }
+            thread_sequence
+        };
 
         let mut send_error = None;
         for connection_id in recipients.connection_ids() {
@@ -1058,6 +1057,27 @@ impl OutgoingMessageSender {
         requests
     }
 
+    pub(crate) async fn thread_sequence_and_pending_requests_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> (u64, Vec<PendingRequestReplay>) {
+        let request_id_to_callback = self.request_id_to_callback.lock().await;
+        let last_sequence = self.thread_sequences.current(thread_id);
+        let mut requests = request_id_to_callback
+            .values()
+            .filter_map(|entry| {
+                (entry.thread_id == Some(thread_id)
+                    && !entry.has_external_delivery_or_started_write())
+                .then_some(PendingRequestReplay {
+                    request: entry.request.clone(),
+                    thread_sequence: entry.thread_sequence,
+                })
+            })
+            .collect::<Vec<_>>();
+        requests.sort_by(|left, right| left.request.id().cmp(right.request.id()));
+        (last_sequence, requests)
+    }
+
     #[cfg(test)]
     pub(crate) async fn request_has_external_delivery(
         &self,
@@ -1400,10 +1420,8 @@ impl OutgoingMessageSender {
         &self,
         notification: ServerNotification,
     ) -> OutgoingMessage {
-        let thread_sequence = match notification_thread_id(&notification) {
-            Some(thread_id) => Some(self.thread_sequences.advance(thread_id).await),
-            None => None,
-        };
+        let thread_sequence = notification_thread_id(&notification)
+            .map(|thread_id| self.thread_sequences.advance(thread_id));
         OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
             notification,
             thread_sequence,
@@ -2007,7 +2025,7 @@ mod tests {
 
         assert_eq!(envelopes[0].thread_sequence, Some(1));
         assert_eq!(envelopes[1].thread_sequence, Some(1));
-        assert_eq!(outgoing.thread_sequence(thread_id).await, 1);
+        assert_eq!(outgoing.thread_sequence(thread_id), 1);
     }
 
     #[tokio::test]
@@ -2044,7 +2062,7 @@ mod tests {
             .expect("request should stay pending");
         assert_eq!(pending_request.thread_id, Some(thread_id));
         assert_eq!(pending_request.thread_sequence, Some(1));
-        assert_eq!(outgoing.thread_sequence(thread_id).await, 1);
+        assert_eq!(outgoing.thread_sequence(thread_id), 1);
     }
 
     #[tokio::test]
@@ -2904,7 +2922,10 @@ mod tests {
                 },
             ))
             .await;
-        let pending_requests = outgoing.pending_requests_for_thread(thread_id).await;
+        let (last_sequence, pending_requests) = outgoing
+            .thread_sequence_and_pending_requests_for_thread(thread_id)
+            .await;
+        assert_eq!(last_sequence, 3);
         assert_eq!(
             pending_requests
                 .iter()

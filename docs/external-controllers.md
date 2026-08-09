@@ -279,8 +279,9 @@ Validation for the staged implementation was recorded on branch
 `cobblers/control-is-mine`. The broad parity checkpoint was commit `a36bf85`
 (`refactor(app-server): centralize controller thread list filtering`). Later
 Codex-side hardening has continued through commit `809b9e1`
-(`feat(app-server): add thread sequence envelopes`) and the current in-process
-TUI sequence-preservation slice. The recorded
+(`feat(app-server): add thread sequence envelopes`), the in-process TUI
+sequence-preservation slice, and the current in-process recovery-snapshot
+slice. The recorded
 implementation goal cost at the broad checkpoint was 7,828,188 tokens and
 44,738 seconds (approximately 12h 25m 38s). At the experimental opt-in typed
 error slice, the cumulative goal cost was 16,417,727 tokens and 49,993 seconds
@@ -322,6 +323,8 @@ snapshot sequence/ownership-state slice, the cumulative goal cost was
 22,555,737 tokens and 89,939 seconds (approximately 24h 58m 59s).
 At the in-process TUI sequence-preservation slice, the cumulative goal cost was
 24,089,821 tokens and 96,994 seconds (approximately 26h 56m 34s).
+At the in-process recovery-snapshot slice, the cumulative goal cost was
+24,507,618 tokens and 98,385 seconds (approximately 27h 19m 45s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -473,17 +476,27 @@ Recorded build and validation evidence:
 | `just fix -p codex-exec` | Passed after the in-process TUI sequence-preservation slice. | Cargo reported 47.97s. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; final binary size was 756,912,216 bytes. | Cargo reported 48.32s with the known `__eh_frame section too large` linker warning. |
 | `git diff --check` | Passed after the in-process TUI sequence-preservation slice. | Subsecond. |
+| `just fmt` | Passed after the in-process recovery-snapshot slice. | Shell wall time was 6.568s on the final run. |
+| `just test -p codex-app-server in_process_thread_snapshot_reads_main_thread_state pending_requests_for_thread_returns_thread_requests_in_request_id_order tracker_advances_per_thread` | Passed: 3 test runs, 3 passed, 1257 skipped after changing the focused fixture to request `includeTurns=false` for its ephemeral thread. This covers an embedded app-server-owned recovery snapshot returning the started main thread, authoritative sequence, current TUI ownership, owner epoch, and no pending prompts, plus the outgoing helper returning a coherent sequence with pending prompts and the synchronous thread-sequence tracker. | Final compile reported 25.53s; nextest reported 3.647s. |
+| `just test -p codex-app-server-client in_process_thread_snapshot_reads_started_thread` | Passed: 1 test run, 1 passed, 31 skipped. This covers the app-server-client worker command path for in-process recovery snapshots. | Final compile reported 14.46s; nextest reported 4.991s. |
+| `just test -p codex-tui thread_event_store_adopts_in_process_snapshot_prompt_and_owner_state lag_refresh_replays_authoritative_active_thread_snapshot` | Passed: 2 test runs, 2 passed, 3467 skipped. This covers TUI replacement of stale prompt buffer state with app-server-owned pending prompts plus ownership status and sequence, and preserves existing lag-refresh behavior after preferring the in-process recovery snapshot for embedded sessions. | Final compile reported 54.45s after waiting on the app-server-client build lock; nextest reported 0.108s. |
+| `just fix -p codex-app-server` | Passed after the in-process recovery-snapshot slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the source commit stayed scoped. | Final cargo run reported 30.89s. |
+| `just fix -p codex-app-server-client` | Passed after the in-process recovery-snapshot slice. | Cargo reported 5.83s. |
+| `just fix -p codex-tui` | Passed after the in-process recovery-snapshot slice. | Cargo reported 27.68s. |
+| `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; final binary size was 757,129,192 bytes. | Cargo reported 21.72s with the known `__eh_frame section too large` linker warning. |
+| `git diff --check` | Passed after the in-process recovery-snapshot source/docs slice. | Subsecond. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
-assignment. The current in-process TUI sequence-preservation slice carries
+assignment. The in-process TUI sequence-preservation slice carries
 sequenced server requests and notifications through `codex-app-server-client`
 to the TUI, seeds lag recovery from `ThreadReadResponse.lastSequence`, and
 drops stale sequenced events at or below the refreshed snapshot sequence. The
-remaining implementation gap is narrower: the recovery snapshot is not yet a
-single app-server-owned atomic snapshot containing `InteractiveOwner`, owner
-epoch, and prompt bindings. Controller ownership status is typed in-process
-state, but it is still not folded into that atomic snapshot-at-sequence.
+in-process recovery-snapshot slice closes the remaining recovery gap for
+embedded TUI sessions: the app-server now builds an internal snapshot containing
+the normal thread view, authoritative sequence, current interactive ownership
+status/epoch, and pending prompt requests for TUI replay. Remote/daemon TUI
+sessions retain the public `thread/read` fallback.
 
 ## Relevant implementation seams
 

@@ -54,15 +54,14 @@
   runtime and app-server-client bridge, plus explicit controller
   `thread/unsubscribe` target-binding coverage, plus TUI in-process
   ownership-status history-exclusion coverage, plus TUI snapshot-local
-  sequence/ownership-state bookkeeping;
+  sequence/ownership-state bookkeeping, plus app-server-owned in-process
+  recovery snapshots carrying ownership status/epoch and pending prompt replay;
   current source audit has no confirmed remaining Codex-side
   subscription/implicit-target gap while downstream discovery/display consumes
-  the published local-controller metadata contract, but it did find one larger
-  Commit 17 drift item: the source uses lossless in-process events, `Lagged`
-  signaling, active-thread `thread/read(includeTurns=true)` recovery, and
-  TUI-side snapshot-local `last_sequence` plus ownership status rather than the
-  formal app-server `threadSequence` / `lastSequence` and atomic
-  owner/prompt-binding snapshot-at-sequence described by the spec.
+  the published local-controller metadata contract. The previous Commit 17
+  sequence/recovery drift is now closed for embedded TUI sessions by the
+  internal app-server recovery snapshot; remote/daemon TUI sessions retain the
+  public `thread/read` fallback.
 
 ## Current Status
 
@@ -769,11 +768,26 @@
     hunks were reverted, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 24.24s with the known `__eh_frame` linker
     warning.
+  - Resolved the Commit 17 sequence/recovery drift in the current in-process
+    recovery-snapshot slice: embedded TUI lag recovery now asks the app-server
+    for an internal snapshot containing the normal thread view, authoritative
+    `lastSequence`, controller ownership status/epoch, and pending prompt
+    requests for replay, while remote/daemon TUI sessions keep the public
+    `thread/read` fallback.
+  - Validated the recovery-snapshot slice with `just fmt` passing,
+    `just test -p codex-app-server in_process_thread_snapshot_reads_main_thread_state`
+    `pending_requests_for_thread_returns_thread_requests_in_request_id_order`
+    `tracker_advances_per_thread` passing 3/3,
+    `just test -p codex-app-server-client in_process_thread_snapshot_reads_started_thread`
+    passing 1/1,
+    `just test -p codex-tui thread_event_store_adopts_in_process_snapshot_prompt_and_owner_state`
+    `lag_refresh_replays_authoritative_active_thread_snapshot` passing 2/2, and
+    scoped `just fix` for `codex-app-server`,
+    `codex-app-server-client`, and `codex-tui` passing after unrelated
+    app-server fixer hunks were reverted, plus `cargo build -p codex-cli --bin codex`
+    rebuilding `codex-rs/target/debug/codex` in 21.72s with the known
+    `__eh_frame` linker warning.
 - In progress:
-  - Resolving the Commit 17 sequence/recovery drift: either implement the formal
-    `threadSequence` / `lastSequence` plus owner/prompt-binding
-    snapshot-at-sequence contract, or explicitly amend the design to bless the
-    current lossless-event plus lag-refresh recovery model.
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets and long-lived subscription edges not
     covered by sign-off, authorization-expiry cleanup, exact-thread and
@@ -806,7 +820,8 @@
     notification delivery, or controller prompt egress-fencing at begin-write,
     or controller egress-overflow isolation/fallback coverage, or TUI
     in-process ownership-status history-exclusion coverage, or TUI
-    snapshot-local sequence/ownership-state bookkeeping.
+    snapshot-local sequence/ownership-state bookkeeping, or in-process
+    recovery-snapshot prompt/owner replay.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -844,11 +859,10 @@
   lossless `thread/started` notification delivery, plus controller prompt
   egress-fencing at begin-write, plus controller egress-overflow
   isolation/fallback coverage, plus TUI in-process ownership-status
-  history-exclusion coverage.
-- Resolve the Commit 17 sequence/recovery gap before calling the Codex-side
-  implementation complete.
+  history-exclusion coverage, plus in-process recovery-snapshot prompt/owner
+  replay.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `dd2c93e`.
+  the current recovery-snapshot source/docs commit.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

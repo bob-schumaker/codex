@@ -417,12 +417,14 @@ TUI event stream only.
       stale sequenced events at or below the refreshed snapshot sequence; and
     - `codex-exec` normalizes sequenced in-process events with the legacy
       request/notification variants.
-  - remaining checkpoint after the current slice:
-    - the recovery snapshot is still not a single app-server-owned atomic
-      snapshot containing interactive owner, owner epoch, and prompt-binding
-      state. Do not mark this commit complete until that atomic ownership and
-      prompt-binding snapshot is implemented or the design is explicitly
-      amended.
+  - implemented checkpoint in the current in-process recovery-snapshot slice:
+    - embedded TUI lag recovery now requests an internal app-server-owned
+      snapshot, not a public JSON-RPC method;
+    - the snapshot packages the normal `thread/read` view, authoritative
+      `lastSequence`, current controller ownership status, owner epoch, and
+      pending server requests for TUI replay; and
+    - remote/daemon TUI sessions continue to fall back to the public
+      `thread/read` path.
 
 Commit 18: Start the endpoint from embedded TUI launches only, after admission,
 ownership, enrollment, prompt fencing, reclaim, and reflection are in place.

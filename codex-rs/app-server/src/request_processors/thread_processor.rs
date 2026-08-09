@@ -4,6 +4,8 @@ use super::turn_processor::can_accept_direct_input;
 use super::*;
 use crate::controller_cursor::bind_controller_thread_resume_response_cursors;
 use crate::error_code::method_not_found;
+use crate::in_process_snapshot::InProcessThreadSnapshot;
+use crate::in_process_snapshot::InProcessThreadSnapshotServerRequest;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ThreadSection;
 use codex_app_server_protocol::ThreadSectionAppearance;
@@ -864,6 +866,43 @@ impl ThreadRequestProcessor {
         self.thread_read_response_inner(params)
             .await
             .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn in_process_thread_snapshot(
+        &self,
+        params: ThreadReadParams,
+    ) -> Result<InProcessThreadSnapshot, JSONRPCErrorError> {
+        let ThreadReadParams {
+            thread_id,
+            include_turns,
+        } = params;
+        let thread_id = ThreadId::from_string(&thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let (last_sequence, pending_server_requests) = self
+            .outgoing
+            .thread_sequence_and_pending_requests_for_thread(thread_id)
+            .await;
+        let thread = self
+            .read_thread_view(thread_id, include_turns)
+            .await
+            .map_err(thread_read_view_error)?;
+        let controller_ownership_status = self
+            .controller_processor
+            .ownership_status_snapshot(thread_id);
+        let pending_server_requests = pending_server_requests
+            .into_iter()
+            .map(|request| InProcessThreadSnapshotServerRequest {
+                request: Box::new(request.request),
+                thread_sequence: request.thread_sequence,
+            })
+            .collect();
+
+        Ok(InProcessThreadSnapshot {
+            thread,
+            last_sequence,
+            controller_ownership_status,
+            pending_server_requests,
+        })
     }
 
     pub(crate) async fn thread_turns_list(
@@ -2428,7 +2467,7 @@ impl ThreadRequestProcessor {
             .read_thread_view(thread_uuid, include_turns)
             .await
             .map_err(thread_read_view_error)?;
-        let last_sequence = self.outgoing.thread_sequence(thread_uuid).await;
+        let last_sequence = self.outgoing.thread_sequence(thread_uuid);
         Ok(ThreadReadResponse {
             thread,
             last_sequence,

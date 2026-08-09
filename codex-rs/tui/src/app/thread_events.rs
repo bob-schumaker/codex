@@ -119,6 +119,28 @@ impl ThreadEventStore {
         self.set_turns(turns);
     }
 
+    pub(super) fn set_session_snapshot_at_sequence(
+        &mut self,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+        last_sequence: u64,
+        controller_ownership_status: Option<
+            codex_app_server_client::InProcessControllerOwnershipStatus,
+        >,
+        pending_server_requests: Vec<codex_app_server_client::InProcessThreadSnapshotServerRequest>,
+    ) {
+        self.last_sequence = last_sequence;
+        self.last_sequence_is_authoritative = true;
+        self.session = Some(session);
+        self.set_turns(turns);
+        self.controller_ownership_status = controller_ownership_status;
+        self.buffer.clear();
+        self.pending_interactive_replay = PendingInteractiveReplayState::default();
+        for pending_request in pending_server_requests {
+            self.buffer_snapshot_request(*pending_request.request);
+        }
+    }
+
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
         self.buffer.retain(Self::event_survives_session_refresh);
     }
@@ -235,6 +257,11 @@ impl ThreadEventStore {
         if !self.apply_event_sequence(thread_sequence) {
             return false;
         }
+        self.buffer_snapshot_request(request);
+        true
+    }
+
+    fn buffer_snapshot_request(&mut self, request: ServerRequest) {
         self.pending_interactive_replay
             .note_server_request(&request);
         self.buffer
@@ -246,7 +273,6 @@ impl ThreadEventStore {
             self.pending_interactive_replay
                 .note_evicted_server_request(request.as_ref());
         }
-        true
     }
 
     pub(super) fn set_controller_ownership_status(
@@ -763,6 +789,60 @@ mod tests {
         ));
         assert_eq!(store.active_turn_id(), Some("new-turn"));
         assert_eq!(store.snapshot().last_sequence, 43);
+    }
+
+    #[test]
+    fn thread_event_store_adopts_in_process_snapshot_prompt_and_owner_state() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let thread_id = ThreadId::new();
+        store.set_session_at_sequence(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            Vec::new(),
+            20,
+        );
+        assert!(!store.push_request_at_sequence(
+            exec_approval_request(
+                thread_id,
+                "turn-stale",
+                "stale-approval",
+                /*approval_id*/ None,
+            ),
+            Some(19),
+        ));
+
+        let status = codex_app_server_client::InProcessControllerOwnershipStatus {
+            main_thread_id: thread_id,
+            owner: codex_app_server_client::InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: "controller-session".to_string(),
+            },
+            owner_epoch: 3,
+            reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
+        };
+        let pending_request = exec_approval_request(
+            thread_id,
+            "turn-live",
+            "live-approval",
+            /*approval_id*/ Some("approval-1"),
+        );
+
+        store.set_session_snapshot_at_sequence(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![test_turn("turn-live", TurnStatus::InProgress, Vec::new())],
+            42,
+            Some(status.clone()),
+            vec![
+                codex_app_server_client::InProcessThreadSnapshotServerRequest {
+                    request: Box::new(pending_request.clone()),
+                    thread_sequence: Some(40),
+                },
+            ],
+        );
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.last_sequence, 42);
+        assert_eq!(snapshot.controller_ownership_status, Some(status));
+        assert_eq!(store.active_turn_id(), Some("turn-live"));
+        assert_eq!(store.pending_replay_requests(), vec![pending_request]);
     }
 
     #[test]

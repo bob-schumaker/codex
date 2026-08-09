@@ -278,6 +278,18 @@ impl ControllerSessionCoordinator {
         &self.owner
     }
 
+    pub(crate) fn ownership_status_snapshot(
+        &self,
+        reason: ControllerControlOwnershipChangedReason,
+    ) -> ControllerOwnershipStatus {
+        ControllerOwnershipStatus {
+            main_thread_id: self.main_thread_id,
+            owner: self.ownership_status_owner(),
+            owner_epoch: self.owner_epoch_for_notification(),
+            reason,
+        }
+    }
+
     pub(crate) fn main_thread_id(&self) -> Option<ThreadId> {
         (!matches!(self.owner, InteractiveOwner::Closed)).then_some(self.main_thread_id)
     }

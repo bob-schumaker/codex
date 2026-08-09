@@ -37,6 +37,8 @@ pub use codex_app_server::in_process::InProcessSequencedServerNotification;
 pub use codex_app_server::in_process::InProcessSequencedServerRequest;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
+pub use codex_app_server::in_process::InProcessThreadSnapshot;
+pub use codex_app_server::in_process::InProcessThreadSnapshotServerRequest;
 pub use codex_app_server::in_process::LOCAL_CONTROLLER_LAUNCH_NONCE_HEADER;
 pub use codex_app_server::in_process::LocalControllerEndpointMetadata;
 use codex_app_server::in_process::LogDbLayer;
@@ -486,6 +488,13 @@ enum ClientCommand {
         main_thread_id: String,
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    ThreadSnapshot {
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+        response_tx: oneshot::Sender<
+            IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
+        >,
+    },
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
@@ -601,6 +610,14 @@ impl InProcessAppServerClient {
                                     .publish_local_controller_main_thread_id(main_thread_id)
                                     .await;
                                 let _ = response_tx.send(send_result);
+                            }
+                            Some(ClientCommand::ThreadSnapshot {
+                                thread_id,
+                                include_turns,
+                                response_tx,
+                            }) => {
+                                let result = handle.thread_snapshot(thread_id, include_turns).await;
+                                let _ = response_tx.send(result);
                             }
                             Some(ClientCommand::Shutdown { response_tx }) => {
                                 let shutdown_result = handle.shutdown().await;
@@ -879,6 +896,33 @@ impl InProcessAppServerClient {
         })?
     }
 
+    pub async fn thread_snapshot(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+    ) -> IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::ThreadSnapshot {
+                thread_id,
+                include_turns,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process thread snapshot channel is closed",
+            )
+        })?
+    }
+
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
@@ -1078,6 +1122,20 @@ impl AppServerClient {
                     .await
             }
             Self::Remote(_) => Ok(()),
+        }
+    }
+
+    pub async fn thread_snapshot(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+    ) -> IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>> {
+        match self {
+            Self::InProcess(client) => client.thread_snapshot(thread_id, include_turns).await,
+            Self::Remote(_) => Err(IoError::new(
+                ErrorKind::Unsupported,
+                "in-process thread snapshots are only supported by embedded app-server",
+            )),
         }
     }
 
@@ -1693,6 +1751,46 @@ mod tests {
             .await
             .expect("thread/read should return the newly started thread");
         assert_eq!(read.thread.id, response.thread.id);
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn in_process_thread_snapshot_reads_started_thread() {
+        let client = start_test_client(SessionSource::Cli).await;
+
+        let response: ThreadStartResponse = client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(5),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start should succeed");
+        let thread_id = codex_protocol::ThreadId::from_string(&response.thread.id)
+            .expect("thread/start id should parse");
+
+        let snapshot = client
+            .thread_snapshot(thread_id, /*include_turns*/ false)
+            .await
+            .expect("thread snapshot transport should work")
+            .expect("thread snapshot should succeed");
+
+        assert_eq!(snapshot.thread.id, response.thread.id);
+        assert_eq!(snapshot.last_sequence, 1);
+        assert_eq!(
+            snapshot.controller_ownership_status,
+            Some(InProcessControllerOwnershipStatus {
+                main_thread_id: thread_id,
+                owner: InProcessControllerOwnershipStatusOwner::Tui,
+                owner_epoch: 0,
+                reason:
+                    codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
+            })
+        );
+        assert_eq!(snapshot.pending_server_requests, Vec::new());
 
         client.shutdown().await.expect("shutdown should complete");
     }

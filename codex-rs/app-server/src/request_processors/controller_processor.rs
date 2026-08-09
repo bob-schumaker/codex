@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::ControllerAcquireControlResponse;
+use codex_app_server_protocol::ControllerControlOwnershipChangedReason;
 use codex_app_server_protocol::ControllerErrorCode;
 use codex_app_server_protocol::ControllerErrorData;
 use codex_app_server_protocol::ControllerLaunchState;
@@ -461,6 +462,26 @@ impl ControllerRequestProcessor {
         coordinator
             .session_for(connection_id)
             .map(|session| session.main_thread_id)
+    }
+
+    pub(crate) fn ownership_status_snapshot(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<ControllerOwnershipStatus> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let coordinator = state.coordinator.as_ref()?;
+        let main_thread_id = coordinator.main_thread_id()?;
+        if main_thread_id != thread_id {
+            return None;
+        }
+        Some(
+            coordinator.ownership_status_snapshot(current_owner_snapshot_reason(
+                coordinator.interactive_owner(),
+            )),
+        )
     }
 
     pub(crate) fn prompt_request_recipients(
@@ -927,6 +948,23 @@ fn prompt_rebind_after_transition(
         fallback_connection_id: None,
         owner_epoch: None,
     })
+}
+
+fn current_owner_snapshot_reason(
+    owner: &InteractiveOwner,
+) -> ControllerControlOwnershipChangedReason {
+    match owner {
+        InteractiveOwner::ControllerOwned { .. } => {
+            ControllerControlOwnershipChangedReason::Acquired
+        }
+        InteractiveOwner::TuiOwned { .. } | InteractiveOwner::TransferPending { .. } => {
+            ControllerControlOwnershipChangedReason::Released
+        }
+        InteractiveOwner::TuiUnavailable { .. } => {
+            ControllerControlOwnershipChangedReason::TuiUnavailable
+        }
+        InteractiveOwner::Closed => ControllerControlOwnershipChangedReason::MainThreadClosed,
+    }
 }
 
 fn reject_controller_session_scoped_response(

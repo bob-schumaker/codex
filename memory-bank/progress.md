@@ -632,7 +632,8 @@
 - Codex-side normal-interface parity audit: no confirmed remaining
   subscription/implicit-target gap after explicit `thread/unsubscribe` coverage
   and TUI in-process ownership-status history-exclusion coverage, plus TUI
-  snapshot-local sequence/ownership-state bookkeeping. Prior reviewed
+  snapshot-local sequence/ownership-state bookkeeping and in-process
+  recovery-snapshot prompt/owner replay. Prior reviewed
   areas include the committed cleanup,
   resume/turn override gating,
   cursor-binding, internally-sent resume cursor binding, owner-binding,
@@ -665,16 +666,14 @@
   prompt egress-fencing at begin-write, plus controller egress-overflow
   isolation/fallback coverage, plus TUI in-process ownership-status
   history-exclusion coverage, plus TUI snapshot-local sequence/ownership-state
-  bookkeeping.
+  bookkeeping and in-process recovery-snapshot prompt/owner replay.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
-- Commit 17 sequence/recovery drift is open: the source currently uses lossless
-  in-process event delivery, `Lagged` signaling, active-thread
-  `thread/read(includeTurns=true)` recovery, and TUI-side snapshot-local
-  `last_sequence` plus ownership status. It does not expose the spec's formal
-  app-server `threadSequence` / `lastSequence` surface or an atomic
-  app-server-owned snapshot-at-sequence containing interactive owner and
-  prompt-binding state.
+- Commit 17 sequence/recovery drift is closed for embedded TUI sessions: lag
+  recovery now uses an internal app-server-owned snapshot containing the normal
+  thread view, authoritative `lastSequence`, current controller ownership
+  status/epoch, and pending prompt requests for replay. Remote/daemon TUI
+  sessions retain the public `thread/read` fallback.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -774,11 +773,11 @@
   before subscription mutation. Typed in-process `ControllerOwnershipStatus`
   events are covered through the real TUI event handler, remain out of
   transcript/model-visible history, and are retained in TUI snapshots with a
-  local monotonic snapshot sequence.
-- The formal app-server `threadSequence` / `lastSequence` plus
-  owner/prompt-binding snapshot-at-sequence requirement remains unresolved.
-  Either implement that contract or explicitly amend the design before
-  declaring Codex-side Commit 17 complete.
+  local monotonic snapshot sequence. Embedded TUI lag recovery now uses an
+  internal app-server-owned snapshot containing the normal thread view,
+  authoritative `lastSequence`, current controller ownership status/epoch, and
+  pending prompt requests for replay; remote/daemon TUI sessions keep the public
+  `thread/read` fallback.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -822,12 +821,10 @@
   thread-scoped MCP OAuth completion targeting, plus bounded controller ingress
   overload, separate controller control-plane ingress, pre-participation
   initialize-notification suppression coverage, explicit `thread/unsubscribe`
-  target/mutation fencing, and TUI in-process ownership-status
-  history-exclusion coverage.
+  target/mutation fencing, TUI in-process ownership-status history-exclusion
+  coverage, and in-process recovery-snapshot prompt/owner replay.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
-- Resolve the sequence/recovery design mismatch before marking the
-  external-controller implementation complete.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
   unless a future controller change newly affects that cluster.
 - Do not expect a local-controller launch to become available again after a

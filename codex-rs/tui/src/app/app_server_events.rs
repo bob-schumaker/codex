@@ -11,6 +11,7 @@ use crate::app_info::app_info_from_api;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use codex_app_server_client::AppServerEvent;
+use codex_app_server_client::InProcessThreadSnapshot;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
@@ -131,6 +132,24 @@ impl App {
             return;
         };
         let input_state = self.chat_widget.capture_thread_input_state();
+        match app_server_client
+            .in_process_thread_snapshot(thread_id, /*include_turns*/ true)
+            .await
+        {
+            Ok(Some(snapshot)) => {
+                self.apply_in_process_thread_snapshot_after_lag(thread_id, snapshot, input_state)
+                    .await;
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to refresh in-process thread snapshot after app-server event lag; falling back to thread/read"
+                );
+            }
+        }
         let response = match app_server_client
             .thread_read_response(thread_id, /*include_turns*/ true)
             .await
@@ -152,6 +171,32 @@ impl App {
             input_state,
         )
         .await;
+    }
+
+    async fn apply_in_process_thread_snapshot_after_lag(
+        &mut self,
+        thread_id: codex_protocol::ThreadId,
+        snapshot: InProcessThreadSnapshot,
+        input_state: Option<crate::chatwidget::ThreadInputState>,
+    ) {
+        let session = self
+            .session_state_for_thread_read(thread_id, &snapshot.thread)
+            .await;
+        let turns = snapshot.thread.turns;
+        let replay_snapshot = {
+            let channel = self.ensure_thread_channel(thread_id);
+            let mut store = channel.store.lock().await;
+            store.set_session_snapshot_at_sequence(
+                session,
+                turns,
+                snapshot.last_sequence,
+                snapshot.controller_ownership_status,
+                snapshot.pending_server_requests,
+            );
+            store.input_state = input_state;
+            store.snapshot()
+        };
+        self.replay_thread_snapshot(replay_snapshot, /*resume_restored_queue*/ false);
     }
 
     pub(super) async fn apply_thread_read_after_lag(

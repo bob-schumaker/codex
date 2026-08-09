@@ -35,6 +35,7 @@ use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
+use crate::in_process_snapshot::InProcessThreadSnapshot;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -88,6 +89,7 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_chatgpt::workspace_settings;
@@ -839,6 +841,19 @@ impl MessageProcessor {
         }
         self.try_attach_thread_listener(thread_id, connection_ids)
             .await;
+    }
+
+    pub(crate) async fn in_process_thread_snapshot(
+        &self,
+        thread_id: ThreadId,
+        include_turns: bool,
+    ) -> Result<InProcessThreadSnapshot, JSONRPCErrorError> {
+        self.thread_processor
+            .in_process_thread_snapshot(ThreadReadParams {
+                thread_id: thread_id.to_string(),
+                include_turns,
+            })
+            .await
     }
 
     pub(crate) async fn drain_background_tasks(&self) {

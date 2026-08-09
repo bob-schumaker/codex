@@ -68,6 +68,8 @@ pub use crate::controller_session::ControllerOwnershipStatusOwner as InProcessCo
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+pub use crate::in_process_snapshot::InProcessThreadSnapshot;
+pub use crate::in_process_snapshot::InProcessThreadSnapshotServerRequest;
 use crate::message_processor::MessageProcessor;
 use crate::message_processor::MessageProcessorArgs;
 use crate::outgoing_message::ConnectionId;
@@ -339,6 +341,12 @@ enum InProcessClientMessage {
         main_thread_id: String,
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    ThreadSnapshot {
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+        response_tx:
+            oneshot::Sender<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
+    },
     Shutdown {
         done_tx: oneshot::Sender<()>,
     },
@@ -350,6 +358,12 @@ enum ProcessorCommand {
     LocalControllerEndpointFailed {
         reason: String,
         closed_tx: oneshot::Sender<()>,
+    },
+    ThreadSnapshot {
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+        response_tx:
+            oneshot::Sender<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
     },
 }
 
@@ -439,6 +453,25 @@ impl InProcessClientSender {
                 format!("in-process local-controller metadata update channel closed: {err}"),
             )
         })?
+    }
+
+    pub async fn thread_snapshot(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+    ) -> IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::ThreadSnapshot {
+            thread_id,
+            include_turns,
+            response_tx,
+        })?;
+        response_rx.await.map_err(|err| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                format!("in-process thread snapshot response channel closed: {err}"),
+            )
+        })
     }
 
     fn try_send_client_message(&self, message: InProcessClientMessage) -> IoResult<()> {
@@ -534,6 +567,18 @@ impl InProcessClientHandle {
         self.client
             .publish_local_controller_main_thread_id(main_thread_id)
             .await
+    }
+
+    /// Builds an atomic app-server-owned recovery snapshot for one thread.
+    ///
+    /// The snapshot is available only to embedded in-process consumers. It is
+    /// not a public app-server JSON-RPC surface.
+    pub async fn thread_snapshot(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+        include_turns: bool,
+    ) -> IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>> {
+        self.client.thread_snapshot(thread_id, include_turns).await
     }
 
     /// Receives the next server event from the in-process runtime.
@@ -1001,6 +1046,16 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             Some(ProcessorCommand::Notification(notification)) => {
                                 processor.process_client_notification(notification).await;
                             }
+                            Some(ProcessorCommand::ThreadSnapshot {
+                                thread_id,
+                                include_turns,
+                                response_tx,
+                            }) => {
+                                let response = processor
+                                    .in_process_thread_snapshot(thread_id, include_turns)
+                                    .await;
+                                let _ = response_tx.send(response);
+                            }
                             Some(ProcessorCommand::LocalControllerEndpointFailed {
                                 reason,
                                 closed_tx,
@@ -1327,6 +1382,23 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 None => Ok(()),
                             };
                             let _ = response_tx.send(result);
+                        }
+                        Some(InProcessClientMessage::ThreadSnapshot {
+                            thread_id,
+                            include_turns,
+                            response_tx,
+                        }) => {
+                            if processor_tx
+                                .send(ProcessorCommand::ThreadSnapshot {
+                                    thread_id,
+                                    include_turns,
+                                    response_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
                             shutdown_ack = Some(done_tx);
@@ -2193,6 +2265,50 @@ mod tests {
         })
         .await
         .expect("thread started notification should arrive before timeout");
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn in_process_thread_snapshot_reads_main_thread_state() {
+        let client = start_test_client(SessionSource::Cli).await;
+        let response = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(4),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("request transport should work")
+            .expect("thread/start should succeed");
+        let parsed: ThreadStartResponse =
+            serde_json::from_value(response).expect("thread/start response should parse");
+        let thread_id = codex_protocol::ThreadId::from_string(&parsed.thread.id)
+            .expect("thread/start id should parse");
+
+        let snapshot = client
+            .thread_snapshot(thread_id, /*include_turns*/ false)
+            .await
+            .expect("thread snapshot transport should work")
+            .expect("thread snapshot should succeed");
+
+        assert_eq!(snapshot.thread.id, parsed.thread.id);
+        assert_eq!(snapshot.last_sequence, 1);
+        assert_eq!(
+            snapshot.controller_ownership_status,
+            Some(InProcessControllerOwnershipStatus {
+                main_thread_id: thread_id,
+                owner: InProcessControllerOwnershipStatusOwner::Tui,
+                owner_epoch: 0,
+                reason: ControllerControlOwnershipChangedReason::Released,
+            })
+        );
+        assert_eq!(snapshot.pending_server_requests, Vec::new());
 
         client
             .shutdown()
