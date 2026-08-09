@@ -641,6 +641,17 @@
     `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
     passing 1/1 focused test, `git diff --check` and
     `git diff --cached --check` passing.
+  - Preserved realtime started, transcript delta/done, error, and closed
+    notifications across the same embedded in-process TUI delivery path and
+    app-server-client bridge. Realtime audio, SDP, and raw realtime items remain
+    best-effort.
+  - Validated the realtime controller delivery slice at commit `b2738fb` with
+    `just fmt` passing,
+    `just test -p codex-app-server guaranteed_delivery_helpers_cover_transcript_and_terminal_server_notifications`
+    passing 1/1 focused test,
+    `just test -p codex-app-server-client event_requires_delivery_marks_transcript_and_terminal_events`
+    passing 1/1 focused test, `git diff --check` and
+    `git diff --cached --check` passing.
   - Surfaced external-controller server-request reply rejections back to the
     originating controller connection without consuming the pending prompt
     callback. Controller-owned approval prompts now reject `acceptForSession`
@@ -692,7 +703,7 @@
     classification, or terminal main-thread-close launch handling, or
     in-process lifecycle/state notification preservation, or controller
     prompt-rejection error surfacing, or controller notification schema
-    coverage.
+    coverage, or realtime transcript/lifecycle delivery preservation.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -718,16 +729,16 @@
   targeting, plus thread-scoped MCP OAuth completion targeting, plus embedded
   in-process transcript/item delivery preservation and centralized lossless
   delivery classification, including reasoning summary part-added notifications,
-  plus bounded per-connection external-controller
-  ingress overload and separate controller control-plane ingress, plus
-  pre-participation initialize-notification suppression coverage, plus
-  exhaustive TUI command reclaim classification, plus terminal
+  plus realtime transcript/lifecycle delivery preservation, plus bounded
+  per-connection external-controller ingress overload and separate controller
+  control-plane ingress, plus pre-participation initialize-notification
+  suppression coverage, plus exhaustive TUI command reclaim classification, plus terminal
   main-thread-close launch handling, plus in-process lifecycle/state
   notification preservation, plus controller prompt-rejection error surfacing,
   plus controller notification schema coverage, plus reasoning-summary-part
   lossless delivery.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `aac4b99`.
+  commit `b2738fb`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

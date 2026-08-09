@@ -184,8 +184,12 @@
 - The shared in-process lossless delivery classifier now also preserves
   `item/reasoning/summaryPartAdded`, so reasoning summary section boundaries
   cannot be dropped before the TUI bridge reflects controller-originated work.
+  It also preserves realtime started, transcript delta/done, error, and closed
+  notifications so controller-originated realtime sessions cannot lose the live
+  transcript/lifecycle events the TUI/app-server-client bridge needs to stay
+  current.
 - The latest Codex-side source checkpoint is
-  `aac4b99` for launch metadata publication, native approval coverage, exact
+  `b2738fb` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -215,7 +219,7 @@
   retry guidance, plus terminal controller launch closure when the immutable
   main thread closes or unloads, plus lossless in-process delivery for
   controller-relevant thread lifecycle/state notifications and reasoning
-  summary section boundaries, plus typed
+  summary section boundaries and realtime transcript/lifecycle events, plus typed
   controller prompt-rejection surfacing and protocol/export schema coverage for
   controller notifications and canonical controller error-code wire names.
 - Focused app-server controller tests pass. The latest full
