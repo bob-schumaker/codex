@@ -567,6 +567,7 @@ pub(crate) async fn run_onboarding_app(
                         AppServerEvent::Lagged { .. }
                         | AppServerEvent::ControllerParticipationRequest(_)
                         | AppServerEvent::ControllerOwnershipStatus(_)
+                        | AppServerEvent::LocalControllerEndpointUnavailable { .. }
                         | AppServerEvent::ServerRequest(_) => {}
                     }
                 }

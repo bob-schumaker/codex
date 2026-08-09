@@ -72,6 +72,13 @@ impl App {
                     "controller ownership status changed"
                 );
             }
+            AppServerEvent::LocalControllerEndpointUnavailable { reason } => {
+                crate::report_external_controller_availability(
+                    &crate::ExternalControllerAvailability::EmbeddedUnavailable {
+                        reason: Some(reason),
+                    },
+                );
+            }
             AppServerEvent::ServerNotification(notification) => {
                 self.handle_server_notification_event(app_server_client, *notification)
                     .await;

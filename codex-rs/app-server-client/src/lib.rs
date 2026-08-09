@@ -108,6 +108,7 @@ pub enum AppServerEvent {
     Lagged { skipped: usize },
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
     ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
+    LocalControllerEndpointUnavailable { reason: String },
     ServerNotification(Box<ServerNotification>),
     ServerRequest(Box<ServerRequest>),
     Disconnected { message: String },
@@ -122,6 +123,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
             }
             InProcessServerEvent::ControllerOwnershipStatus(status) => {
                 Self::ControllerOwnershipStatus(status)
+            }
+            InProcessServerEvent::LocalControllerEndpointUnavailable { reason } => {
+                Self::LocalControllerEndpointUnavailable { reason }
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 Self::ServerNotification(notification)
@@ -142,6 +146,7 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
         }
         InProcessServerEvent::ControllerParticipationRequest(_) => true,
         InProcessServerEvent::ControllerOwnershipStatus(_) => true,
+        InProcessServerEvent::LocalControllerEndpointUnavailable { .. } => true,
         _ => false,
     }
 }
@@ -2562,6 +2567,11 @@ mod tests {
                         codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
                 }
             ))
+        ));
+        assert!(event_requires_delivery(
+            &InProcessServerEvent::LocalControllerEndpointUnavailable {
+                reason: "accept failed".to_string(),
+            }
         ));
         assert!(!event_requires_delivery(&InProcessServerEvent::Lagged {
             skipped: 1

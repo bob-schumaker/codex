@@ -249,6 +249,9 @@ pub enum InProcessServerEvent {
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
     /// Controller input-ownership status update for the owning in-process TUI.
     ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
+    /// Local-controller endpoint failed after startup; controllers are no
+    /// longer available for this embedded launch.
+    LocalControllerEndpointUnavailable { reason: String },
     /// Server request that requires client response/rejection.
     ServerRequest(Box<ServerRequest>),
     /// App-server notification directed to the embedded client.
@@ -294,7 +297,10 @@ enum InProcessClientMessage {
 enum ProcessorCommand {
     Request(Box<ClientRequest>),
     Notification(ClientNotification),
-    LocalControllerEndpointFailed { reason: String },
+    LocalControllerEndpointFailed {
+        reason: String,
+        closed_tx: oneshot::Sender<()>,
+    },
 }
 
 enum InProcessOutboundControlEvent {
@@ -946,7 +952,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             Some(ProcessorCommand::Notification(notification)) => {
                                 processor.process_client_notification(notification).await;
                             }
-                            Some(ProcessorCommand::LocalControllerEndpointFailed { reason }) => {
+                            Some(ProcessorCommand::LocalControllerEndpointFailed {
+                                reason,
+                                closed_tx,
+                            }) => {
                                 warn!(
                                     %reason,
                                     "local-controller endpoint failed; closing external controllers"
@@ -960,6 +969,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 {
                                     break;
                                 }
+                                let _ = closed_tx.send(());
                             }
                             None => {
                                 break;
@@ -1289,9 +1299,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         Ok(failure) => failure.reason,
                         Err(err) => format!("local-controller endpoint failure channel closed: {err}"),
                     };
+                    let (closed_tx, closed_rx) = oneshot::channel();
                     if processor_tx
                         .send(ProcessorCommand::LocalControllerEndpointFailed {
                             reason: reason.clone(),
+                            closed_tx,
                         })
                         .await
                         .is_err()
@@ -1303,6 +1315,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         && let Err(err) = local_controller_endpoint_handle.shutdown().await {
                             warn!(%reason, ?err, "failed to join closed local-controller endpoint");
                         }
+                    if timeout(SHUTDOWN_TIMEOUT, closed_rx).await.is_err() {
+                        warn!(
+                            %reason,
+                            "timed out waiting for local-controller endpoint failure cleanup"
+                        );
+                    }
+                    if event_tx
+                        .send(InProcessServerEvent::LocalControllerEndpointUnavailable {
+                            reason,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 status = controller_ownership_status_rx.recv(), if listen_for_controller_ownership_status => {
                     let Some(status) = status else {
@@ -1650,6 +1677,7 @@ mod tests {
                         break native_request;
                     }
                     InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
@@ -1692,6 +1720,7 @@ mod tests {
                 {
                     InProcessServerEvent::ControllerOwnershipStatus(status) => break status,
                     InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
