@@ -2167,6 +2167,74 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn local_controller_initialize_suppresses_pre_participation_notifications() {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let mut args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        args.config_warnings = vec![ConfigWarningNotification {
+            summary: "pre-participation warning".to_string(),
+            details: None,
+            path: None,
+            range: None,
+        }];
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 19_001,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+
+        let JSONRPCMessage::Response(initialize_response) =
+            read_websocket_message(&mut websocket).await
+        else {
+            panic!("external controller should receive initialize response first");
+        };
+        assert_eq!(initialize_response.id, RequestId::Integer(19_001));
+        assert!(initialize_response.result.get("userAgent").is_some());
+        assert!(
+            timeout(
+                Duration::from_millis(50),
+                read_websocket_message(&mut websocket)
+            )
+            .await
+            .is_err(),
+            "external controller should not receive runtime notifications before participation"
+        );
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn local_controller_socket_uses_main_thread_interface_and_tui_reclaim() {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
         let args = build_test_start_args(
