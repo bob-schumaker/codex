@@ -162,8 +162,14 @@
   through the normal revocation path. The TUI reports
   `embedded-unavailable`; onboarding and `codex exec` ignore the event as
   non-interactive controller state.
+- Closing or unloading the immutable main thread now marks the native
+  external-controller launch terminal. The controller coordinator is closed,
+  pending main-thread server requests are canceled with typed
+  `main-thread-closed`, authorization/control notifications are emitted with
+  the main-thread-closed reason, and later normal-interface reads receive typed
+  `main-thread-closed`.
 - The latest Codex-side source checkpoint is
-  `ae608c3` for launch metadata publication, native approval coverage, exact
+  `02d3d1c` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -190,12 +196,13 @@
   acceptor failure reporting, metadata/socket cleanup, external-controller
   connection closure through the normal revocation path, and bounded
   per-connection external-controller ingress with typed `controller-overloaded`
-  retry guidance.
-- Focused app-server controller/current-time/cursor tests pass. The latest full
-  `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
-  retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
-  zsh-fork cluster remains a separate fixture health issue outside the
-  controller slice.
+  retry guidance, plus terminal controller launch closure when the immutable
+  main thread closes or unloads.
+- Focused app-server controller tests pass. The latest full
+  `just test -p codex-app-server` run ended 1230 passed, 2 flaky passed on
+  retry, 3 failed, and 1 skipped due to the unrelated hosted-login callback and
+  zsh-fork fixture failures; those failures remain separate fixture health
+  issues outside the controller slice.
 - The latest focused validation for commit `c267e17` is
   `just test -p codex-app-server notifications_track_authorization_and_ownership_transitions notifications_track_deadline_and_terminal_revocation controller_control_notifications_are_emitted_for_session_transitions`,
   passing 3/3 focused tests, `just test -p codex-app-server controller`,
@@ -441,6 +448,22 @@
   only because `.pre-commit-config.yaml` is not present, and
   `cargo build -p codex-cli -j 4` rebuilding
   `codex-rs/target/debug/codex` in 15.25s.
+- The latest focused validation for commit `02d3d1c` is
+  `just test -p codex-app-server controller_main_thread_close_marks_launch_closed`
+  passing 1/1 focused test, `just test -p codex-app-server controller`
+  passing 95/95 controller-filtered tests, `just test -p codex-app-server`
+  ending 1230 passed, 2 flaky passed on retry, 3 failed, and 1 skipped due to
+  unrelated hosted-login callback and zsh-fork fixture failures,
+  `just fmt` passing, `just fix -p codex-app-server` completing after
+  unrelated fixer hunks were reverted, `git diff --check` passing,
+  `pre-commit run --all-files` failing only because
+  `.pre-commit-config.yaml` is not present, and
+  `cargo build -p codex-cli -j 4` rebuilding
+  `codex-rs/target/debug/codex`. A separate
+  `cargo build -p codex-code-mode-host -j 4` attempt failed before producing a
+  fresh host because the `v8` build script could not download the
+  `rusty_v8` sandbox archive after Python TLS certificate verification failed;
+  the existing `codex-rs/target/debug/codex-code-mode-host` remains present.
 
 ## In Flight
 
@@ -469,7 +492,8 @@
   terminal local-controller acceptor failure handling, bounded
   external-controller ingress overload, and separate controller control-plane
   ingress, plus pre-participation initialize-notification suppression coverage,
-  plus exhaustive TUI command reclaim classification.
+  plus exhaustive TUI command reclaim classification, plus terminal
+  main-thread-close launch handling.
   There is no known uncommitted Codex-side source diff in that source
   checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
@@ -542,6 +566,9 @@
   Pre-participation local-controller socket coverage now verifies an initialized
   controller does not receive startup config-warning notifications before native
   participation is approved.
+  Closing or unloading the immutable main thread now marks the launch terminal
+  for native external controllers and cancels pending controller-delivered
+  prompts with typed `main-thread-closed`.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -591,3 +618,6 @@
 - Do not expect a local-controller launch to become available again after a
   native `TuiUnavailable` decision; a fresh Codex launch should publish fresh
   metadata and require a new controller participation request.
+- Refreshing `codex-code-mode-host` still depends on resolving the
+  `rusty_v8` sandbox archive download/source-build path when the archive is not
+  already cached.

@@ -39,7 +39,8 @@
   local-controller endpoint failure to the TUI as `embedded-unavailable`, plus
   bounding initialized external-controller ingress per connection and returning
   typed `controller-overloaded` responses before queued app-server work can grow
-  without limit;
+  without limit, plus marking the controller launch terminal when the immutable
+  main thread is closed or unloaded;
   remaining Codex-side review is centered on any other implicit
   targets, egress transactionality, and subscription edges while downstream
   discovery/display consumes the published local-controller metadata contract.
@@ -578,6 +579,31 @@
     only because `.pre-commit-config.yaml` is not present, and
     `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex` in 15.25s.
+  - Marked the native external-controller launch terminal when the immutable
+    main thread closes. The app-server controller processor now closes the
+    coordinator, emits main-thread-closed authorization/control notifications,
+    cancels pending main-thread server requests with typed
+    `main-thread-closed`, and rejects later normal-interface reads with typed
+    `main-thread-closed`.
+  - Wired the terminal main-thread-close path into active thread archive/delete
+    teardown and idle thread unload before generic request cancellation.
+  - Validated the main-thread-close slice at commit `02d3d1c` with
+    `just test -p codex-app-server controller_main_thread_close_marks_launch_closed`
+    passing 1/1 focused test, `just test -p codex-app-server controller`
+    passing 95/95 controller-filtered tests, `just test -p codex-app-server`
+    ending 1230 passed, 2 flaky passed on retry, 3 failed, and 1 skipped due
+    to the unrelated hosted-login callback and zsh-fork fixture failures,
+    `just fmt` passing, `just fix -p codex-app-server` completing after
+    unrelated fixer hunks were reverted, `git diff --check` passing,
+    `pre-commit run --all-files` failing only because
+    `.pre-commit-config.yaml` is not present, and
+    `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`.
+  - Attempted to refresh `codex-rs/target/debug/codex-code-mode-host` with
+    `cargo build -p codex-code-mode-host -j 4`; it failed before a fresh host
+    binary was produced because the `v8` build script could not download the
+    `rusty_v8` sandbox archive after Python TLS certificate verification
+    failed. The existing debug host binary remains present.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -602,7 +628,7 @@
     endpoint-unavailable TUI reporting, or bounded controller ingress overload,
     or separate controller control-plane ingress, or pre-participation
     initialize-notification suppression, or exhaustive TUI command reclaim
-    classification.
+    classification, or terminal main-thread-close launch handling.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -630,9 +656,10 @@
   delivery classification, plus bounded per-connection external-controller
   ingress overload and separate controller control-plane ingress, plus
   pre-participation initialize-notification suppression coverage, plus
-  exhaustive TUI command reclaim classification.
+  exhaustive TUI command reclaim classification, plus terminal
+  main-thread-close launch handling.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `ae608c3`.
+  commit `02d3d1c`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.
