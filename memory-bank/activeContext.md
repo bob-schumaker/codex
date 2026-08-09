@@ -16,10 +16,11 @@
   authorized main-thread lifecycle notifications and status-change
   notifications, and preserving global primary thread notifications while
   targeting external-controller copies, including listener-command thread goal
-  updates, resume snapshots, and listener warning notifications; remaining
-  Codex-side review is centered on implicit targets, egress transactionality,
-  and subscription edges while downstream discovery/display consumes the
-  published local-controller metadata contract.
+  updates, resume snapshots, listener warning notifications, and extension
+  no-listener goal-update fallback; remaining Codex-side review is centered on
+  implicit targets, egress transactionality, and subscription edges while
+  downstream discovery/display consumes the published local-controller metadata
+  contract.
 
 ## Current Status
 
@@ -330,6 +331,22 @@
     `just fix -p codex-app-server` after reverting unrelated fixer hunks,
     `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
     `codex-rs/target/debug/codex`.
+  - Routed extension no-listener `ThreadGoalUpdated` fallback through
+    thread-subscriber targeting instead of raw broadcast, so approved
+    subscribed external controllers can observe extension goal updates even
+    though generic broadcasts skip external-controller origins.
+  - Validated the extension goal fallback slice with
+    `just test -p codex-app-server app_server_event_sink_targets_goal_subscriber_without_listener`
+    passing 1/1 focused test, `just test -p codex-app-server extensions::tests`
+    passing 7/7, `just test -p codex-app-server controller` passing 75/75,
+    `just fix -p codex-app-server` after reverting unrelated fixer hunks,
+    `just fmt`, and `cargo build -p codex-cli -j 4` rebuilding
+    `codex-rs/target/debug/codex`. A broad
+    `just test -p codex-app-server extension` run passed the in-crate
+    extension tests but timed out in
+    `suite::v2::imagegen_extension::standalone_image_edit_uses_attached_model_visible_image`
+    after sandbox image-read failure, which remains separate from this
+    controller egress slice.
 - In progress:
   - Selecting the next Codex-side parity slice around any remaining implicit
     targets, egress transactionality, and long-lived subscription edges not
@@ -341,7 +358,8 @@
     filtering, or terminal sign-off/disconnect subscription fencing, or
     generic broadcast filtering plus targeted main-thread lifecycle and status
     delivery, or thread-scoped global and listener-command thread-goal
-    notification targeting, or listener-warning targeting.
+    notification targeting, listener-warning targeting, or extension
+    no-listener goal-update fallback targeting.
   - Downstream controller-host implementation for file-watch discovery, health
     model separation, and deterministic auto-assignment.
 - Not started:
@@ -361,9 +379,10 @@
   auto-subscribe filtering, plus terminal sign-off/disconnect subscription
   fencing, plus generic broadcast filtering and targeted main-thread lifecycle
   and status delivery, plus thread-scoped global and listener-command
-  thread-goal notification targeting, plus listener-warning targeting.
+  thread-goal notification targeting, plus listener-warning targeting and
+  extension no-listener goal-update fallback targeting.
 - Treat the source tree as ready for the next narrow implementation slice after
-  commit `0b33c0f`.
+  commit `9b59a8c`.
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Fix downstream status mapping so pending/unapproved/released live launches do
   not display as offline.

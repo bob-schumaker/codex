@@ -121,8 +121,12 @@
 - Live listener-command warning egress now uses the controller-aware thread
   sender, preserving normal TUI warning delivery while including authorized
   external-controller recipients and avoiding raw subscriber targeting.
+- Extension no-listener `ThreadGoalUpdated` fallback now targets thread
+  subscribers instead of raw broadcast, preserving visibility for approved
+  subscribed external controllers after generic broadcasts were filtered away
+  from external-controller origins.
 - The latest Codex-side implementation commit is
-  `0b33c0f` for launch metadata publication, native approval coverage, exact
+  `9b59a8c` for launch metadata publication, native approval coverage, exact
   target extraction, TUI reclaim, collection-filtered reads, sign-off teardown
   and cleanup, resume-override gating, exact-thread and collection-filtered
   cursor binding, authorization-expiry cleanup, idempotent active-owner acquire,
@@ -137,7 +141,7 @@
   targeted main-thread lifecycle delivery, plus targeted main-thread status
   delivery, plus thread-scoped global notification targeting and
   listener-command thread-goal egress targeting, plus listener-warning
-  targeting.
+  targeting and extension no-listener goal-update fallback targeting.
 - Focused app-server controller/current-time/cursor tests pass. The latest full
   `just test -p codex-app-server` run ended 1192 passed, 3 flaky passed on
   retry, 1 leaky, 2 zsh-fork failures after retry, and 1 skipped; the
@@ -212,6 +216,16 @@
   `just fix -p codex-app-server` completing after unrelated fixer hunks were
   reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
   rebuilding `codex-rs/target/debug/codex`.
+- The latest focused validation for commit `9b59a8c` is
+  `just test -p codex-app-server app_server_event_sink_targets_goal_subscriber_without_listener`
+  passing 1/1 focused test, `just test -p codex-app-server extensions::tests`
+  passing 7/7, `just test -p codex-app-server controller` passing 75/75,
+  `just fix -p codex-app-server` completing after unrelated fixer hunks were
+  reverted, `just fmt` passing, and `cargo build -p codex-cli -j 4`
+  rebuilding `codex-rs/target/debug/codex`. A broader
+  `just test -p codex-app-server extension` run timed out in
+  `suite::v2::imagegen_extension::standalone_image_edit_uses_attached_model_visible_image`
+  after sandbox image-read failure, outside the controller egress slice.
 
 ## In Flight
 
@@ -224,8 +238,9 @@
   subscription fencing, plus generic broadcast filtering and targeted
   main-thread lifecycle and status delivery, plus thread-scoped global
   notification targeting, listener-command thread-goal egress targeting, and
-  listener-warning targeting. There is no known uncommitted Codex-side source
-  diff in this checkpoint.
+  listener-warning targeting, plus extension no-listener goal-update fallback
+  targeting. There is no known uncommitted Codex-side source diff in this
+  checkpoint.
 - Downstream controller-host discovery and display behavior for all live Codex
   launches, including non-Herdr launches.
 
@@ -255,7 +270,8 @@
   add targeted copies for authorized external-controller recipients while
   preserving primary/TUI broadcasts, including live listener-command thread
   goal update/clear/snapshot paths, running-thread resume goal snapshots, and
-  listener warning notifications.
+  listener warning notifications. Extension no-listener goal-update fallback now
+  targets thread subscribers instead of relying on raw broadcast.
 - Downstream controller host should discover all live launches through
   local-controller metadata watching/rescanning.
 - Downstream display should separate:
@@ -292,7 +308,8 @@
   terminal sign-off/disconnect subscription fencing, plus generic broadcast
   filtering and targeted main-thread lifecycle and status delivery, plus
   thread-scoped global notification targeting and listener-command thread-goal
-  egress targeting, plus listener-warning targeting.
+  egress targeting, listener-warning targeting, and extension no-listener
+  goal-update fallback targeting.
 - For the next Codex-side slice, start from source inspection rather than
   assuming the previous interrupted exploration found a confirmed bug.
 - Treat the current zsh-fork timeout failures as a separate fixture health issue
