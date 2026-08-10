@@ -642,14 +642,15 @@ maps live non-connected launch states such as `awaitingApproval`,
 physical slot states rather than `unavailable`. Five-launch live discovery
 and mutating resume evidence now exists for five approved debug Codex TUIs in
 temporary Herdr workspace `w1D`; removed-launch reconciliation now also has
-live native evidence from workspace `w1E`. Physical-device tap evidence remains
-separate from the mocked bridge and host test evidence.
+live native evidence from workspace `w1E`. The current downstream V7 controller
+is status-only, so physical-device tap evidence is outside this implementation
+scope rather than a remaining acceptance gate.
 
-Downstream input note: downstream commit `d43fcfb` also routes physical V7 slot
-taps through `HostSessionBridge.handleTap`, so the input device now exercises
-the same acquire/resume/release path as the smoke source instead of only
-acknowledging the tap. Physical-device evidence remains separate from the
-mocked bridge and host test evidence.
+Downstream input note: downstream commit `d43fcfb` includes a preparatory
+physical V7 `.slotTap` → `HostSessionBridge.handleTap` source path. It does not
+make the current status-only V7 device an input controller. Enable and validate
+that product capability separately before treating a physical tap as controller
+input or advertising acquire/resume/release behavior from V7.
 
 ## Relevant implementation seams
 

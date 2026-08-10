@@ -27,7 +27,7 @@
   `5a963b4` keeps live unapproved/discovered launches from rendering as offline
   and fills free slots, `7fb328f` requests Codex resume through an acquired
   controller lease, `d43fcfb` watches `$CODEX_HOME/local-controllers` and
-  routes physical V7 slot taps through `HostSessionBridge.handleTap`, and
+  contains a preparatory V7 slot-tap bridge path, and
   `df843d4` fixes the mutating smoke wait, `7424849` adds the
   all-discovered smoke mode plus `/tmp` versus `/private/tmp` endpoint-path
   normalization. Five-launch live validation then exposed a Codex race where a
@@ -41,9 +41,9 @@
   persisted, resume requested and control released)`. Downstream commit
   `bf445d8` adds removed-launch smoke coverage, and a two-launch native Herdr
   run in `w1E` passed after closing the selected TUI: the removed route rejected
-  without resume while a survivor resumed. Remaining known work is
-  physical-device tap evidence against the published
-  `$CODEX_HOME/local-controllers` metadata contract.
+  without resume while a survivor resumed. The current downstream V7 device is
+  status-only; physical tap input is a separate future product capability, not
+  a remaining external-controller acceptance gate.
 
 ## Current Status
 
@@ -850,22 +850,20 @@
     downstream `ExternalControllerRegistryTests`, full downstream
     `swift test`, downstream `swift build`, and downstream
     `pre-commit run --files ...`.
-  - Implemented and committed downstream metadata watch/full-rescan plus
-    physical slot tap routing at `d43fcfb`
+  - Implemented and committed downstream metadata watch/full-rescan plus a
+    preparatory physical slot-tap bridge path at `d43fcfb`
     (`fix(host): watch Codex launches and route taps`). The downstream host now
     keeps an OS file watch on `$CODEX_HOME/local-controllers`, treats changes
-    as full-rescan hints, refreshes through `HostSessionBridge`, and sends V7
-    slot taps through the same bridge tap path. Validation passed with focused
+    as full-rescan hints, and refreshes through `HostSessionBridge`. The
+    deployed V7 product remains status-only; its source-level tap path is
+    preparatory only. Validation passed with focused
     downstream `LocalControllerDiscoveryTests`, `OperationalStateTests`, and
     `ExternalControllerRegistryTests`, full downstream `swift test`, downstream
     `swift build`, and downstream `pre-commit run --files ...`.
 - In progress:
-  - External proof closure: collect physical-device tap evidence. Five-launch
+  - No concrete external-controller runtime gap is currently known. Five-launch
     metadata discovery/mutating resume validation and removed-launch
-    reconciliation already passed in temporary Herdr workspaces `w1D` and
-    `w1E`.
-- Not started:
-  - Physical-device tap evidence against the rebuilt downstream host.
+    reconciliation passed in temporary Herdr workspaces `w1D` and `w1E`.
 
 ## Next Steps
 
@@ -877,4 +875,5 @@
   current passing run used five plain Codex TUIs in Herdr panes and exercised
   metadata discovery, native approval, acquire/resume/release, and route
   persistence.
-- Capture physical-device tap evidence against the rebuilt downstream host.
+- Treat V7 physical input as a separate future product slice; require fresh
+  physical-device evidence only if that capability is explicitly enabled.

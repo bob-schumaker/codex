@@ -43,9 +43,10 @@
   afterward. This is committed downstream as `7fb328f`
   (`fix(host): resume Codex sessions through controller lease`).
 - Downstream controller discovery now has an OS file-watch trigger over
-  `$CODEX_HOME/local-controllers`, and physical V7 slot taps route through
-  `HostSessionBridge.handleTap`. This is committed downstream as `d43fcfb`
-  (`fix(host): watch Codex launches and route taps`).
+  `$CODEX_HOME/local-controllers`. Downstream commit `d43fcfb`
+  (`fix(host): watch Codex launches and route taps`) also contains a
+  preparatory V7 slot-tap bridge path, but the deployed V7 product is
+  status-only and does not yet expose controller input.
 - A direct local-controller diagnostic from a temporary Herdr workspace now
   succeeds against two fresh debug Codex TUI launches after native approval,
   including `thread/list`, `controller/acquireControl`, exact-thread
@@ -790,9 +791,10 @@
   auto-subscribe/e2e, stale-launch cleanup, and loaded-unmaterialized
   `thread/resume` checks. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- External proof closure: collect physical-device tap evidence. Five-launch
-  metadata discovery/mutating resume validation and removed-launch
-  reconciliation already passed in temporary Herdr workspaces `w1D` and `w1E`.
+- External-controller runtime validation is complete for the current
+  status-only V7 product: five-launch metadata discovery/mutating resume
+  validation and removed-launch reconciliation passed in temporary Herdr
+  workspaces `w1D` and `w1E`.
 
 ## Remaining
 
@@ -911,7 +913,8 @@
   coverage in commit `7fb328f`, direct Codex RPC evidence through
   acquire/resume/release/sign-off, live native smoke evidence through commit
   `df843d4`, and live removed-launch reconciliation evidence through `bf445d8`.
-  Physical-device tap evidence remains the separate follow-up gate.
+  The current V7 device is status-only; physical-controller input requires a
+  separate future product decision and validation slice.
 
 ## Risks or Follow-ups
 
