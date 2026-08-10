@@ -5,6 +5,11 @@
 - Codex-side local-controller metadata now publishes enough launch information
   for controller discovery, including process ID, endpoint URI, nonce, and
   `mainThreadId` once available.
+- Controller-enabled Codex startup now performs conservative stale
+  local-controller cleanup: metadata/socket artifacts for definitely dead
+  `processId` values are pruned, live or ambiguous process records are
+  preserved, launch ID/nonce ownership is rechecked before metadata removal,
+  and concurrent cleanup `NotFound` races are tolerated.
 - Codex-side embedded launch availability is implemented and validated:
   embedded-supported, daemon-unsupported, remote-unsupported, policy-disabled,
   embedded-unavailable, launch-failed, best-effort startup, required startup,
@@ -41,6 +46,15 @@
   `$CODEX_HOME/local-controllers`, and physical V7 slot taps route through
   `HostSessionBridge.handleTap`. This is committed downstream as `d43fcfb`
   (`fix(host): watch Codex launches and route taps`).
+- A direct local-controller diagnostic from a temporary Herdr workspace now
+  succeeds against two fresh debug Codex TUI launches after native approval,
+  including `thread/list`, `controller/acquireControl`, exact-thread
+  `thread/resume`, `controller/releaseControl`, and `controller/signOff`.
+- The updated downstream mutating smoke still returns
+  `resume through controller unavailable` after both owning TUIs approve the
+  controller. Because the direct Codex RPC sequence succeeds against the same
+  style of fresh endpoints, this is not currently a confirmed Codex admission
+  or `thread/resume` handler defect.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -731,9 +745,13 @@
 
 - No concrete Codex-side source gap is currently confirmed after the
   normal-interface, reclaim/reflection, prompt, egress, subscription,
-  launch-availability, in-process recovery, and controller participation
-  auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
+  launch-availability, in-process recovery, controller participation
+  auto-subscribe/e2e, stale-launch cleanup, and loaded-unmaterialized
+  `thread/resume` checks. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
+- Downstream harness/bridge diagnosis for the latest mutating smoke result:
+  the smoke returns `resume through controller unavailable` despite direct
+  Codex local-controller RPCs succeeding through exact-thread `thread/resume`.
 - Runtime validation that downstream discovery sees all live Codex launches,
   including Herdr and non-Herdr launches, through the committed
   watch/full-rescan path.
@@ -851,9 +869,13 @@
   Herdr and non-Herdr launches, are discovered and assigned/offered through the
   watch/full-rescan path.
 - Downstream mutating acceptance now has source-level and mocked-transport
-  coverage in commit `7fb328f`, but still needs a live native smoke rerun
-  against running Codex TUIs. Physical-device tap evidence and removed-launch
-  reconciliation remain separate follow-up evidence.
+  coverage in commit `7fb328f`, but the latest live native smoke run still
+  failed with generic `resume through controller unavailable` after both TUI
+  approvals. Direct Codex diagnostics against two fresh approved sockets
+  succeeded through acquire/resume/release/sign-off, so the remaining work is
+  downstream harness/bridge diagnosis plus final live smoke evidence.
+  Physical-device tap evidence and removed-launch reconciliation remain
+  separate follow-up evidence.
 
 ## Risks or Follow-ups
 
@@ -864,6 +886,9 @@
 - Keep downstream discovery tests covering metadata `processId` liveness so
   stale local-controller records do not re-enter inventory after future
   discovery changes.
+- Controller inventory code must tolerate metadata disappearing between rescan
+  and connect; concurrent Codex startup cleanup intentionally makes discovery
+  eventually consistent rather than lock-based.
 - The implementation plan must continue to avoid durable enrollment or reusable
   controller credentials unless a future design explicitly changes that
   decision.

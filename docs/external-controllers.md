@@ -76,7 +76,7 @@ Every controller connection is default-denied from its first byte. Before bindin
 
 ## Local-endpoint discovery and lifecycle
 
-The listener is created for each controller-enabled embedded interactive TUI launch. Its lifetime is owned by the TUI process and runtime: acceptor failure updates the availability state, and an abnormal process exit relies on operating-system socket cleanup rather than promising orderly metadata removal.
+The listener is created for each controller-enabled embedded interactive TUI launch. Its lifetime is owned by the TUI process and runtime: acceptor failure updates the availability state. An abnormal process exit can leave filesystem socket and metadata artifacts behind, so every later controller-enabled launch performs conservative startup pruning for records whose `processId` is definitely no longer running. Pruning removes only metadata proved to match the filename launch ID plus launch nonce, removes only socket filesystem nodes, tolerates `NotFound` races, and preserves entries when process liveness is ambiguous, including possible PID reuse.
 
 The Unix endpoint path uses a short launch identifier created before app-server startup:
 
@@ -94,6 +94,8 @@ The listener and metadata file are private to the account that launched Codex. T
 Metadata is a versioned, regular, owner-only file containing the launch ID, a random launch nonce, endpoint URI, process ID, creation time, protocol version, and primary thread ID once one exists. The first created primary thread becomes the immutable `mainThreadId` for this launch; if it closes, no replacement inherits controller authority. The server publishes metadata atomically only after accepts are enabled. On Unix, a controller validates that the metadata path remains below the controller directory and that the launch ID matches its filename. Before WebSocket acceptance, the controller sends the nonce in the dedicated HTTP Upgrade header `X-Codex-Launch-Nonce`; the endpoint compares it to metadata and rejects a mismatch. The nonce is never echoed in JSON-RPC messages, events, or ordinary RPC payloads. The Windows adapter provides equivalent metadata validation, nonce checking, same-user peer verification, and cleanup semantics.
 
 On normal TUI shutdown, the runtime closes controller connections, removes the socket and metadata file, and stops the listener. Cleanup only removes resources proved to belong to this launch by their launch ID and nonce; it never relies on a PID alone, follows a symlink, or deletes an arbitrary file. A failed or partially published launch removes its own resources before reporting failure.
+
+Controllers must still treat launch discovery as an eventually consistent filesystem inventory. A metadata file may disappear between rescan and connect because the owning TUI exited or another Codex launch pruned a stale record. That is not a protocol error; the controller should refresh inventory and retry against the current candidate set.
 
 ### Controller-side launch discovery and presentation
 
@@ -343,6 +345,9 @@ At the downstream controller-resume lease slice, the cumulative goal cost was
 At the downstream discovery-watch and physical-tap routing slice, the
 cumulative goal cost was 27,361,643 tokens and 111,767 seconds (approximately
 31h 02m 47s).
+At the Codex stale-launch cleanup and loaded-unmaterialized resume follow-up
+slice, the cumulative goal cost was 28,330,459 tokens and 116,642 seconds
+(approximately 32h 24m 02s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -519,6 +524,9 @@ Recorded build and validation evidence:
 | Downstream commit `5a963b4` (`fix(host): preserve discovered Codex slot state`) | Passed after adding downstream host logic that maps live but not-yet-approved/connected launches to non-offline slot statuses and preserves existing slot assignments while filling free slots deterministically for newly discovered Codex sessions. This covers the basic presentation-state and auto-assignment preservation rules; it is not file-watch/full-rescan or mutating `thread/resume` evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ProtocolTests/testV7MapPreservesExistingRoutesAndFillsFreeSlotsDeterministically\|OperationalStateTests/testLiveButUnapprovedLaunchesDoNotRenderOfflineStatus'` passed 2/2; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 58/58; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
 | Downstream commit `7fb328f` (`fix(host): resume Codex sessions through controller lease`) | Passed after changing downstream resume from unavailable to `controller/acquireControl` → exact-thread `thread/resume` → `controller/releaseControl`, and after updating the downstream smoke source to exercise `HostSessionBridge.handleTap`. This proves the downstream host requests resume through the approved controller lease and releases control afterward; it is not yet live native smoke evidence against running Codex TUIs. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl\|ExternalControllerRegistryTests/testFailedResumeStillReleasesControl\|ExternalControllerRegistryTests/testClosedLaunchCannotResumeOrReconnectUntilNextRefresh'` passed 3/3; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 60/60; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
 | Downstream commit `d43fcfb` (`fix(host): watch Codex launches and route taps`) | Passed after adding a retained OS file-system watch on `$CODEX_HOME/local-controllers`, routing discovery-change notifications through `HostSessionBridge.refreshInventory()` for full rescans, and routing physical V7 slot taps through `HostSessionBridge.handleTap`. This proves the downstream source path no longer depends only on the timer/poll path or a manual smoke call; it is not yet five-live-launch runtime evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'LocalControllerDiscoveryTests/testSnapshotFiltersDeadProcessMetadata\|LocalControllerDiscoveryTests/testWatchReportsDirectoryChangesForFullRescanTrigger\|OperationalStateTests/testDiscoveryChangeTriggersFullInventoryRefresh\|ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl'` passed 4/4; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 62/62; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. Afterward, generated build products were removed by request, so the downstream smoke binary must be rebuilt before live rerun. |
+| `just test -p codex-app-server-transport local_controller_acceptor_prunes_dead_launch_artifacts local_controller_stale_pruning_tolerates_concurrent_cleanup local_controller_acceptor_publishes_metadata_and_forwards_websocket_messages_with_nonce local_controller_acceptor_republishes_metadata_with_main_thread_id` | Passed: 4 test runs, 4 passed, 159 skipped. This covers stale local-controller startup pruning, concurrent cleanup tolerance, live-record preservation, socket/metadata publication, WebSocket forwarding, and immutable `mainThreadId` republication. | Compile reported 6.27s; nextest reported 0.068s. Nextest run `ddc4b599-caf2-465f-9b41-efceec19c5aa`. |
+| `just test -p codex-app-server thread_resume_loaded_unmaterialized_paginated_thread_returns_live_snapshot thread_resume_rejects_unmaterialized_unloaded_thread local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller_thread_resume_allows_read_shape_params_only thread_resume_extracts_exact_controller_thread_target` | Passed: 5 test runs, 5 passed, 1256 skipped. This covers fresh loaded paginated TUI `thread/resume` before rollout materialization, missing unloaded-thread rejection, native local-controller socket parity/TUI reclaim, and controller `thread/resume` admission/target extraction. | Compile reported 1.03s; nextest reported 8.320s with the known `__eh_frame` linker warning. Nextest run `6bbc984c-4e74-4b70-8e20-d89db8f21705`. |
+| `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex` after the stale-cleanup and loaded-unmaterialized resume follow-up. | Cargo reported 17.03s with the known `__eh_frame section too large` linker warning and `proc-macro-error2` future-incompatibility warning. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -557,8 +565,12 @@ two-launch discovery, native participation, aggregate inventory, and isolated
 assignment persistence against live local Codex metadata. Those earlier runs
 printed `no Codex mutation requested`, so they remain inventory/persistence
 evidence only. Downstream commit `7fb328f` updates the current smoke source and
-rebuilt host binary to request resume through the controller lease, but that
-mutating smoke path still needs a live native rerun against running Codex TUIs.
+rebuilt host binary to request resume through the controller lease. The latest
+live mutating smoke run reached native approval in two owning TUIs but still
+returned generic `resume through controller unavailable`; direct Codex
+diagnostics against fresh approved sockets completed acquire, exact-thread
+`thread/resume`, release, and sign-off successfully, so the remaining gap is
+currently downstream harness/bridge diagnosis plus final live-smoke evidence.
 
 Downstream discovery note: downstream commit `508880c` now decodes
 `processId` from Codex local-controller metadata and filters records whose
@@ -575,6 +587,21 @@ accepted the first selection item in each owning Codex TUI pane. This is useful
 for repeatable connection validation, but that earlier run inherits the earlier
 smoke binary's scope: inventory and route persistence only, not
 `thread/resume` mutation or removed-launch reconciliation.
+
+Codex cleanup/resume follow-up note: controller-enabled startup now prunes
+stale local-controller metadata/socket artifacts for definitely dead
+`processId` values, while preserving live or ambiguous records and tolerating
+concurrent cleanup `NotFound` races. Running `thread/resume` now returns the
+live loaded main-thread snapshot for a fresh paginated TUI thread whose rollout
+storage has not yet materialized. Focused validation passed with `just fmt`,
+`just test -p codex-app-server-transport local_controller_acceptor_prunes_dead_launch_artifacts local_controller_stale_pruning_tolerates_concurrent_cleanup local_controller_acceptor_publishes_metadata_and_forwards_websocket_messages_with_nonce local_controller_acceptor_republishes_metadata_with_main_thread_id`
+(4/4; nextest run `ddc4b599-caf2-465f-9b41-efceec19c5aa`),
+`just test -p codex-app-server thread_resume_loaded_unmaterialized_paginated_thread_returns_live_snapshot thread_resume_rejects_unmaterialized_unloaded_thread local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller_thread_resume_allows_read_shape_params_only thread_resume_extracts_exact_controller_thread_target`
+(5/5; nextest run `6bbc984c-4e74-4b70-8e20-d89db8f21705`),
+`just fix -p codex-app-server-transport`, `just fix -p codex-app-server`
+after reverting unrelated fixer hunks, and
+`cargo build -p codex-cli --bin codex` rebuilding
+`codex-rs/target/debug/codex` in 17.03s.
 
 Downstream presentation note: downstream commit `5a963b4` now keeps product slot
 assignment separate from launch authorization by preserving existing assignments

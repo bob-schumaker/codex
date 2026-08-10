@@ -301,6 +301,8 @@ disabled by default.
   - private controller directory
   - cleanup guard
   - atomic metadata publication and stale resource validation
+  - startup pruning for dead-process launch metadata and socket artifacts left
+    by abnormal exits, with ambiguous process liveness preserved
   - no socket listener yet
 - Primary files:
   - new `codex-rs/app-server-transport/src/transport/local_controller.rs`
@@ -308,6 +310,8 @@ disabled by default.
 - Validation:
   - tempdir metadata tests
   - stale/foreign resource cleanup tests
+  - concurrent stale-prune tests proving `NotFound` races are tolerated and
+    live-process records are preserved
   - tests proving cleanup never follows symlinks or deletes resources not owned
     by the launch ID and nonce
 
@@ -654,16 +658,49 @@ Commit 19: Add the full end-to-end scenario.
       rerun passed in 4s with two launches and exact launch-scoped route
       persistence.
     - Downstream commit `7fb328f` updates the smoke source to call
-      `HostSessionBridge.handleTap`, so future live smoke runs can exercise
+      `HostSessionBridge.handleTap`, so live smoke runs can exercise
       `controller/acquireControl`, exact-thread `thread/resume`, and
-      `controller/releaseControl`; that live mutating smoke rerun remains
-      pending.
+      `controller/releaseControl`. The latest live mutating rerun reached
+      native approval but returned generic `resume through controller
+      unavailable`; see the current follow-up evidence below.
     - Downstream commit `d43fcfb` adds metadata directory watching with full
       inventory refresh on change and routes physical V7 slot taps through the
       same bridge tap path. Focused downstream discovery/bridge tests, full
       downstream tests, downstream build, and downstream pre-commit passed.
       Five-live-launch runtime evidence and physical-device tap evidence remain
       pending gates.
+    - Current Codex-side follow-up fixes cover two launch/runtime gaps found
+      by live controller validation:
+      - controller-enabled startup now prunes stale local-controller metadata
+        and socket artifacts for definitely dead `processId` values while
+        preserving live or ambiguous records; and
+      - `thread/resume` now returns the live loaded main-thread snapshot when a
+        fresh paginated TUI thread has not yet materialized rollout storage.
+    - Focused Codex validation passed with
+      `just test -p codex-app-server-transport local_controller_acceptor_prunes_dead_launch_artifacts local_controller_stale_pruning_tolerates_concurrent_cleanup local_controller_acceptor_publishes_metadata_and_forwards_websocket_messages_with_nonce local_controller_acceptor_republishes_metadata_with_main_thread_id`
+      passing 4/4 tests in nextest run
+      `ddc4b599-caf2-465f-9b41-efceec19c5aa`,
+      `just test -p codex-app-server thread_resume_loaded_unmaterialized_paginated_thread_returns_live_snapshot thread_resume_rejects_unmaterialized_unloaded_thread local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller_thread_resume_allows_read_shape_params_only thread_resume_extracts_exact_controller_thread_target`,
+      passing 5/5 tests in nextest run
+      `6bbc984c-4e74-4b70-8e20-d89db8f21705`,
+      `just fix -p codex-app-server-transport`, and
+      `cargo build -p codex-cli --bin codex` rebuilding
+      `codex-rs/target/debug/codex` in 17.03s with the known `__eh_frame`
+      linker warning and `proc-macro-error2` future-incompatibility warning.
+    - Live Herdr validation with two debug Codex TUI panes confirmed each
+      metadata record published `mainThreadId`, each native
+      `Allow codex-waveshare to control this session?` prompt appeared in the
+      owning TUI, and a direct local-controller diagnostic completed
+      `initialize`, `controller/requestParticipation`, `thread/list`,
+      `controller/acquireControl`, exact-thread `thread/resume`,
+      `controller/releaseControl`, and `controller/signOff` successfully
+      against both launches.
+    - The updated downstream mutating smoke still returned
+      `resume through controller unavailable` after both prompts were approved.
+      Because the direct Codex RPC sequence above succeeded against the same
+      fresh endpoints, the remaining live-smoke gap is currently a downstream
+      harness/bridge diagnosis item rather than a confirmed Codex
+      `thread/resume` admission or handler failure.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.
