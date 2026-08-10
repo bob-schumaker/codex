@@ -18,11 +18,14 @@
   live but unapproved/discovered launches from rendering as offline and fills
   newly discovered sessions into free slots without replacing existing slot
   assignments. Downstream commit `7fb328f` now requests Codex resume through an
-  acquired controller lease and releases control afterward. Remaining known work
-  is downstream metadata watch/full-rescan runtime discovery,
+  acquired controller lease and releases control afterward. Downstream commit
+  `d43fcfb` now watches `$CODEX_HOME/local-controllers`, triggers full
+  inventory refreshes from metadata changes, and routes physical V7 slot taps
+  through `HostSessionBridge.handleTap`. Remaining known work is
   five-launch/non-Herdr runtime validation, a live native rerun of the updated
-  mutating smoke, and removed-launch reconciliation evidence against the
-  published `$CODEX_HOME/local-controllers` metadata contract.
+  mutating smoke, physical-device tap evidence, and removed-launch
+  reconciliation evidence against the published `$CODEX_HOME/local-controllers`
+  metadata contract.
 
 ## Current Status
 
@@ -829,14 +832,23 @@
     downstream `ExternalControllerRegistryTests`, full downstream
     `swift test`, downstream `swift build`, and downstream
     `pre-commit run --files ...`.
+  - Implemented and committed downstream metadata watch/full-rescan plus
+    physical slot tap routing at `d43fcfb`
+    (`fix(host): watch Codex launches and route taps`). The downstream host now
+    keeps an OS file watch on `$CODEX_HOME/local-controllers`, treats changes
+    as full-rescan hints, refreshes through `HostSessionBridge`, and sends V7
+    slot taps through the same bridge tap path. Validation passed with focused
+    downstream `LocalControllerDiscoveryTests`, `OperationalStateTests`, and
+    `ExternalControllerRegistryTests`, full downstream `swift test`, downstream
+    `swift build`, and downstream `pre-commit run --files ...`.
 - In progress:
-  - Downstream controller-host implementation for file-watch discovery/full
-    rescans of `$CODEX_HOME/local-controllers` and runtime validation that all
-    live Codex launches, including non-Herdr launches, are discovered and
-    assigned/offered.
+  - Runtime validation that all live Codex launches, including non-Herdr
+    launches, are discovered and assigned/offered through the downstream
+    watch/full-rescan path.
 - Not started:
   - Live native rerun of the updated downstream mutating smoke across multiple
     Codex launches.
+  - Physical-device tap evidence against the rebuilt downstream host.
   - Removed-launch reconciliation evidence after a selected launch disappears.
 
 ## Next Steps
@@ -845,9 +857,10 @@
   launch-availability, normal-interface admission, TUI reclaim/reflection,
   prompt, egress, subscription, or in-process recovery gap until a narrower
   downstream finding identifies one.
-- Implement downstream discovery as metadata-directory watch plus full rescan.
+- Rebuild the downstream smoke/host products because generated Swift build
+  products were removed after validation.
 - Run a runtime five-launch downstream validation that includes Herdr and
-  non-Herdr Codex launches after the watch/full-rescan path is in place.
+  non-Herdr Codex launches through the watch/full-rescan path.
 - Rerun the updated downstream multi-launch controller smoke against live Codex
   TUIs to produce native `thread/resume`/control-mutation evidence.
 - Add or run removed-launch reconciliation evidence after a selected Codex

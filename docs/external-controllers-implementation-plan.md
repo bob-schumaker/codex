@@ -496,6 +496,17 @@ External slice A: Watch and rescan the local-controller metadata directory.
     - downstream `swift test --package-path host/FirstVerticalSliceHost`,
       `swift build --package-path host/FirstVerticalSliceHost`, and
       `pre-commit run --files ...` passed.
+  - implemented checkpoint in downstream commit `d43fcfb`
+    (`fix(host): watch Codex launches and route taps`):
+    - downstream `LocalControllerDiscovery` now exposes a retained OS file
+      watch on `$CODEX_HOME/local-controllers`;
+    - `ExternalControllerRegistry` keeps that watch alive for the default
+      discovery path and publishes discovery-change notifications;
+    - `HostSessionBridge` responds to discovery-change notifications with full
+      inventory refreshes, so watch events are hints rather than trusted
+      incremental inventory state; and
+    - focused watch/full-rescan coverage plus the full downstream host test
+      suite passed.
 
 External slice B: Decouple launch health, authorization, and slot assignment.
 
@@ -569,6 +580,27 @@ lease.
     - focused downstream resume coverage, the full downstream host test suite,
       downstream build, and downstream pre-commit passed.
 
+External slice E: Route physical slot taps through the controller input path.
+
+- Scope:
+  - when a physical V7 slot tap targets an assigned slot, call
+    `HostSessionBridge.handleTap`
+  - use the same slot ordinal and persisted launch/thread assignment that the
+    display uses
+  - write the status snapshot after the bridge resolves the tap result
+  - keep invalid taps rejected without mutating the bridge
+- Validation:
+  - source-level review proves physical taps use the same bridge path as the
+    downstream smoke source
+  - bridge/resume tests prove that path calls controller acquire, exact-thread
+    `thread/resume`, and release
+  - implemented checkpoint in downstream commit `d43fcfb`
+    (`fix(host): watch Codex launches and route taps`):
+    - `BLECentral` now routes `.slotTap` through `HostSessionBridge.handleTap`;
+      and
+    - focused downstream bridge/discovery tests, full downstream `swift test`,
+      downstream `swift build`, and downstream pre-commit passed.
+
 ### 9. Hardening and cleanup
 
 Commit 19: Add the full end-to-end scenario.
@@ -626,6 +658,12 @@ Commit 19: Add the full end-to-end scenario.
       `controller/acquireControl`, exact-thread `thread/resume`, and
       `controller/releaseControl`; that live mutating smoke rerun remains
       pending.
+    - Downstream commit `d43fcfb` adds metadata directory watching with full
+      inventory refresh on change and routes physical V7 slot taps through the
+      same bridge tap path. Focused downstream discovery/bridge tests, full
+      downstream tests, downstream build, and downstream pre-commit passed.
+      Five-live-launch runtime evidence and physical-device tap evidence remain
+      pending gates.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

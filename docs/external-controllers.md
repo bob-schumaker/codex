@@ -340,6 +340,9 @@ At the downstream presentation/slot-preservation slice, the cumulative goal cost
 was 26,608,921 tokens and 104,835 seconds (approximately 29h 07m 15s).
 At the downstream controller-resume lease slice, the cumulative goal cost was
 26,997,994 tokens and 109,944 seconds (approximately 30h 32m 24s).
+At the downstream discovery-watch and physical-tap routing slice, the
+cumulative goal cost was 27,361,643 tokens and 111,767 seconds (approximately
+31h 02m 47s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -515,6 +518,7 @@ Recorded build and validation evidence:
 | Temporary Herdr workspace `w16` with Codex panes `w16:p1` and `w16:p2` plus downstream smoke pane `w16:p3` | Passed after driving each native `Allow codex-waveshare to control this session?` prompt by sending Enter to the owning Codex TUI pane. The first Herdr-driven attempt timed out at the smoke deadline while approval was still pending; the rerun passed: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. This validates terminal-driven native approval plus connection/inventory/persistence against two temporary live Codex TUIs, and remains non-mutating downstream evidence. | Passing run was reported by Herdr at 4s. Passing isolated root was `/private/tmp/codex-external-herdr-smoke.oNh2Hi`; the timed-out root was `/private/tmp/codex-external-herdr-smoke.baEaLc`. |
 | Downstream commit `5a963b4` (`fix(host): preserve discovered Codex slot state`) | Passed after adding downstream host logic that maps live but not-yet-approved/connected launches to non-offline slot statuses and preserves existing slot assignments while filling free slots deterministically for newly discovered Codex sessions. This covers the basic presentation-state and auto-assignment preservation rules; it is not file-watch/full-rescan or mutating `thread/resume` evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ProtocolTests/testV7MapPreservesExistingRoutesAndFillsFreeSlotsDeterministically\|OperationalStateTests/testLiveButUnapprovedLaunchesDoNotRenderOfflineStatus'` passed 2/2; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 58/58; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
 | Downstream commit `7fb328f` (`fix(host): resume Codex sessions through controller lease`) | Passed after changing downstream resume from unavailable to `controller/acquireControl` → exact-thread `thread/resume` → `controller/releaseControl`, and after updating the downstream smoke source to exercise `HostSessionBridge.handleTap`. This proves the downstream host requests resume through the approved controller lease and releases control afterward; it is not yet live native smoke evidence against running Codex TUIs. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl\|ExternalControllerRegistryTests/testFailedResumeStillReleasesControl\|ExternalControllerRegistryTests/testClosedLaunchCannotResumeOrReconnectUntilNextRefresh'` passed 3/3; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 60/60; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
+| Downstream commit `d43fcfb` (`fix(host): watch Codex launches and route taps`) | Passed after adding a retained OS file-system watch on `$CODEX_HOME/local-controllers`, routing discovery-change notifications through `HostSessionBridge.refreshInventory()` for full rescans, and routing physical V7 slot taps through `HostSessionBridge.handleTap`. This proves the downstream source path no longer depends only on the timer/poll path or a manual smoke call; it is not yet five-live-launch runtime evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'LocalControllerDiscoveryTests/testSnapshotFiltersDeadProcessMetadata\|LocalControllerDiscoveryTests/testWatchReportsDirectoryChangesForFullRescanTrigger\|OperationalStateTests/testDiscoveryChangeTriggersFullInventoryRefresh\|ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl'` passed 4/4; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 62/62; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. Afterward, generated build products were removed by request, so the downstream smoke binary must be rebuilt before live rerun. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -560,22 +564,33 @@ Downstream discovery note: downstream commit `508880c` now decodes
 `processId` from Codex local-controller metadata and filters records whose
 process is no longer live. This closes the stale metadata/process-liveness
 portion of the external discovery contract for the current downstream host.
+Downstream commit `d43fcfb` adds the product-side watch/full-rescan trigger:
+the host watches the metadata directory with the OS file-watch facility, treats
+events as hints, and performs full inventory refreshes through the same bridge
+path. Runtime evidence with five live launches is still pending.
 
 Herdr validation note: a temporary Herdr workspace can drive the same native
 TUI participation UI a user sees. The downstream smoke passed when Herdr
 accepted the first selection item in each owning Codex TUI pane. This is useful
-for repeatable connection validation, but it inherits the current smoke binary's
-scope: inventory and route persistence only, not `thread/resume` mutation or
-removed-launch reconciliation.
+for repeatable connection validation, but that earlier run inherits the earlier
+smoke binary's scope: inventory and route persistence only, not
+`thread/resume` mutation or removed-launch reconciliation.
 
 Downstream presentation note: downstream commit `5a963b4` now keeps product slot
 assignment separate from launch authorization by preserving existing assignments
 and deterministically filling free slots for newly discovered sessions. It also
 maps live non-connected launch states such as `awaitingApproval`,
 `approvalUnavailable`, `discovered`, and `connectionUnavailable` to non-offline
-physical slot states rather than `unavailable`. Runtime metadata watching,
-five-launch live discovery evidence, live mutating resume smoke evidence, and
-removed-launch reconciliation evidence remain separate follow-up gates.
+physical slot states rather than `unavailable`. Five-launch live discovery
+evidence through the watch/full-rescan path, live mutating resume smoke
+evidence, and removed-launch reconciliation evidence remain separate follow-up
+gates.
+
+Downstream input note: downstream commit `d43fcfb` also routes physical V7 slot
+taps through `HostSessionBridge.handleTap`, so the input device now exercises
+the same acquire/resume/release path as the smoke source instead of only
+acknowledging the tap. Physical-device evidence remains separate from the
+mocked bridge and host test evidence.
 
 ## Relevant implementation seams
 

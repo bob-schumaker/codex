@@ -37,6 +37,10 @@
   acquires control, sends exact-thread `thread/resume`, and releases control
   afterward. This is committed downstream as `7fb328f`
   (`fix(host): resume Codex sessions through controller lease`).
+- Downstream controller discovery now has an OS file-watch trigger over
+  `$CODEX_HOME/local-controllers`, and physical V7 slot taps route through
+  `HostSessionBridge.handleTap`. This is committed downstream as `d43fcfb`
+  (`fix(host): watch Codex launches and route taps`).
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -711,6 +715,17 @@
   with 60/60 tests,
   `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
   and downstream `pre-commit run --files ...`.
+- Downstream discovery-watch/tap-routing validation for commit `d43fcfb`
+  passed focused
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'LocalControllerDiscoveryTests/testSnapshotFiltersDeadProcessMetadata|LocalControllerDiscoveryTests/testWatchReportsDirectoryChangesForFullRescanTrigger|OperationalStateTests/testDiscoveryChangeTriggersFullInventoryRefresh|ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl'`
+  with 4/4 tests, full
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  with 62/62 tests,
+  `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
+  and downstream `pre-commit run --files ...`. After this validation,
+  generated build products were removed by request while preserving
+  Codex-side `codex-rs/target/debug` binaries, so downstream smoke products
+  need rebuilding before live rerun.
 
 ## In Flight
 
@@ -719,8 +734,9 @@
   launch-availability, in-process recovery, and controller participation
   auto-subscribe/e2e audits. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- Downstream controller-host discovery behavior for all live Codex launches,
-  including non-Herdr launches and metadata watch/full-rescan behavior.
+- Runtime validation that downstream discovery sees all live Codex launches,
+  including Herdr and non-Herdr launches, through the committed
+  watch/full-rescan path.
 
 ## Remaining
 
@@ -831,16 +847,13 @@
   Codex-side Commit 19 e2e reflection now auto-subscribes approved controllers
   to the granted main-thread listener and validates controller-owned approval
   resolution plus reflected command/turn completion over the published socket.
-- Downstream controller host should discover all live launches through
-  local-controller metadata watching/rescanning; current downstream discovery is
-  still refresh/poll oriented.
 - Downstream needs runtime evidence that five live Codex launches, including
-  Herdr and non-Herdr launches, are discovered and assigned/offered after the
-  watch/full-rescan path is in place.
+  Herdr and non-Herdr launches, are discovered and assigned/offered through the
+  watch/full-rescan path.
 - Downstream mutating acceptance now has source-level and mocked-transport
   coverage in commit `7fb328f`, but still needs a live native smoke rerun
-  against running Codex TUIs. Removed-launch reconciliation remains separate
-  follow-up evidence.
+  against running Codex TUIs. Physical-device tap evidence and removed-launch
+  reconciliation remain separate follow-up evidence.
 
 ## Risks or Follow-ups
 
