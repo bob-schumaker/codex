@@ -537,6 +537,8 @@ Recorded build and validation evidence:
 | Downstream commit `7424849` (`test(host): support all-discovered controller smoke`) | Passed after making the downstream smoke capable of selecting every discovered Codex launch with `--all-discovered --expected-launches N` and accepting equivalent `/tmp` and `/private/tmp` local-controller socket paths by resolving symlinks before validation. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter LocalControllerDiscoveryTests` passed 3/3; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 63/63; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 0.16s; downstream `pre-commit run --files ...` passed. |
 | Codex commit `4972b62` (`fix(app-server): reject stale controller approvals after disconnect`) | Passed after fixing a native approval/disconnect race found by five-launch live validation. If an external-controller websocket disconnects while `controller/requestParticipation` is still pending in the TUI, the late approval now returns typed `transport-closing` and cannot create a stale controller owner. A fresh controller connection can request participation and acquire control normally. | Focused `just test -p codex-app-server request_processors::controller_processor` passed 3/3; `just test -p codex-app-server local_controller_socket_sessions_are_isolated_per_launch` passed 1/1; `git diff --check` passed; `pre-commit run --files ...` could not run because this checkout has no `.pre-commit-config.yaml`; `cargo build -p codex-cli --bin codex` rebuilt `codex-rs/target/debug/codex` in 24.34s with the known `__eh_frame` linker warning. The attempted full `just test -p codex-app-server` run completed with 1257 passed, 2 flaky passed on retry, 4 failed, and 1 skipped; failures were outside the controller path: two remote-thread-store deadline tests and two zsh-fork/dotslash tests. |
 | `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support /tmp/cdx5.kjpUTg/app-support --all-discovered --expected-launches 5` | Passed against five fresh plain `codex --no-alt-screen` launches in temporary Herdr workspace `w1D` after each owning TUI approved the native `codex-waveshare` prompt, using downstream commit `7424849`. This validates five live launch metadata discovery, five `mainThreadId` publications, native approval, aggregate inventory, exact launch-scoped assignment persistence, controller acquire, exact-thread `thread/resume`, and controller release using the rebuilt debug Codex binary. | Downstream `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` rebuilt the smoke in 0.16s. Herdr reported the passing smoke run at 18s: `external-controller smoke: pass (launches: 5, exact launch-scoped route persisted, resume requested and control released)`. |
+| Downstream commit `bf445d8` (`test(host): verify removed controller launch reconciliation`) | Passed after adding `--verify-removal` smoke mode, which rescans live metadata for the selected launches, waits for the selected launch to disappear, verifies its persisted route becomes unavailable and rejects without resume, then verifies a surviving route remains resumable. | `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 1.46s with existing unrelated SwiftUI warnings; focused `LocalControllerDiscoveryTests` passed 3/3; full downstream `swift test` passed 63/63; downstream `pre-commit run --files ...` passed. |
+| `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support /tmp/cdxrm.sJJeLg/app-support-removal2 --all-discovered --expected-launches 2 --verify-removal` | Passed in temporary Herdr workspace `w1E` with two fresh plain debug Codex TUIs. Both owning TUIs approved native participation; after closing the selected launch pane `w1E:p2` (launch `019fea0b-c9eb-7de1-9a99-f6caf0eb63f9`), the smoke verified that its route was unavailable with no resume and that the survivor resumed. | Herdr reported `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, resume requested and control released, removed launch reconciled and survivor resumed)` at 32s. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -599,13 +601,14 @@ and passed the downstream all-discovered mutating smoke with five launch-scoped
 routes.
 
 Herdr validation note: a temporary Herdr workspace can drive the same native
-TUI participation UI a user sees. Herdr validation now covers both the earlier
-two-launch inventory/persistence smoke and the current five-launch mutating
-smoke. The current repeatable procedure launches plain `codex --no-alt-screen`
-TUI panes, waits for `$CODEX_HOME/local-controllers` metadata with non-null
-`mainThreadId`, runs the downstream all-discovered smoke, and sends Enter to
-approve each owning TUI prompt. Removed-launch reconciliation remains separate
-runtime evidence.
+TUI participation UI a user sees. Herdr validation covers the earlier two-launch
+inventory/persistence smoke, five-launch mutating smoke, and two-launch
+removed-launch reconciliation. The repeatable procedure launches plain
+`codex --no-alt-screen` TUI panes, waits for `$CODEX_HOME/local-controllers`
+metadata with non-null `mainThreadId`, runs the downstream all-discovered
+smoke, and sends Enter to approve each owning TUI prompt. The removal mode then
+closes the selected TUI after approval and verifies its persisted route rejects
+while another route remains resumable.
 
 Codex cleanup/resume follow-up note: controller-enabled startup now prunes
 stale local-controller metadata/socket artifacts for definitely dead
@@ -638,9 +641,9 @@ maps live non-connected launch states such as `awaitingApproval`,
 `approvalUnavailable`, `discovered`, and `connectionUnavailable` to non-offline
 physical slot states rather than `unavailable`. Five-launch live discovery
 and mutating resume evidence now exists for five approved debug Codex TUIs in
-temporary Herdr workspace `w1D`. Removed-launch reconciliation evidence remains
-a separate follow-up gate. Physical-device tap evidence also remains separate
-from the mocked bridge and host test evidence.
+temporary Herdr workspace `w1D`; removed-launch reconciliation now also has
+live native evidence from workspace `w1E`. Physical-device tap evidence remains
+separate from the mocked bridge and host test evidence.
 
 Downstream input note: downstream commit `d43fcfb` also routes physical V7 slot
 taps through `HostSessionBridge.handleTap`, so the input device now exercises

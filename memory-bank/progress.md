@@ -73,6 +73,17 @@
   downstream all-discovered mutating smoke reported:
   `external-controller smoke: pass (launches: 5, exact launch-scoped route
   persisted, resume requested and control released)`.
+- Downstream commit `bf445d8` (`test(host): verify removed controller launch
+  reconciliation`) adds `--verify-removal` smoke coverage that follows live
+  metadata, rejects a removed selected route without resume, and confirms a
+  survivor remains resumable. Downstream `swift build` passed in 1.46s with
+  existing unrelated SwiftUI warnings; focused discovery tests passed 3/3,
+  full downstream Swift tests passed 63/63, and downstream pre-commit passed.
+  Live native removal validation then passed in temporary Herdr workspace `w1E`:
+  after both approvals, closing selected pane `w1E:p2` produced
+  `external-controller smoke: pass (launches: 2, exact launch-scoped route
+  persisted, resume requested and control released, removed launch reconciled
+  and survivor resumed)` at 32s.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -779,9 +790,9 @@
   auto-subscribe/e2e, stale-launch cleanup, and loaded-unmaterialized
   `thread/resume` checks. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- External proof closure: collect physical-device tap evidence and
-  removed-launch reconciliation evidence. Five-launch metadata discovery and
-  mutating resume validation already passed in temporary Herdr workspace `w1D`.
+- External proof closure: collect physical-device tap evidence. Five-launch
+  metadata discovery/mutating resume validation and removed-launch
+  reconciliation already passed in temporary Herdr workspaces `w1D` and `w1E`.
 
 ## Remaining
 
@@ -898,9 +909,9 @@
   optional unless product labeling/enrichment behavior depends on it.
 - Downstream mutating acceptance now has source-level and mocked-transport
   coverage in commit `7fb328f`, direct Codex RPC evidence through
-  acquire/resume/release/sign-off, and live native smoke evidence through
-  commit `df843d4`. Physical-device tap evidence and removed-launch
-  reconciliation remain separate follow-up evidence.
+  acquire/resume/release/sign-off, live native smoke evidence through commit
+  `df843d4`, and live removed-launch reconciliation evidence through `bf445d8`.
+  Physical-device tap evidence remains the separate follow-up gate.
 
 ## Risks or Follow-ups
 

@@ -749,6 +749,22 @@ Commit 19: Add the full end-to-end scenario.
       passed: `external-controller smoke: pass (launches: 5, exact
       launch-scoped route persisted, resume requested and control released)`.
       Herdr reported the passing run at 18s.
+    - Downstream commit `bf445d8`
+      (`test(host): verify removed controller launch reconciliation`) adds
+      `--verify-removal` smoke mode. It keeps the selected launch set in sync
+      with live metadata, waits for the selected launch to disappear, verifies
+      that its persisted route is unavailable and rejects without resume, and
+      verifies that a survivor route remains resumable. Validation passed with
+      downstream `swift build` in 1.46s (with existing unrelated SwiftUI
+      warnings), focused `LocalControllerDiscoveryTests` 3/3, full downstream
+      `swift test` 63/63, and downstream `pre-commit run --files ...`.
+    - Temporary Herdr workspace `w1E` validated that removal mode against two
+      fresh plain debug Codex TUIs. After both native participation prompts were
+      approved, closing selected pane `w1E:p2` (launch
+      `019fea0b-c9eb-7de1-9a99-f6caf0eb63f9`) produced:
+      `external-controller smoke: pass (launches: 2, exact launch-scoped route
+      persisted, resume requested and control released, removed launch
+      reconciled and survivor resumed)`. Herdr reported the pass at 32s.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

@@ -28,7 +28,7 @@
   and fills free slots, `7fb328f` requests Codex resume through an acquired
   controller lease, `d43fcfb` watches `$CODEX_HOME/local-controllers` and
   routes physical V7 slot taps through `HostSessionBridge.handleTap`, and
-  `df843d4` fixes the mutating smoke wait, and `7424849` adds the
+  `df843d4` fixes the mutating smoke wait, `7424849` adds the
   all-discovered smoke mode plus `/tmp` versus `/private/tmp` endpoint-path
   normalization. Five-launch live validation then exposed a Codex race where a
   websocket disconnect during pending native participation could leave stale
@@ -38,9 +38,11 @@
   five plain `codex --no-alt-screen` TUIs passed the downstream all-discovered
   mutating smoke:
   `external-controller smoke: pass (launches: 5, exact launch-scoped route
-  persisted, resume requested and control released)`. Remaining known work is
-  physical-device tap evidence and removed-launch reconciliation evidence
-  against the published
+  persisted, resume requested and control released)`. Downstream commit
+  `bf445d8` adds removed-launch smoke coverage, and a two-launch native Herdr
+  run in `w1E` passed after closing the selected TUI: the removed route rejected
+  without resume while a survivor resumed. Remaining known work is
+  physical-device tap evidence against the published
   `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
@@ -858,13 +860,12 @@
     `ExternalControllerRegistryTests`, full downstream `swift test`, downstream
     `swift build`, and downstream `pre-commit run --files ...`.
 - In progress:
-  - External proof closure: collect the remaining physical-device tap and
-    removed-launch reconciliation evidence. Five-launch metadata discovery and
-    mutating resume validation already passed in temporary Herdr workspace
-    `w1D`.
+  - External proof closure: collect physical-device tap evidence. Five-launch
+    metadata discovery/mutating resume validation and removed-launch
+    reconciliation already passed in temporary Herdr workspaces `w1D` and
+    `w1E`.
 - Not started:
   - Physical-device tap evidence against the rebuilt downstream host.
-  - Removed-launch reconciliation evidence after a selected launch disappears.
 
 ## Next Steps
 
@@ -877,5 +878,3 @@
   metadata discovery, native approval, acquire/resume/release, and route
   persistence.
 - Capture physical-device tap evidence against the rebuilt downstream host.
-- Add or run removed-launch reconciliation evidence after a selected Codex
-  launch disappears.
