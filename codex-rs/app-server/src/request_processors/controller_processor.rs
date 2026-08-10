@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -26,6 +27,7 @@ use codex_protocol::ThreadId;
 use crate::controller_admission::AdmissionRule;
 use crate::controller_admission::RequiredAuthority;
 use crate::controller_admission::TargetExtraction;
+use crate::controller_admission::controller_transport_closing;
 use crate::controller_admission::server_request_method;
 use crate::controller_admission::server_request_response_rule;
 use crate::controller_enrollment::ControllerCredentialProof;
@@ -72,6 +74,7 @@ struct ControllerProcessorState {
     coordinator: Option<ControllerSessionCoordinator>,
     tui_connection_id: Option<ConnectionId>,
     launch_state: ControllerLaunchState,
+    closed_controller_connection_ids: HashSet<ConnectionId>,
 }
 
 struct PromptRebind {
@@ -123,6 +126,7 @@ impl ControllerRequestProcessor {
                 coordinator: None,
                 tui_connection_id: None,
                 launch_state: ControllerLaunchState::Starting,
+                closed_controller_connection_ids: HashSet::new(),
             })),
             enrollment_source,
             native_participation_approver,
@@ -160,6 +164,7 @@ impl ControllerRequestProcessor {
         params: ControllerRequestParticipationParams,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
+        self.ensure_controller_connection_open(connection_id)?;
 
         if credential_proof.is_none()
             && let Some(native_participation_approver) = self.native_participation_approver.as_ref()
@@ -197,8 +202,9 @@ impl ControllerRequestProcessor {
             self.clock.clone(),
         );
 
-        let (response, rebind, events) =
-            self.with_main_thread_rebind(|coordinator, main_thread_id| {
+        let (response, rebind, events) = self.with_open_controller_main_thread_rebind(
+            connection_id,
+            |coordinator, main_thread_id| {
                 let grant = match verifier.verify(
                     connection_id,
                     main_thread_id,
@@ -231,7 +237,8 @@ impl ControllerRequestProcessor {
                     session: Some(session),
                     denial: None,
                 })
-            })?;
+            },
+        )?;
 
         self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
@@ -263,8 +270,9 @@ impl ControllerRequestProcessor {
         connection_id: ConnectionId,
         requested_main_thread_id: ThreadId,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
-        let (response, rebind, events) =
-            self.with_main_thread_rebind(|coordinator, main_thread_id| {
+        let (response, rebind, events) = self.with_open_controller_main_thread_rebind(
+            connection_id,
+            |coordinator, main_thread_id| {
                 if main_thread_id != requested_main_thread_id {
                     return Err(thread_target_error(main_thread_id.to_string()));
                 }
@@ -283,7 +291,8 @@ impl ControllerRequestProcessor {
                         denial: None,
                     })
                     .map_err(controller_session_error)
-            })?;
+            },
+        )?;
 
         self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
@@ -662,23 +671,62 @@ impl ControllerRequestProcessor {
     }
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) -> Option<ThreadId> {
-        let Ok((result, rebind, events)) =
-            self.with_main_thread_rebind(|coordinator, _main_thread_id| {
-                let removed_main_thread_id = coordinator
-                    .session_for(connection_id)
-                    .map(|session| session.main_thread_id);
-                coordinator.disconnect_session(connection_id);
-                Ok(removed_main_thread_id)
-            })
-        else {
-            return None;
-        };
+        let (result, rebind, events) = self.controller_connection_closed(connection_id).ok()?;
         if result.is_err() {
             return None;
         }
         self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
         result.ok().flatten()
+    }
+
+    fn ensure_controller_connection_open(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Result<(), JSONRPCErrorError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .closed_controller_connection_ids
+            .contains(&connection_id)
+        {
+            return Err(controller_transport_closing());
+        }
+        Ok(())
+    }
+
+    fn controller_connection_closed(
+        &self,
+        connection_id: ConnectionId,
+    ) -> ControllerTransitionResult<Option<ThreadId>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed_controller_connection_ids.insert(connection_id);
+        let launch_state = state.launch_state.clone();
+        let tui_connection_id = state.tui_connection_id;
+        let Some(coordinator) = state.coordinator.as_mut() else {
+            return Err(main_thread_unavailable(launch_state));
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return Err(main_thread_closed());
+        };
+        let owner_before = coordinator.interactive_owner().clone();
+        let removed_main_thread_id = coordinator
+            .session_for(connection_id)
+            .map(|session| session.main_thread_id);
+        coordinator.disconnect_session(connection_id);
+        let rebind = prompt_rebind_after_transition(
+            main_thread_id,
+            tui_connection_id,
+            &owner_before,
+            coordinator.interactive_owner(),
+        );
+        let events = coordinator.drain_events();
+        Ok((Ok(removed_main_thread_id), rebind, events))
     }
 
     async fn mark_tui_unavailable(&self, reason: String) {
@@ -808,6 +856,44 @@ impl ControllerRequestProcessor {
                 ))
             }
         }
+    }
+
+    fn with_open_controller_main_thread_rebind<T>(
+        &self,
+        connection_id: ConnectionId,
+        operation: impl FnOnce(
+            &mut ControllerSessionCoordinator,
+            ThreadId,
+        ) -> Result<T, JSONRPCErrorError>,
+    ) -> ControllerTransitionResult<T> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .closed_controller_connection_ids
+            .contains(&connection_id)
+        {
+            return Err(controller_transport_closing());
+        }
+        let launch_state = state.launch_state.clone();
+        let tui_connection_id = state.tui_connection_id;
+        let Some(coordinator) = state.coordinator.as_mut() else {
+            return Err(main_thread_unavailable(launch_state));
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return Err(main_thread_closed());
+        };
+        let owner_before = coordinator.interactive_owner().clone();
+        let result = operation(coordinator, main_thread_id);
+        let rebind = prompt_rebind_after_transition(
+            main_thread_id,
+            tui_connection_id,
+            &owner_before,
+            coordinator.interactive_owner(),
+        );
+        let events = coordinator.drain_events();
+        Ok((result, rebind, events))
     }
 
     fn with_main_thread_rebind<T>(

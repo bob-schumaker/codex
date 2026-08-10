@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -14,6 +15,7 @@ use codex_app_server_protocol::ControllerRetryDisposition;
 use codex_app_server_protocol::ServerRequestPayload;
 use pretty_assertions::assert_eq;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::*;
 use crate::controller_enrollment::EmptyControllerEnrollmentSource;
@@ -147,6 +149,106 @@ async fn native_tui_unavailable_marks_controller_launch_terminal() {
         vec![tui_connection_id, controller_connection_id],
         "terminal TUI-unavailable launch should not affect unrelated threads"
     );
+}
+
+#[tokio::test]
+async fn late_native_participation_approval_after_disconnect_does_not_keep_control() {
+    let (outgoing_tx, _outgoing_rx) = mpsc::channel(/*buffer*/ 16);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        AnalyticsEventsClient::disabled(),
+    ));
+    let (first_decision_tx, first_decision_rx) = oneshot::channel();
+    let (second_decision_tx, second_decision_rx) = oneshot::channel();
+    let decisions = Arc::new(std::sync::Mutex::new(VecDeque::from([
+        first_decision_rx,
+        second_decision_rx,
+    ])));
+    let decisions_for_closure = Arc::clone(&decisions);
+    let (called_tx, mut called_rx) = mpsc::unbounded_channel();
+    let processor = ControllerRequestProcessor::new(
+        Arc::clone(&outgoing),
+        Arc::new(EmptyControllerEnrollmentSource),
+        Some(Arc::new(move |_request| {
+            called_tx
+                .send(())
+                .expect("test call notification receiver should be open");
+            let decision_rx = decisions_for_closure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .expect("test should provide a native participation decision");
+            Box::pin(async move {
+                decision_rx
+                    .await
+                    .expect("test should send a native participation decision")
+            })
+        })),
+        None,
+        ControllerEnrollmentPolicy::BestEffort,
+        ControllerSessionClock::from_fn(std::time::Instant::now),
+        ControllerSessionConfig {
+            lease_duration: Duration::from_secs(/*secs*/ 300),
+        },
+    );
+    let tui_connection_id = ConnectionId(1);
+    let disconnected_controller = ConnectionId(2);
+    let fresh_controller = ConnectionId(3);
+    let main_thread_id = ThreadId::new();
+    processor.register_main_thread(main_thread_id, tui_connection_id);
+
+    let processor_for_task = processor.clone();
+    let pending_participation = tokio::spawn(async move {
+        processor_for_task
+            .request_participation(
+                disconnected_controller,
+                ConnectionOrigin::ExternalController,
+                /*credential_proof*/ None,
+                participation_params(),
+            )
+            .await
+    });
+    called_rx
+        .recv()
+        .await
+        .expect("native participation request should reach the approver");
+
+    assert_eq!(
+        processor.connection_closed(disconnected_controller).await,
+        None
+    );
+    first_decision_tx
+        .send(NativeControllerParticipationDecision::Approved)
+        .expect("late approval receiver should be pending");
+    let stale_error = pending_participation
+        .await
+        .expect("participation task should not panic")
+        .expect_err("late approval for a disconnected controller must not create a session");
+    assert_controller_error(
+        stale_error,
+        ControllerErrorCode::TransportClosing,
+        ControllerRetryDisposition::DoNotRetry,
+        None,
+    );
+
+    second_decision_tx
+        .send(NativeControllerParticipationDecision::Approved)
+        .expect("fresh approval receiver should be pending");
+    let response = processor
+        .request_participation(
+            fresh_controller,
+            ConnectionOrigin::ExternalController,
+            /*credential_proof*/ None,
+            participation_params(),
+        )
+        .await
+        .expect("fresh controller should be able to participate after stale disconnect");
+    assert_eq!(response.status, ControllerParticipationStatus::Approved);
+    let acquired = processor
+        .acquire_control(fresh_controller, ConnectionOrigin::ExternalController)
+        .await
+        .expect("fresh controller should be able to acquire control");
+    assert_eq!(acquired.session.main_thread_id, main_thread_id.to_string());
 }
 
 #[tokio::test]

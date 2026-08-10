@@ -1031,6 +1031,10 @@ pub async fn run_main_with_transport_options(
                                     continue;
                                 };
                                 let stdio_closed = connection_state.origin == ConnectionOrigin::Stdio;
+                                if connection_state.origin == ConnectionOrigin::ExternalController
+                                {
+                                    connection_state.session.begin_controller_transport_closing();
+                                }
                                 connection_state.session.rpc_gate.close().await;
                                 let outbound_closed = outbound_control_tx
                                     .send(OutboundControlEvent::Closed { connection_id })
