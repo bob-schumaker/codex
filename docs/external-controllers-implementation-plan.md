@@ -544,6 +544,31 @@ slot-backed display.
     - `BLECentral` now uses that merge operation instead of replacing the whole
       slot map from the latest inventory projection.
 
+External slice D: Resume an assigned Codex session through the active controller
+lease.
+
+- Scope:
+  - when the selected slot maps to a live Codex launch/thread route, acquire
+    control before issuing the normal app-server `thread/resume` request
+  - send `thread/resume` with the exact selected `threadId`; do not synthesize a
+    different target or add protocol-specific resume authority
+  - release control after the resume request settles so read access and future
+    participation remain connection-bound but input ownership is ceded
+  - release control even when `thread/resume` returns an error
+- Validation:
+  - route a selected slot through `controller/acquireControl`, `thread/resume`,
+    and `controller/releaseControl` in that order
+  - prove the resumed thread ID is the selected launch/thread route's thread ID
+  - prove a failed resume still releases control
+  - implemented checkpoint in downstream commit `7fb328f`
+    (`fix(host): resume Codex sessions through controller lease`):
+    - `ExternalControllerConnection.resume` now ensures participation, acquires
+      control, sends exact-thread `thread/resume`, and releases control;
+    - the downstream smoke source now calls `HostSessionBridge.handleTap` so a
+      smoke run can exercise resume instead of stopping after inventory; and
+    - focused downstream resume coverage, the full downstream host test suite,
+      downstream build, and downstream pre-commit passed.
+
 ### 9. Hardening and cleanup
 
 Commit 19: Add the full end-to-end scenario.
@@ -588,15 +613,19 @@ Commit 19: Add the full end-to-end scenario.
       `first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>`
       passed after native TUI approval against two live Codex launches, proving
       downstream discovery, participation, aggregate inventory, and isolated
-      assignment persistence. Its checked-in binary currently reports `no Codex
-      mutation requested`, so downstream `thread/resume`, control mutation, and
-      removed-launch reconciliation remain unproven by that smoke.
+      assignment persistence. That earlier run reported `no Codex mutation
+      requested`, so it remains non-mutating evidence.
     - A repeat run used a temporary Herdr workspace with two Codex TUI panes and
       one smoke pane, then drove the native `Allow codex-waveshare to control
       this session?` prompts by sending Enter to each owning TUI pane. The first
       attempt crossed the smoke deadline while approval was still pending; the
       rerun passed in 4s with two launches and exact launch-scoped route
       persistence.
+    - Downstream commit `7fb328f` updates the smoke source to call
+      `HostSessionBridge.handleTap`, so future live smoke runs can exercise
+      `controller/acquireControl`, exact-thread `thread/resume`, and
+      `controller/releaseControl`; that live mutating smoke rerun remains
+      pending.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

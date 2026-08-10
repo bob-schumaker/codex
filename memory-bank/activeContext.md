@@ -17,10 +17,12 @@
   before producing discovery endpoints. Downstream commit `5a963b4` now keeps
   live but unapproved/discovered launches from rendering as offline and fills
   newly discovered sessions into free slots without replacing existing slot
-  assignments. Remaining known work is downstream metadata watch/full-rescan
-  runtime discovery, five-launch/non-Herdr runtime validation, and any downstream
-  mutating `thread/resume`/removed-launch acceptance rerun against the published
-  `$CODEX_HOME/local-controllers` metadata contract.
+  assignments. Downstream commit `7fb328f` now requests Codex resume through an
+  acquired controller lease and releases control afterward. Remaining known work
+  is downstream metadata watch/full-rescan runtime discovery,
+  five-launch/non-Herdr runtime validation, a live native rerun of the updated
+  mutating smoke, and removed-launch reconciliation evidence against the
+  published `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
 
@@ -818,15 +820,24 @@
     order. Validation passed with focused downstream `ProtocolTests` and
     `OperationalStateTests`, full downstream `swift test`, downstream
     `swift build`, and downstream `pre-commit run --files ...`.
+  - Implemented and committed downstream controller-resume lease behavior at
+    `7fb328f` (`fix(host): resume Codex sessions through controller lease`).
+    `ExternalControllerConnection.resume` now ensures participation, acquires
+    control, sends exact-thread `thread/resume`, and releases control. The
+    downstream smoke source now calls `HostSessionBridge.handleTap`, so the
+    rebuilt host binary can exercise resume. Validation passed with focused
+    downstream `ExternalControllerRegistryTests`, full downstream
+    `swift test`, downstream `swift build`, and downstream
+    `pre-commit run --files ...`.
 - In progress:
   - Downstream controller-host implementation for file-watch discovery/full
     rescans of `$CODEX_HOME/local-controllers` and runtime validation that all
     live Codex launches, including non-Herdr launches, are discovered and
     assigned/offered.
 - Not started:
-  - Downstream mutating acceptance rerun across multiple live Codex launches
-    after the downstream smoke/host covers `thread/resume`, control mutation, or
-    removed-launch reconciliation again.
+  - Live native rerun of the updated downstream mutating smoke across multiple
+    Codex launches.
+  - Removed-launch reconciliation evidence after a selected launch disappears.
 
 ## Next Steps
 
@@ -837,6 +848,7 @@
 - Implement downstream discovery as metadata-directory watch plus full rescan.
 - Run a runtime five-launch downstream validation that includes Herdr and
   non-Herdr Codex launches after the watch/full-rescan path is in place.
-- Extend or rerun the downstream multi-launch controller smoke if mutating
-  `thread/resume`/removal evidence is required; the current checked-in smoke is
-  status-only and prints `no Codex mutation requested`.
+- Rerun the updated downstream multi-launch controller smoke against live Codex
+  TUIs to produce native `thread/resume`/control-mutation evidence.
+- Add or run removed-launch reconciliation evidence after a selected Codex
+  launch disappears.

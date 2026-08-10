@@ -33,6 +33,10 @@
   sessions, and render live non-connected launch states as `needsApproval` or
   `unknown` instead of offline/unavailable. This is committed downstream as
   `5a963b4` (`fix(host): preserve discovered Codex slot state`).
+- Downstream controller resume now uses the approved controller lease: it
+  acquires control, sends exact-thread `thread/resume`, and releases control
+  afterward. This is committed downstream as `7fb328f`
+  (`fix(host): resume Codex sessions through controller lease`).
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -699,6 +703,14 @@
   with 58/58 tests,
   `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
   and downstream `pre-commit run --files ...`.
+- Downstream controller-resume lease validation for commit `7fb328f` passed
+  focused
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl|ExternalControllerRegistryTests/testFailedResumeStillReleasesControl|ExternalControllerRegistryTests/testClosedLaunchCannotResumeOrReconnectUntilNextRefresh'`
+  with 3/3 tests, full
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  with 60/60 tests,
+  `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
+  and downstream `pre-commit run --files ...`.
 
 ## In Flight
 
@@ -825,10 +837,10 @@
 - Downstream needs runtime evidence that five live Codex launches, including
   Herdr and non-Herdr launches, are discovered and assigned/offered after the
   watch/full-rescan path is in place.
-- Downstream mutating acceptance remains unproven by the currently checked-in
-  smoke binary because it explicitly reports `no Codex mutation requested`; any
-  product gate that requires `thread/resume`, control mutation, or removed-launch
-  reconciliation needs a restored/extended downstream smoke.
+- Downstream mutating acceptance now has source-level and mocked-transport
+  coverage in commit `7fb328f`, but still needs a live native smoke rerun
+  against running Codex TUIs. Removed-launch reconciliation remains separate
+  follow-up evidence.
 
 ## Risks or Follow-ups
 

@@ -338,6 +338,8 @@ At the Herdr-driven native approval smoke slice, the cumulative goal cost was
 26,440,707 tokens and 104,451 seconds (approximately 29h 00m 51s).
 At the downstream presentation/slot-preservation slice, the cumulative goal cost
 was 26,608,921 tokens and 104,835 seconds (approximately 29h 07m 15s).
+At the downstream controller-resume lease slice, the cumulative goal cost was
+26,997,994 tokens and 109,944 seconds (approximately 30h 32m 24s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -508,10 +510,11 @@ Recorded build and validation evidence:
 | `just fix -p codex-app-server` | Passed after the controller participation auto-subscribe slice. It auto-fixed two unrelated lint sites; those hunks were reviewed and reverted so the commit stayed scoped to controller behavior. | Cargo reported 36.09s. |
 | `git diff --check` | Passed after the controller participation auto-subscribe source slice. | Subsecond. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex`; `./codex-rs/target/debug/codex --version` reported `codex-cli 0.147.1`, and the final binary size was 757,129,080 bytes. | Cargo reported 29.76s with the known `__eh_frame section too large` linker warning. |
-| `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>` | Passed after the owning TUIs approved the native `codex-waveshare` participation prompts: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. The first run timed out while participation was pending because the prompts were missed. This is downstream inventory/persistence evidence only; the checked-in downstream smoke binary explicitly does not perform Codex mutation, `thread/resume`, or removal reconciliation. | Passing run wall time was 7.710s. Isolated root was `/private/tmp/codex-external-smoke.gvtgFu`. |
+| `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support <isolated-empty-temp-dir>` | Passed after the owning TUIs approved the native `codex-waveshare` participation prompts: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. The first run timed out while participation was pending because the prompts were missed. This earlier smoke revision is downstream inventory/persistence evidence only; it did not perform Codex mutation, `thread/resume`, or removal reconciliation. | Passing run wall time was 7.710s. Isolated root was `/private/tmp/codex-external-smoke.gvtgFu`. |
 | Downstream commit `508880c` (`fix(host): filter stale Codex controller launches`) | Passed focused and full downstream host validation after adding `processId` decoding/liveness filtering to `LocalControllerDiscovery` and regression coverage using real AF_UNIX socket metadata. This implements the discovery-contract requirement to ignore dead process records before launch presentation or controller connection. | `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter LocalControllerDiscoveryTests` passed 1/1 in 5.115s; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 56/56 in 3.087s; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 0.475s; downstream `pre-commit run --files ...` passed. |
 | Temporary Herdr workspace `w16` with Codex panes `w16:p1` and `w16:p2` plus downstream smoke pane `w16:p3` | Passed after driving each native `Allow codex-waveshare to control this session?` prompt by sending Enter to the owning Codex TUI pane. The first Herdr-driven attempt timed out at the smoke deadline while approval was still pending; the rerun passed: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, no Codex mutation requested)`. This validates terminal-driven native approval plus connection/inventory/persistence against two temporary live Codex TUIs, and remains non-mutating downstream evidence. | Passing run was reported by Herdr at 4s. Passing isolated root was `/private/tmp/codex-external-herdr-smoke.oNh2Hi`; the timed-out root was `/private/tmp/codex-external-herdr-smoke.baEaLc`. |
 | Downstream commit `5a963b4` (`fix(host): preserve discovered Codex slot state`) | Passed after adding downstream host logic that maps live but not-yet-approved/connected launches to non-offline slot statuses and preserves existing slot assignments while filling free slots deterministically for newly discovered Codex sessions. This covers the basic presentation-state and auto-assignment preservation rules; it is not file-watch/full-rescan or mutating `thread/resume` evidence. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ProtocolTests/testV7MapPreservesExistingRoutesAndFillsFreeSlotsDeterministically\|OperationalStateTests/testLiveButUnapprovedLaunchesDoNotRenderOfflineStatus'` passed 2/2; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 58/58; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
+| Downstream commit `7fb328f` (`fix(host): resume Codex sessions through controller lease`) | Passed after changing downstream resume from unavailable to `controller/acquireControl` → exact-thread `thread/resume` → `controller/releaseControl`, and after updating the downstream smoke source to exercise `HostSessionBridge.handleTap`. This proves the downstream host requests resume through the approved controller lease and releases control afterward; it is not yet live native smoke evidence against running Codex TUIs. | Focused `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost --filter 'ExternalControllerRegistryTests/testResumeAcquiresControlResumesExactThreadAndReleasesControl\|ExternalControllerRegistryTests/testFailedResumeStillReleasesControl\|ExternalControllerRegistryTests/testClosedLaunchCannotResumeOrReconnectUntilNextRefresh'` passed 3/3; full `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 60/60; `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed; downstream `pre-commit run --files ...` passed. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -545,12 +548,13 @@ controller-resolved command approval, command and turn completion visibility,
 TUI reclaim, stale controller mutation rejection, standing read access after
 reclaim, controller reacquire, final thread state, and sign-off.
 
-Downstream smoke note: the downstream controller host's current smoke binary now
-passes its bounded two-launch discovery, native participation, aggregate
-inventory, and isolated assignment-persistence check against live local Codex
-metadata. That binary prints `no Codex mutation requested`; it is not evidence
-for downstream `thread/resume`, control mutation, or removed-launch
-reconciliation.
+Downstream smoke note: the previous downstream live smoke runs passed bounded
+two-launch discovery, native participation, aggregate inventory, and isolated
+assignment persistence against live local Codex metadata. Those earlier runs
+printed `no Codex mutation requested`, so they remain inventory/persistence
+evidence only. Downstream commit `7fb328f` updates the current smoke source and
+rebuilt host binary to request resume through the controller lease, but that
+mutating smoke path still needs a live native rerun against running Codex TUIs.
 
 Downstream discovery note: downstream commit `508880c` now decodes
 `processId` from Codex local-controller metadata and filters records whose
@@ -570,8 +574,8 @@ and deterministically filling free slots for newly discovered sessions. It also
 maps live non-connected launch states such as `awaitingApproval`,
 `approvalUnavailable`, `discovered`, and `connectionUnavailable` to non-offline
 physical slot states rather than `unavailable`. Runtime metadata watching,
-five-launch live discovery evidence, and mutating resume/removal evidence remain
-separate follow-up gates.
+five-launch live discovery evidence, live mutating resume smoke evidence, and
+removed-launch reconciliation evidence remain separate follow-up gates.
 
 ## Relevant implementation seams
 
