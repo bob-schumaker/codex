@@ -984,6 +984,7 @@ fn app_server_target_for_launch(
     default_daemon_socket: Option<AbsolutePathBuf>,
     can_reuse_implicit_local_daemon: bool,
     workload_identity_selected: bool,
+    external_controller_policy: ExternalControllerLaunchPolicy,
 ) -> std::io::Result<AppServerTarget> {
     if workload_identity_selected {
         if explicit_remote_endpoint.is_some() {
@@ -996,7 +997,9 @@ fn app_server_target_for_launch(
     }
     Ok(match explicit_remote_endpoint {
         Some(endpoint) => AppServerTarget::Remote { endpoint },
-        None if can_reuse_implicit_local_daemon => {
+        None if can_reuse_implicit_local_daemon
+            && external_controller_policy == ExternalControllerLaunchPolicy::Disabled =>
+        {
             default_daemon_socket.map_or(AppServerTarget::Embedded, |socket_path| {
                 AppServerTarget::LocalDaemon {
                     endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
@@ -1119,28 +1122,17 @@ pub async fn run_main(
             strict_config,
             cli.bypass_hook_trust,
         );
-    let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
-        maybe_probe_default_daemon_socket(&codex_home).await
-    } else {
-        None
+    let bootstrap_app_server_target = match explicit_remote_endpoint.clone() {
+        Some(endpoint) => AppServerTarget::Remote { endpoint },
+        None => AppServerTarget::Embedded,
     };
-    let app_server_target = app_server_target_for_launch(
-        explicit_remote_endpoint,
-        default_daemon,
-        reuse_implicit_local_daemon,
-        workload_identity_selected,
-    )?;
-    let remote_cwd_override = cli
-        .cwd
-        .clone()
-        .filter(|_| app_server_target.uses_remote_workspace());
 
     let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
     let prepared_environment_manager =
-        if should_load_configured_environments(&loader_overrides, &app_server_target) {
+        if should_load_configured_environments(&loader_overrides, &bootstrap_app_server_target) {
             EnvironmentManager::prepare_from_codex_home(&codex_home).await
         } else {
             EnvironmentManager::prepare_from_env().await
@@ -1149,7 +1141,7 @@ pub async fn run_main(
     let cwd = cli.cwd.clone();
     let config_cwd = config_cwd_for_app_server_target(
         cwd.as_deref(),
-        &app_server_target,
+        &bootstrap_app_server_target,
         prepared_environment_manager.default_environment_is_remote(),
     )?;
     let mut loader_overrides = loader_overrides;
@@ -1158,7 +1150,8 @@ pub async fn run_main(
         loader_overrides.user_config_path = Some(user_config_path);
         loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
-    loader_overrides.ignore_login_requirements = app_server_target.uses_remote_workspace();
+    loader_overrides.ignore_login_requirements =
+        bootstrap_app_server_target.uses_remote_workspace();
 
     let bootstrap_config = load_bootstrap_config_or_exit(
         &codex_home,
@@ -1170,14 +1163,14 @@ pub async fn run_main(
     )
     .await;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
-    let cloud_config_bundle = cloud_config_bundle_for_app_server_target(
-        &app_server_target,
-        &bootstrap_config,
-        &codex_home,
+    let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
+        bootstrap_app_server_target
+            .auth_config_for_cloud_loader(bootstrap_auth_config(&codex_home, &bootstrap_config)?),
+        /*enable_codex_api_key_env*/ false,
     )
     .await?;
 
-    let cwd_override = if app_server_target.uses_remote_workspace() {
+    let cwd_override = if bootstrap_app_server_target.uses_remote_workspace() {
         None
     } else {
         cwd.clone()
@@ -1264,6 +1257,25 @@ pub async fn run_main(
         strict_config,
     )
     .await;
+    let external_controller_policy = ExternalControllerLaunchPolicy::from_config(&config);
+    let default_daemon = if explicit_remote_endpoint.is_none()
+        && reuse_implicit_local_daemon
+        && external_controller_policy == ExternalControllerLaunchPolicy::Disabled
+    {
+        maybe_probe_default_daemon_socket(&codex_home).await
+    } else {
+        None
+    };
+    let app_server_target = app_server_target_for_launch(
+        explicit_remote_endpoint,
+        default_daemon,
+        reuse_implicit_local_daemon,
+        workload_identity_selected,
+        external_controller_policy,
+    )?;
+    let remote_cwd_override = cwd
+        .clone()
+        .filter(|_| app_server_target.uses_remote_workspace());
 
     let cloud_config_bundle = if workload_identity_selected {
         cloud_config_bundle
@@ -2745,14 +2757,31 @@ mod tests {
     }
 
     #[test]
-    fn app_server_target_for_launch_uses_local_daemon_for_default_socket() -> color_eyre::Result<()>
-    {
+    fn app_server_target_for_launch_uses_embedded_by_default_for_controller_endpoint()
+    -> color_eyre::Result<()> {
+        let socket_path = AbsolutePathBuf::relative_to_current_dir("codex.sock")?;
+        let target = app_server_target_for_launch(
+            /*explicit_remote_endpoint*/ None,
+            Some(socket_path),
+            /*can_reuse_implicit_local_daemon*/ true,
+            /*workload_identity_selected*/ false,
+            ExternalControllerLaunchPolicy::BestEffort,
+        )?;
+
+        assert_eq!(target, AppServerTarget::Embedded);
+        Ok(())
+    }
+
+    #[test]
+    fn app_server_target_for_launch_uses_local_daemon_when_controllers_are_disabled()
+    -> color_eyre::Result<()> {
         let socket_path = AbsolutePathBuf::relative_to_current_dir("codex.sock")?;
         let target = app_server_target_for_launch(
             /*explicit_remote_endpoint*/ None,
             Some(socket_path.clone()),
             /*can_reuse_implicit_local_daemon*/ true,
             /*workload_identity_selected*/ false,
+            ExternalControllerLaunchPolicy::Disabled,
         )?;
 
         assert_eq!(
@@ -2776,6 +2805,7 @@ mod tests {
             Some(AbsolutePathBuf::relative_to_current_dir("default.sock")?),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            ExternalControllerLaunchPolicy::BestEffort,
         )?;
 
         assert_eq!(
@@ -2798,6 +2828,7 @@ mod tests {
             Some(socket_path),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            ExternalControllerLaunchPolicy::Disabled,
         )?;
 
         assert_eq!(target, AppServerTarget::Embedded);
@@ -2813,6 +2844,7 @@ mod tests {
                 Some(default_socket),
                 /*can_reuse_implicit_local_daemon*/ true,
                 /*workload_identity_selected*/ true,
+                ExternalControllerLaunchPolicy::BestEffort,
             )?,
             AppServerTarget::Embedded
         );
@@ -2825,6 +2857,7 @@ mod tests {
             /*default_daemon_socket*/ None,
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ true,
+            ExternalControllerLaunchPolicy::BestEffort,
         )
         .expect_err("remote hosts must own workload identity");
         assert_eq!(

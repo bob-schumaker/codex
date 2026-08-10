@@ -27,6 +27,8 @@ The design has two goals:
 
 The first delivery applies when the TUI selects an embedded app-server runtime. It does not create a second endpoint when the TUI attaches to an existing local daemon or an explicit remote app server; those modes require a separate controller-session registration design because the TUI does not own that runtime or its listener lifecycle.
 
+Plain `codex` selects the embedded runtime by default when controllers are `best-effort` or `required`, so the per-launch local-controller endpoint is the normal interactive launch behavior. Reusing an implicit local daemon is allowed only when controllers are disabled by policy; explicit `--remote` continues to attach to the requested external app-server endpoint.
+
 The TUI reports one of these controller-availability states for the current launch:
 
 - `embedded-supported` — endpoint published and ready for controllers.

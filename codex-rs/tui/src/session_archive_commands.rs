@@ -294,6 +294,7 @@ async fn start_app_server_for_archive_command(
         default_daemon,
         reuse_implicit_local_daemon,
         workload_identity_selected,
+        super::ExternalControllerLaunchPolicy::Disabled,
     )?;
     let remote_cwd_override = cli
         .cwd
