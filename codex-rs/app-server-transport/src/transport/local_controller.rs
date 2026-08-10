@@ -256,6 +256,7 @@ pub async fn start_local_controller_acceptor(
     shutdown_token: CancellationToken,
 ) -> io::Result<LocalControllerEndpointHandle> {
     ensure_local_controller_endpoint_available(local_controller_endpoint_support())?;
+    prune_stale_local_controller_endpoints(codex_home).await;
 
     let metadata = LocalControllerEndpointMetadata::new(codex_home, main_thread_id)?;
     let paths = local_controller_endpoint_paths(codex_home, &metadata.launch_id)?;
@@ -358,6 +359,106 @@ async fn write_local_controller_metadata(
     }
 
     Ok(paths.metadata_path)
+}
+
+async fn prune_stale_local_controller_endpoints(codex_home: &Path) {
+    let directory = match absolute_path(codex_home.join(LOCAL_CONTROLLER_DIR_NAME)) {
+        Ok(directory) => directory,
+        Err(err) => {
+            tracing::warn!(%err, "failed to resolve local-controller directory for stale cleanup");
+            return;
+        }
+    };
+    let mut entries = match tokio::fs::read_dir(directory.as_path()).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(
+                directory = %directory.display(),
+                %err,
+                "failed to read local-controller directory for stale cleanup"
+            );
+            return;
+        }
+    };
+
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(
+                    directory = %directory.display(),
+                    %err,
+                    "failed to iterate local-controller directory for stale cleanup"
+                );
+                return;
+            }
+        };
+        prune_stale_local_controller_entry(codex_home, entry.path()).await;
+    }
+}
+
+async fn prune_stale_local_controller_entry(codex_home: &Path, metadata_path: PathBuf) {
+    let Some(file_name) = metadata_path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+    else {
+        return;
+    };
+    let Some(launch_id) = file_name
+        .strip_prefix(LOCAL_CONTROLLER_METADATA_PREFIX)
+        .and_then(|suffix| suffix.strip_suffix(LOCAL_CONTROLLER_METADATA_SUFFIX))
+    else {
+        return;
+    };
+    let paths = match local_controller_endpoint_paths(codex_home, launch_id) {
+        Ok(paths) => paths,
+        Err(_) => return,
+    };
+    if metadata_path != paths.metadata_path.as_path() {
+        return;
+    }
+
+    let metadata = match tokio::fs::read(paths.metadata_path.as_path())
+        .await
+        .and_then(|bytes| {
+            serde_json::from_slice::<LocalControllerEndpointMetadata>(&bytes)
+                .map_err(io::Error::other)
+        }) {
+        Ok(metadata) => metadata,
+        Err(_) => return,
+    };
+    if metadata.launch_id != launch_id {
+        return;
+    }
+    if process_may_be_running(metadata.process_id) {
+        return;
+    }
+
+    match remove_stale_metadata_if_owned(paths.metadata_path.as_path(), &metadata).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(
+                metadata_path = %paths.metadata_path.display(),
+                %err,
+                "failed to remove stale local-controller metadata"
+            );
+            return;
+        }
+    }
+    match remove_socket_file_if_owned(paths.socket_path.as_path()) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            tracing::warn!(
+                socket_path = %paths.socket_path.display(),
+                %err,
+                "failed to remove stale local-controller socket"
+            );
+        }
+    }
 }
 
 async fn prepare_local_controller_socket_path(socket_path: &Path) -> io::Result<()> {
@@ -624,6 +725,30 @@ fn now_unix_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
         .unwrap_or(0)
+}
+
+#[cfg(unix)]
+fn process_may_be_running(process_id: u32) -> bool {
+    const SIGNAL_EXISTS_CHECK: i32 = 0;
+    const ESRCH: i32 = 3;
+
+    if process_id == 0 || process_id > i32::MAX as u32 {
+        return false;
+    }
+    if unsafe { kill(process_id as i32, SIGNAL_EXISTS_CHECK) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(not(unix))]
+fn process_may_be_running(_process_id: u32) -> bool {
+    true
 }
 
 #[cfg(unix)]

@@ -349,6 +349,101 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn local_controller_acceptor_prunes_dead_launch_artifacts() {
+    let temp_dir = short_temp_dir();
+    let dead = LocalControllerEndpointMetadata {
+        process_id: u32::MAX,
+        ..test_metadata("dead-launch", "dead-nonce", "dead-thread")
+    };
+    let live = LocalControllerEndpointMetadata {
+        process_id: std::process::id(),
+        ..test_metadata("live-launch", "live-nonce", "live-thread")
+    };
+    let dead_paths = local_controller_endpoint_paths(temp_dir.path(), &dead.launch_id)
+        .expect("dead paths should resolve");
+    let live_paths = local_controller_endpoint_paths(temp_dir.path(), &live.launch_id)
+        .expect("live paths should resolve");
+    codex_uds::prepare_private_socket_directory(dead_paths.directory.as_path())
+        .await
+        .expect("directory should prepare");
+    write_metadata(dead_paths.metadata_path.as_path(), &dead).await;
+    write_metadata(live_paths.metadata_path.as_path(), &live).await;
+    let dead_listener = codex_uds::UnixListener::bind(dead_paths.socket_path.as_path())
+        .await
+        .expect("dead socket should bind");
+    drop(dead_listener);
+    let _live_listener = codex_uds::UnixListener::bind(live_paths.socket_path.as_path())
+        .await
+        .expect("live socket should bind");
+
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let handle = start_local_controller_acceptor(
+        temp_dir.path(),
+        Some("main-thread".to_string()),
+        transport_event_tx,
+        shutdown_token,
+    )
+    .await
+    .expect("local-controller acceptor should start");
+
+    assert!(!dead_paths.metadata_path.as_path().exists());
+    assert!(!dead_paths.socket_path.as_path().exists());
+    assert_eq!(
+        read_metadata(live_paths.metadata_path.as_path()).await,
+        live
+    );
+    assert!(live_paths.socket_path.as_path().exists());
+
+    handle.shutdown().await.expect("acceptor should join");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_controller_stale_pruning_tolerates_concurrent_cleanup() {
+    let temp_dir = short_temp_dir();
+    let dead = LocalControllerEndpointMetadata {
+        process_id: u32::MAX,
+        ..test_metadata("dead-launch", "dead-nonce", "dead-thread")
+    };
+    let live = LocalControllerEndpointMetadata {
+        process_id: std::process::id(),
+        ..test_metadata("live-launch", "live-nonce", "live-thread")
+    };
+    let dead_paths = local_controller_endpoint_paths(temp_dir.path(), &dead.launch_id)
+        .expect("dead paths should resolve");
+    let live_paths = local_controller_endpoint_paths(temp_dir.path(), &live.launch_id)
+        .expect("live paths should resolve");
+    codex_uds::prepare_private_socket_directory(dead_paths.directory.as_path())
+        .await
+        .expect("directory should prepare");
+    write_metadata(dead_paths.metadata_path.as_path(), &dead).await;
+    write_metadata(live_paths.metadata_path.as_path(), &live).await;
+    let dead_listener = codex_uds::UnixListener::bind(dead_paths.socket_path.as_path())
+        .await
+        .expect("dead socket should bind");
+    drop(dead_listener);
+    let _live_listener = codex_uds::UnixListener::bind(live_paths.socket_path.as_path())
+        .await
+        .expect("live socket should bind");
+
+    tokio::join!(
+        prune_stale_local_controller_endpoints(temp_dir.path()),
+        prune_stale_local_controller_endpoints(temp_dir.path())
+    );
+
+    assert!(!dead_paths.metadata_path.as_path().exists());
+    assert!(!dead_paths.socket_path.as_path().exists());
+    assert_eq!(
+        read_metadata(live_paths.metadata_path.as_path()).await,
+        live
+    );
+    assert!(live_paths.socket_path.as_path().exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn local_controller_acceptor_rejects_missing_or_wrong_launch_nonce() {
     let temp_dir = short_temp_dir();
     let (transport_event_tx, mut transport_event_rx) =
