@@ -758,8 +758,6 @@ mod tests {
     }
 
     #[test]
-    fn requirements_api_includes_model_auto_review_and_new_thread_defaults() {
-
     fn requirements_api_includes_external_controllers_policy() {
         let mapped = map_requirements_toml_to_api(ConfigRequirementsToml {
             external_controllers: Some(ExternalControllersRequirementsToml {
