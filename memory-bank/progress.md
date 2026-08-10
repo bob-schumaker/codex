@@ -56,6 +56,12 @@
   two live debug Codex TUIs reported:
   `external-controller smoke: pass (launches: 2, exact launch-scoped route
   persisted, resume requested and control released)`.
+- Downstream commit `7424849` (`test(host): support all-discovered controller
+  smoke`) adds the all-discovered smoke mode used for five-launch validation
+  and resolves `/tmp` versus `/private/tmp` socket paths before endpoint
+  validation. Focused downstream discovery tests passed 3/3, full downstream
+  Swift tests passed 63/63, downstream `swift build` passed, and downstream
+  `pre-commit run --files ...` passed.
 - Codex commit `4972b62` fixes a native approval/disconnect race found during
   five-launch live validation: a late TUI approval for an already-disconnected
   external-controller connection now fails with typed `transport-closing`

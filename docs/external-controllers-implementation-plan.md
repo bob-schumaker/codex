@@ -733,10 +733,17 @@ Commit 19: Add the full end-to-end scenario.
       passed on retry, 4 failed, and 1 skipped; the remaining failures were
       outside the controller path in remote-thread-store and zsh-fork/dotslash
       tests.
-    - After rebuilding the downstream smoke binary, temporary Herdr workspace
-      `w1D` launched five fresh plain `codex --no-alt-screen` TUI panes and a
-      smoke pane. Each owning TUI approved the native `codex-waveshare`
-      prompt, and
+    - Downstream commit `7424849`
+      (`test(host): support all-discovered controller smoke`) adds the
+      reproducible all-discovered smoke mode used for the five-launch run and
+      accepts equivalent `/tmp` and `/private/tmp` socket paths by resolving
+      symlinks before endpoint validation. Focused
+      `LocalControllerDiscoveryTests` passed 3/3, the full downstream Swift
+      suite passed 63/63, downstream `swift build` passed in 0.16s, and
+      downstream `pre-commit run --files ...` passed.
+    - Using downstream commit `7424849`, temporary Herdr workspace `w1D`
+      launched five fresh plain `codex --no-alt-screen` TUI panes and a smoke
+      pane. Each owning TUI approved the native `codex-waveshare` prompt, and
       `first-vertical-slice-external-controller-smoke --application-support
       /tmp/cdx5.kjpUTg/app-support --all-discovered --expected-launches 5`
       passed: `external-controller smoke: pass (launches: 5, exact

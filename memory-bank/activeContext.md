@@ -28,13 +28,15 @@
   and fills free slots, `7fb328f` requests Codex resume through an acquired
   controller lease, `d43fcfb` watches `$CODEX_HOME/local-controllers` and
   routes physical V7 slot taps through `HostSessionBridge.handleTap`, and
-  `df843d4` fixes the mutating smoke wait. Five-launch live validation then
-  exposed a Codex race where a websocket disconnect during pending native
-  participation could leave stale controller ownership after the late TUI
-  approval. Codex commit `4972b62` rejects those late approvals with typed
-  `transport-closing`. After rebuilding `codex-rs/target/debug/codex`, a fresh
-  temporary Herdr workspace `w1D` with five plain `codex --no-alt-screen` TUIs
-  passed the downstream all-discovered mutating smoke:
+  `df843d4` fixes the mutating smoke wait, and `7424849` adds the
+  all-discovered smoke mode plus `/tmp` versus `/private/tmp` endpoint-path
+  normalization. Five-launch live validation then exposed a Codex race where a
+  websocket disconnect during pending native participation could leave stale
+  controller ownership after the late TUI approval. Codex commit `4972b62`
+  rejects those late approvals with typed `transport-closing`. After rebuilding
+  `codex-rs/target/debug/codex`, a fresh temporary Herdr workspace `w1D` with
+  five plain `codex --no-alt-screen` TUIs passed the downstream all-discovered
+  mutating smoke:
   `external-controller smoke: pass (launches: 5, exact launch-scoped route
   persisted, resume requested and control released)`. Remaining known work is
   physical-device tap evidence and removed-launch reconciliation evidence
