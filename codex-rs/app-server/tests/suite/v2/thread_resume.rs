@@ -390,7 +390,8 @@ async fn wait_for_responses_request_count(
 }
 
 #[tokio::test]
-async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
+async fn thread_resume_loaded_unmaterialized_paginated_thread_returns_live_snapshot() -> Result<()>
+{
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
@@ -403,17 +404,52 @@ async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
     // Start a thread.
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
+            history_mode: Some(ThreadHistoryMode::Paginated),
             model: Some("gpt-5.4".to_string()),
             ..Default::default()
         })
         .await?;
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+    let thread_path = thread.path.clone().expect("thread path");
+    assert!(
+        !thread_path.exists(),
+        "fresh thread rollout should not be materialized yet"
+    );
 
-    // Resume should fail before the first user message materializes rollout storage.
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadResumeResponse {
+        thread: resumed, ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+
+    assert_eq!(resumed.id, thread.id);
+    assert_eq!(resumed.path, Some(thread_path));
+    assert_eq!(resumed.turns.len(), 0);
+    assert_eq!(resumed.status, ThreadStatus::Idle);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_rejects_unmaterialized_unloaded_thread() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri()).write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let missing_thread_id = ThreadId::new().to_string();
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: missing_thread_id,
             ..Default::default()
         })
         .await?;
