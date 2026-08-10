@@ -1,7 +1,7 @@
 # Active Context
 
-- Current focus: Codex-side local-controller follow-up validation after the
-  downstream mutating smoke reported `resume through controller unavailable`.
+- Current focus: Codex-side local-controller follow-up and downstream mutating
+  smoke validation are now reconciled.
   Approved local-controller participation now attaches the external-controller
   connection to the granted main-thread listener immediately, so controller
   actions over the normal app-server surface reflect through the same
@@ -15,16 +15,20 @@
   `initialize`, `controller/requestParticipation`, `thread/list`,
   `controller/acquireControl`, exact-thread `thread/resume`,
   `controller/releaseControl`, and `controller/signOff` successfully on both
-  sockets. The updated downstream mutating smoke still fails with the generic
-  bridge result above, so the remaining live-smoke gap is currently downstream
-  harness/bridge diagnosis rather than a confirmed Codex `thread/resume`
-  admission or handler bug. Downstream commit `508880c` filters stale
-  local-controller metadata by `processId` liveness, `5a963b4` keeps live
-  unapproved/discovered launches from rendering as offline and fills free slots,
-  `7fb328f` requests Codex resume through an acquired controller lease, and
-  `d43fcfb` watches `$CODEX_HOME/local-controllers` and routes physical V7 slot
-  taps through `HostSessionBridge.handleTap`. Remaining known work is
-  downstream harness diagnosis/final mutating smoke evidence,
+  sockets. The updated downstream mutating smoke originally failed because its
+  harness blocked the main thread on `DispatchSemaphore.wait` while
+  `HostSessionBridge` posted tap completion back to the main run loop.
+  Downstream commit `df843d4` replaces that tap wait with a run-loop wait. The
+  rebuilt actual smoke then passed in temporary Herdr workspace `w1A` after two
+  owning TUI approvals:
+  `external-controller smoke: pass (launches: 2, exact launch-scoped route
+  persisted, resume requested and control released)`. Downstream commit
+  `508880c` filters stale local-controller metadata by `processId` liveness,
+  `5a963b4` keeps live unapproved/discovered launches from rendering as offline
+  and fills free slots, `7fb328f` requests Codex resume through an acquired
+  controller lease, `d43fcfb` watches `$CODEX_HOME/local-controllers` and
+  routes physical V7 slot taps through `HostSessionBridge.handleTap`, and
+  `df843d4` fixes the mutating smoke wait. Remaining known work is
   five-launch/non-Herdr runtime validation, physical-device tap evidence, and
   removed-launch reconciliation evidence against the published
   `$CODEX_HOME/local-controllers` metadata contract.
@@ -848,8 +852,6 @@
     launches, are discovered and assigned/offered through the downstream
     watch/full-rescan path.
 - Not started:
-  - Final successful live native rerun of the updated downstream mutating smoke
-    after the downstream harness/bridge mismatch is diagnosed.
   - Physical-device tap evidence against the rebuilt downstream host.
   - Removed-launch reconciliation evidence after a selected launch disappears.
 
@@ -863,9 +865,5 @@
   products were removed after validation.
 - Run a runtime five-launch downstream validation that includes Herdr and
   non-Herdr Codex launches through the watch/full-rescan path.
-- Diagnose the downstream mutating-smoke bridge result that still reports
-  `resume through controller unavailable` despite direct Codex local-controller
-  RPC success, then rerun it against live Codex TUIs for final
-  `thread/resume`/control-mutation evidence.
 - Add or run removed-launch reconciliation evidence after a selected Codex
   launch disappears.

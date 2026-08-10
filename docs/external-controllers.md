@@ -348,6 +348,9 @@ cumulative goal cost was 27,361,643 tokens and 111,767 seconds (approximately
 At the Codex stale-launch cleanup and loaded-unmaterialized resume follow-up
 slice, the cumulative goal cost was 28,330,459 tokens and 116,642 seconds
 (approximately 32h 24m 02s).
+At the downstream smoke run-loop wait fix and passing mutating smoke slice, the
+cumulative goal cost was 28,642,039 tokens and 119,235 seconds (approximately
+33h 07m 15s).
 These costs include implementation, review, validation, and commit preparation
 across the staged slices; they are not limited to build/test subprocess runtime.
 
@@ -527,6 +530,8 @@ Recorded build and validation evidence:
 | `just test -p codex-app-server-transport local_controller_acceptor_prunes_dead_launch_artifacts local_controller_stale_pruning_tolerates_concurrent_cleanup local_controller_acceptor_publishes_metadata_and_forwards_websocket_messages_with_nonce local_controller_acceptor_republishes_metadata_with_main_thread_id` | Passed: 4 test runs, 4 passed, 159 skipped. This covers stale local-controller startup pruning, concurrent cleanup tolerance, live-record preservation, socket/metadata publication, WebSocket forwarding, and immutable `mainThreadId` republication. | Compile reported 6.27s; nextest reported 0.068s. Nextest run `ddc4b599-caf2-465f-9b41-efceec19c5aa`. |
 | `just test -p codex-app-server thread_resume_loaded_unmaterialized_paginated_thread_returns_live_snapshot thread_resume_rejects_unmaterialized_unloaded_thread local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller_thread_resume_allows_read_shape_params_only thread_resume_extracts_exact_controller_thread_target` | Passed: 5 test runs, 5 passed, 1256 skipped. This covers fresh loaded paginated TUI `thread/resume` before rollout materialization, missing unloaded-thread rejection, native local-controller socket parity/TUI reclaim, and controller `thread/resume` admission/target extraction. | Compile reported 1.03s; nextest reported 8.320s with the known `__eh_frame` linker warning. Nextest run `6bbc984c-4e74-4b70-8e20-d89db8f21705`. |
 | `cargo build -p codex-cli --bin codex` | Passed and rebuilt `codex-rs/target/debug/codex` after the stale-cleanup and loaded-unmaterialized resume follow-up. | Cargo reported 17.03s with the known `__eh_frame section too large` linker warning and `proc-macro-error2` future-incompatibility warning. |
+| Downstream commit `df843d4` (`fix(host): pump run loop during controller smoke tap`) | Passed after replacing the smoke's main-thread `DispatchSemaphore.wait` tap wait with a `RunLoop.main.run` wait. This fixes the harness deadlock where `HostSessionBridge` posted tap completion back to main but the smoke blocked main before the completion could run. | `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed in 3.62s with existing unrelated Swift warnings; `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost` passed 62/62 after an 8.10s test build and 2.55s test run; `pre-commit run --files host/FirstVerticalSliceHost/Sources/FirstVerticalSliceExternalControllerSmoke/main.swift` passed. |
+| `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support /private/tmp/codex-extctl-smoke-fixed.XaEmW5` | Passed after the owning TUIs approved two native `codex-waveshare` participation prompts in temporary Herdr workspace `w1A`: `external-controller smoke: pass (launches: 2, exact launch-scoped route persisted, resume requested and control released)`. This is live mutating evidence for downstream discovery, native participation, exact launch-scoped assignment persistence, controller acquire, exact-thread `thread/resume`, and controller release against the rebuilt debug Codex binary. | Herdr reported the passing run at 15s. |
 
 Implementation audit note: checkpoint `809b9e1` added the formal app-server
 `threadSequence` / `lastSequence` protocol surface and runtime sequence
@@ -565,12 +570,15 @@ two-launch discovery, native participation, aggregate inventory, and isolated
 assignment persistence against live local Codex metadata. Those earlier runs
 printed `no Codex mutation requested`, so they remain inventory/persistence
 evidence only. Downstream commit `7fb328f` updates the current smoke source and
-rebuilt host binary to request resume through the controller lease. The latest
-live mutating smoke run reached native approval in two owning TUIs but still
-returned generic `resume through controller unavailable`; direct Codex
-diagnostics against fresh approved sockets completed acquire, exact-thread
-`thread/resume`, release, and sign-off successfully, so the remaining gap is
-currently downstream harness/bridge diagnosis plus final live-smoke evidence.
+rebuilt host binary to request resume through the controller lease. The first
+live mutating smoke run reached native approval in two owning TUIs but returned
+generic `resume through controller unavailable`; direct Codex diagnostics
+against fresh approved sockets completed acquire, exact-thread `thread/resume`,
+release, and sign-off successfully. The confirmed downstream root cause was the
+smoke blocking the main thread on a semaphore while `HostSessionBridge` posts
+tap completion to the main run loop. Downstream commit `df843d4` replaces that
+wait with a run-loop wait, and the actual mutating smoke now passes against two
+live debug Codex TUIs after native approval.
 
 Downstream discovery note: downstream commit `508880c` now decodes
 `processId` from Codex local-controller metadata and filters records whose
@@ -609,9 +617,10 @@ and deterministically filling free slots for newly discovered sessions. It also
 maps live non-connected launch states such as `awaitingApproval`,
 `approvalUnavailable`, `discovered`, and `connectionUnavailable` to non-offline
 physical slot states rather than `unavailable`. Five-launch live discovery
-evidence through the watch/full-rescan path, live mutating resume smoke
-evidence, and removed-launch reconciliation evidence remain separate follow-up
-gates.
+evidence through the watch/full-rescan path and removed-launch reconciliation
+evidence remain separate follow-up gates. Live mutating resume smoke evidence
+now exists for two approved debug Codex TUIs through downstream commit
+`df843d4`.
 
 Downstream input note: downstream commit `d43fcfb` also routes physical V7 slot
 taps through `HostSessionBridge.handleTap`, so the input device now exercises

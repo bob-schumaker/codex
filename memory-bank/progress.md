@@ -50,11 +50,12 @@
   succeeds against two fresh debug Codex TUI launches after native approval,
   including `thread/list`, `controller/acquireControl`, exact-thread
   `thread/resume`, `controller/releaseControl`, and `controller/signOff`.
-- The updated downstream mutating smoke still returns
-  `resume through controller unavailable` after both owning TUIs approve the
-  controller. Because the direct Codex RPC sequence succeeds against the same
-  style of fresh endpoints, this is not currently a confirmed Codex admission
-  or `thread/resume` handler defect.
+- Downstream mutating smoke now passes after downstream commit `df843d4`
+  (`fix(host): pump run loop during controller smoke tap`) replaced the smoke's
+  main-thread semaphore wait with a run-loop wait. The passing Herdr run against
+  two live debug Codex TUIs reported:
+  `external-controller smoke: pass (launches: 2, exact launch-scoped route
+  persisted, resume requested and control released)`.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -738,8 +739,20 @@
   `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`,
   and downstream `pre-commit run --files ...`. After this validation,
   generated build products were removed by request while preserving
-  Codex-side `codex-rs/target/debug` binaries, so downstream smoke products
-  need rebuilding before live rerun.
+  Codex-side `codex-rs/target/debug` binaries; the downstream products were
+  later rebuilt during commit `df843d4` validation.
+- Downstream mutating-smoke harness validation for commit `df843d4`
+  (`fix(host): pump run loop during controller smoke tap`) passed
+  `swift build --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  in 3.62s with existing unrelated Swift warnings,
+  `swift test --package-path /Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost`
+  with 62/62 tests after an 8.10s build and 2.55s test run, and
+  `pre-commit run --files host/FirstVerticalSliceHost/Sources/FirstVerticalSliceExternalControllerSmoke/main.swift`.
+- Live mutating smoke then passed in temporary Herdr workspace `w1A` against
+  two debug Codex TUI panes after both native `codex-waveshare` approvals:
+  `/Users/roschuma/Personal/codex-waveshare/host/FirstVerticalSliceHost/.build/arm64-apple-macosx/debug/first-vertical-slice-external-controller-smoke --application-support /private/tmp/codex-extctl-smoke-fixed.XaEmW5`
+  reported `external-controller smoke: pass (launches: 2, exact launch-scoped
+  route persisted, resume requested and control released)` at 15s.
 
 ## In Flight
 
@@ -749,9 +762,6 @@
   auto-subscribe/e2e, stale-launch cleanup, and loaded-unmaterialized
   `thread/resume` checks. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- Downstream harness/bridge diagnosis for the latest mutating smoke result:
-  the smoke returns `resume through controller unavailable` despite direct
-  Codex local-controller RPCs succeeding through exact-thread `thread/resume`.
 - Runtime validation that downstream discovery sees all live Codex launches,
   including Herdr and non-Herdr launches, through the committed
   watch/full-rescan path.
@@ -869,13 +879,10 @@
   Herdr and non-Herdr launches, are discovered and assigned/offered through the
   watch/full-rescan path.
 - Downstream mutating acceptance now has source-level and mocked-transport
-  coverage in commit `7fb328f`, but the latest live native smoke run still
-  failed with generic `resume through controller unavailable` after both TUI
-  approvals. Direct Codex diagnostics against two fresh approved sockets
-  succeeded through acquire/resume/release/sign-off, so the remaining work is
-  downstream harness/bridge diagnosis plus final live smoke evidence.
-  Physical-device tap evidence and removed-launch reconciliation remain
-  separate follow-up evidence.
+  coverage in commit `7fb328f`, direct Codex RPC evidence through
+  acquire/resume/release/sign-off, and live native smoke evidence through
+  commit `df843d4`. Physical-device tap evidence and removed-launch
+  reconciliation remain separate follow-up evidence.
 
 ## Risks or Follow-ups
 

@@ -660,9 +660,7 @@ Commit 19: Add the full end-to-end scenario.
     - Downstream commit `7fb328f` updates the smoke source to call
       `HostSessionBridge.handleTap`, so live smoke runs can exercise
       `controller/acquireControl`, exact-thread `thread/resume`, and
-      `controller/releaseControl`. The latest live mutating rerun reached
-      native approval but returned generic `resume through controller
-      unavailable`; see the current follow-up evidence below.
+      `controller/releaseControl`.
     - Downstream commit `d43fcfb` adds metadata directory watching with full
       inventory refresh on change and routes physical V7 slot taps through the
       same bridge tap path. Focused downstream discovery/bridge tests, full
@@ -695,12 +693,21 @@ Commit 19: Add the full end-to-end scenario.
       `controller/acquireControl`, exact-thread `thread/resume`,
       `controller/releaseControl`, and `controller/signOff` successfully
       against both launches.
-    - The updated downstream mutating smoke still returned
-      `resume through controller unavailable` after both prompts were approved.
-      Because the direct Codex RPC sequence above succeeded against the same
-      fresh endpoints, the remaining live-smoke gap is currently a downstream
-      harness/bridge diagnosis item rather than a confirmed Codex
-      `thread/resume` admission or handler failure.
+    - The updated downstream mutating smoke originally returned
+      `resume through controller unavailable` after both prompts were approved
+      because the smoke blocked the main thread on a semaphore while
+      `HostSessionBridge` intentionally posts tap completion back to the main
+      run loop. A temporary diagnostic using the same bridge path and a
+      run-loop wait returned `BridgeTapResult.selected(ordinal: 0)`, proving
+      the Codex controller path was healthy.
+    - Downstream commit `df843d4`
+      (`fix(host): pump run loop during controller smoke tap`) updates the
+      smoke harness to run the main loop while waiting for tap completion.
+      After rebuilding, the actual
+      `first-vertical-slice-external-controller-smoke --application-support /private/tmp/codex-extctl-smoke-fixed.XaEmW5`
+      passed against two live debug Codex TUI launches after native approval:
+      `external-controller smoke: pass (launches: 2, exact launch-scoped route
+      persisted, resume requested and control released)`.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.
