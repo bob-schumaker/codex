@@ -266,6 +266,11 @@ fn filter_experimental_ts(out_dir: &Path) -> Result<()> {
     filter_request_ts(out_dir, "ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS)?;
     filter_request_ts(
         out_dir,
+        "ServerRequestEnvelope.ts",
+        EXPERIMENTAL_SERVER_METHODS,
+    )?;
+    filter_request_ts(
+        out_dir,
         "ServerNotification.ts",
         EXPERIMENTAL_SERVER_NOTIFICATION_METHODS,
     )?;
@@ -280,6 +285,7 @@ pub(crate) fn filter_experimental_ts_tree(tree: &mut BTreeMap<PathBuf, String>) 
     for (file_name, experimental_methods) in [
         ("ClientRequest.ts", EXPERIMENTAL_CLIENT_METHODS),
         ("ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS),
+        ("ServerRequestEnvelope.ts", EXPERIMENTAL_SERVER_METHODS),
         (
             "ServerNotification.ts",
             EXPERIMENTAL_SERVER_NOTIFICATION_METHODS,
@@ -331,7 +337,7 @@ fn filter_request_ts(out_dir: &Path, file_name: &str, experimental_methods: &[&s
 }
 
 fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]) -> String {
-    let Some((prefix, body, suffix)) = split_type_alias(&content) else {
+    let Some((type_prefix, body, type_suffix)) = split_type_alias(&content) else {
         return content;
     };
     let experimental_methods: HashSet<&str> = experimental_methods
@@ -339,7 +345,15 @@ fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]
         .copied()
         .filter(|method| !method.is_empty())
         .collect();
-    let arms = split_top_level(&body, '|');
+    let (union_prefix, union_body, union_suffix) = if let Some((prefix, union_body)) = body
+        .strip_suffix(')')
+        .and_then(|body| body.rsplit_once(" & ("))
+    {
+        (format!("{prefix} & ("), union_body, ")")
+    } else {
+        (String::new(), body.as_str(), "")
+    };
+    let arms = split_top_level(union_body, '|');
     let filtered_arms: Vec<String> = arms
         .into_iter()
         .filter(|arm| {
@@ -347,8 +361,8 @@ fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]
                 .is_none_or(|method| !experimental_methods.contains(method.as_str()))
         })
         .collect();
-    let new_body = filtered_arms.join(" | ");
-    content = format!("{prefix}{new_body}{suffix}");
+    let new_body = format!("{union_prefix}{}{union_suffix}", filtered_arms.join(" | "));
+    content = format!("{type_prefix}{new_body}{type_suffix}");
     let import_usage_scope = split_type_alias(&content)
         .map(|(_, filtered_body, _)| filtered_body)
         .unwrap_or_else(|| new_body.clone());
@@ -2184,6 +2198,19 @@ mod tests {
         )?;
         assert_eq!(server_request_ts.contains("currentTime/read"), false);
         assert_eq!(server_request_ts.contains("CurrentTimeReadParams"), false);
+        let server_request_envelope_ts = std::str::from_utf8(
+            fixture_tree
+                .get(Path::new("ServerRequestEnvelope.ts"))
+                .ok_or_else(|| anyhow::anyhow!("missing ServerRequestEnvelope.ts fixture"))?,
+        )?;
+        assert_eq!(
+            server_request_envelope_ts.contains("currentTime/read"),
+            false
+        );
+        assert_eq!(
+            server_request_envelope_ts.contains("CurrentTimeReadParams"),
+            false
+        );
         let typescript_index = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("index.ts"))
