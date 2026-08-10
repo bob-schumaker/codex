@@ -56,6 +56,17 @@
   two live debug Codex TUIs reported:
   `external-controller smoke: pass (launches: 2, exact launch-scoped route
   persisted, resume requested and control released)`.
+- Codex commit `4972b62` fixes a native approval/disconnect race found during
+  five-launch live validation: a late TUI approval for an already-disconnected
+  external-controller connection now fails with typed `transport-closing`
+  instead of granting stale controller ownership.
+- Five-launch live validation now passes in temporary Herdr workspace `w1D`
+  after rebuilding the debug Codex binary and downstream smoke. Five plain
+  `codex --no-alt-screen` TUI launches published local-controller metadata with
+  `mainThreadId`, each owning TUI approved `codex-waveshare`, and the
+  downstream all-discovered mutating smoke reported:
+  `external-controller smoke: pass (launches: 5, exact launch-scoped route
+  persisted, resume requested and control released)`.
 - The design preserves the TUI as primary input owner while allowing an approved
   controller to acquire and release control.
 - The spec corpus now states that controller discovery uses
@@ -762,9 +773,9 @@
   auto-subscribe/e2e, stale-launch cleanup, and loaded-unmaterialized
   `thread/resume` checks. New Codex work should start from a fresh, narrow
   downstream finding rather than a generic parity search.
-- Runtime validation that downstream discovery sees all live Codex launches,
-  including Herdr and non-Herdr launches, through the committed
-  watch/full-rescan path.
+- External proof closure: collect physical-device tap evidence and
+  removed-launch reconciliation evidence. Five-launch metadata discovery and
+  mutating resume validation already passed in temporary Herdr workspace `w1D`.
 
 ## Remaining
 
@@ -875,9 +886,10 @@
   Codex-side Commit 19 e2e reflection now auto-subscribes approved controllers
   to the granted main-thread listener and validates controller-owned approval
   resolution plus reflected command/turn completion over the published socket.
-- Downstream needs runtime evidence that five live Codex launches, including
-  Herdr and non-Herdr launches, are discovered and assigned/offered through the
-  watch/full-rescan path.
+- Downstream now has runtime evidence that five live plain Codex launches are
+  discovered and assigned through the metadata watch/full-rescan path in a
+  temporary Herdr workspace; mixed Herdr/non-Herdr presentation evidence is
+  optional unless product labeling/enrichment behavior depends on it.
 - Downstream mutating acceptance now has source-level and mocked-transport
   coverage in commit `7fb328f`, direct Codex RPC evidence through
   acquire/resume/release/sign-off, and live native smoke evidence through

@@ -546,8 +546,9 @@ slot-backed display.
   - avoid requiring Herdr `agent_session` or terminal metadata for discovery;
     use Herdr only for optional labels, grouping, or focus/status enrichment
 - Validation:
-  - with five live Codex launches, four under Herdr and one plain external
-    `codex`, all five are assigned or offered for assignment after discovery
+  - with five live Codex launches discovered through validated
+    local-controller metadata, all five are assigned or offered for assignment
+    after discovery without requiring Herdr `agent_session` metadata
   - a Herdr pane missing `agent_session` does not hide a validated Codex
     local-controller launch
   - restart of the controller host preserves explicit assignments and assigns
@@ -558,6 +559,12 @@ slot-backed display.
       skips duplicates, and fills free slots in launch/thread order; and
     - `BLECentral` now uses that merge operation instead of replacing the whole
       slot map from the latest inventory projection.
+  - live five-launch evidence now exists from temporary Herdr workspace `w1D`:
+    five fresh plain `codex --no-alt-screen` launches published
+    `$CODEX_HOME/local-controllers` metadata with non-null `mainThreadId`, the
+    owning TUI approval prompts were accepted, and the downstream
+    `first-vertical-slice-external-controller-smoke --all-discovered
+    --expected-launches 5` passed with five launch-scoped routes.
 
 External slice D: Resume an assigned Codex session through the active controller
 lease.
@@ -665,8 +672,8 @@ Commit 19: Add the full end-to-end scenario.
       inventory refresh on change and routes physical V7 slot taps through the
       same bridge tap path. Focused downstream discovery/bridge tests, full
       downstream tests, downstream build, and downstream pre-commit passed.
-      Five-live-launch runtime evidence and physical-device tap evidence remain
-      pending gates.
+      Five-live-launch runtime evidence is now covered by temporary Herdr
+      workspace `w1D`; physical-device tap evidence remains a pending gate.
     - Current Codex-side follow-up fixes cover two launch/runtime gaps found
       by live controller validation:
       - controller-enabled startup now prunes stale local-controller metadata
@@ -708,6 +715,33 @@ Commit 19: Add the full end-to-end scenario.
       passed against two live debug Codex TUI launches after native approval:
       `external-controller smoke: pass (launches: 2, exact launch-scoped route
       persisted, resume requested and control released)`.
+    - Codex checkpoint `4972b62`
+      (`fix(app-server): reject stale controller approvals after disconnect`)
+      fixes the native approval/disconnect race found during five-launch live
+      validation. A late approval for a closed external-controller connection
+      now fails with typed `transport-closing` instead of granting stale
+      ownership to the disconnected connection.
+    - Focused Codex validation for checkpoint `4972b62` passed with
+      `just test -p codex-app-server request_processors::controller_processor`
+      passing 3/3 tests, `just test -p codex-app-server
+      local_controller_socket_sessions_are_isolated_per_launch` passing 1/1,
+      `git diff --check`, and `cargo build -p codex-cli --bin codex`
+      rebuilding `codex-rs/target/debug/codex` in 24.34s. `pre-commit
+      run --files ...` could not run because this checkout has no
+      `.pre-commit-config.yaml`. The attempted full
+      `just test -p codex-app-server` run completed with 1257 passed, 2 flaky
+      passed on retry, 4 failed, and 1 skipped; the remaining failures were
+      outside the controller path in remote-thread-store and zsh-fork/dotslash
+      tests.
+    - After rebuilding the downstream smoke binary, temporary Herdr workspace
+      `w1D` launched five fresh plain `codex --no-alt-screen` TUI panes and a
+      smoke pane. Each owning TUI approved the native `codex-waveshare`
+      prompt, and
+      `first-vertical-slice-external-controller-smoke --application-support
+      /tmp/cdx5.kjpUTg/app-support --all-discovered --expected-launches 5`
+      passed: `external-controller smoke: pass (launches: 5, exact
+      launch-scoped route persisted, resume requested and control released)`.
+      Herdr reported the passing run at 18s.
 
 Commit 20: Remove temporary compatibility shims and duplicated routing only
 after behavioral parity is proven.

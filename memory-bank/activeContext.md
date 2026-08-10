@@ -1,7 +1,7 @@
 # Active Context
 
 - Current focus: Codex-side local-controller follow-up and downstream mutating
-  smoke validation are now reconciled.
+  smoke validation are now reconciled through five live launches.
   Approved local-controller participation now attaches the external-controller
   connection to the granted main-thread listener immediately, so controller
   actions over the normal app-server surface reflect through the same
@@ -28,9 +28,17 @@
   and fills free slots, `7fb328f` requests Codex resume through an acquired
   controller lease, `d43fcfb` watches `$CODEX_HOME/local-controllers` and
   routes physical V7 slot taps through `HostSessionBridge.handleTap`, and
-  `df843d4` fixes the mutating smoke wait. Remaining known work is
-  five-launch/non-Herdr runtime validation, physical-device tap evidence, and
-  removed-launch reconciliation evidence against the published
+  `df843d4` fixes the mutating smoke wait. Five-launch live validation then
+  exposed a Codex race where a websocket disconnect during pending native
+  participation could leave stale controller ownership after the late TUI
+  approval. Codex commit `4972b62` rejects those late approvals with typed
+  `transport-closing`. After rebuilding `codex-rs/target/debug/codex`, a fresh
+  temporary Herdr workspace `w1D` with five plain `codex --no-alt-screen` TUIs
+  passed the downstream all-discovered mutating smoke:
+  `external-controller smoke: pass (launches: 5, exact launch-scoped route
+  persisted, resume requested and control released)`. Remaining known work is
+  physical-device tap evidence and removed-launch reconciliation evidence
+  against the published
   `$CODEX_HOME/local-controllers` metadata contract.
 
 ## Current Status
@@ -848,9 +856,10 @@
     `ExternalControllerRegistryTests`, full downstream `swift test`, downstream
     `swift build`, and downstream `pre-commit run --files ...`.
 - In progress:
-  - Runtime validation that all live Codex launches, including non-Herdr
-    launches, are discovered and assigned/offered through the downstream
-    watch/full-rescan path.
+  - External proof closure: collect the remaining physical-device tap and
+    removed-launch reconciliation evidence. Five-launch metadata discovery and
+    mutating resume validation already passed in temporary Herdr workspace
+    `w1D`.
 - Not started:
   - Physical-device tap evidence against the rebuilt downstream host.
   - Removed-launch reconciliation evidence after a selected launch disappears.
@@ -861,9 +870,10 @@
   launch-availability, normal-interface admission, TUI reclaim/reflection,
   prompt, egress, subscription, or in-process recovery gap until a narrower
   downstream finding identifies one.
-- Rebuild the downstream smoke/host products because generated Swift build
-  products were removed after validation.
-- Run a runtime five-launch downstream validation that includes Herdr and
-  non-Herdr Codex launches through the watch/full-rescan path.
+- Keep the five-launch downstream validation evidence scoped accurately: the
+  current passing run used five plain Codex TUIs in Herdr panes and exercised
+  metadata discovery, native approval, acquire/resume/release, and route
+  persistence.
+- Capture physical-device tap evidence against the rebuilt downstream host.
 - Add or run removed-launch reconciliation evidence after a selected Codex
   launch disappears.
