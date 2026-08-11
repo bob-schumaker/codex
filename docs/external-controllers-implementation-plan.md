@@ -465,6 +465,33 @@ ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
     - local-controller transport coverage preserves nonce-gated metadata
       publication and existing Unix control-socket/default `unix://` behavior.
 
+Commit 18a: Publish a safe provisional launch label in local-controller
+metadata.
+
+- Scope:
+  - add optional `provisionalDisplayName` to the existing `launch-*.json`
+    payload, derived from a usable launch CWD basename and omitted otherwise
+  - keep app-server v2 methods, WebSocket/JSON-RPC payloads, TUI events, and
+    in-process interaction contracts unchanged
+  - inject the field only in the metadata-file writer; leave
+    `LocalControllerEndpointMetadata` and its in-process/public re-exports
+    unchanged, retaining the value privately only for the `mainThreadId` rewrite
+  - capture a usable CWD basename once at endpoint startup; do not re-read the
+    process CWD during later metadata writes
+- Primary files:
+  - `codex-rs/app-server-transport/src/transport/local_controller.rs`
+  - existing local-controller metadata tests
+- Validation:
+  - inspect initial `launch-*.json` for a representative CWD basename and
+    assert it contains `provisionalDisplayName` with that value while the
+    in-process metadata object retains its current shape
+  - verify an unavailable or unsafe CWD omits the field and downstream uses
+    its fallback label
+  - assert the field remains present and unchanged after the `mainThreadId`
+    rewrite
+  - `just fmt`
+  - `just test -p codex-app-server-transport local_controller`
+
 ### 8. Downstream controller-host discovery and presentation
 
 This work belongs in controller products such as Codex Waveshare rather than in
@@ -481,6 +508,8 @@ External slice A: Watch and rescan the local-controller metadata directory.
   - validate candidate `launch-*.json` records against directory privacy,
     metadata version, filename launch ID, endpoint URI, nonce-bearing socket
     path, live `processId`, and socket existence
+  - use optional `provisionalDisplayName` as the provisional launch label only
+    when it is a usable string; otherwise retain the existing fallback label
   - treat `mainThreadId: null` as a starting launch, not an offline launch
   - remove candidates from presentation only when metadata disappears, the
     process dies, the socket becomes invalid, validation fails, or Codex returns
@@ -491,6 +520,8 @@ External slice A: Watch and rescan the local-controller metadata directory.
   - kill one TUI and verify only that launch becomes offline/removed
   - verify a metadata update that fills `mainThreadId` transitions from
     `starting` to discovered without requiring a controller reconnect
+  - verify a present provisional label remains stable across that update and an
+    absent label does not suppress the existing fallback label
   - implemented checkpoint in downstream commit `508880c`
     (`fix(host): filter stale Codex controller launches`):
     - downstream `LocalControllerDiscovery` decodes `processId` and filters

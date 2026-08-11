@@ -101,6 +101,30 @@ Controllers must still treat launch discovery as an eventually consistent filesy
 
 ### Controller-side launch discovery and presentation
 
+#### Follow-up feature request: provisional launch labels
+
+Controller products need a meaningful provisional name before they attach to a
+launch and can read thread metadata. Add optional
+`provisionalDisplayName` to the existing metadata JSON payload. It is a
+presentation-only hint and must not affect endpoint discovery, launch identity,
+authorization, or control ownership. Readers that do not use it keep their
+existing fallback label. This is an optional metadata-v1 extension: readers
+must ignore unrecognized optional members and use the fallback unless this
+member is a usable string.
+
+This feature changes only the external-controller discovery metadata JSON
+payload (`launch-*.json`). It must not add or alter app-server v2 methods,
+WebSocket/JSON-RPC payloads, TUI events, or in-process interaction contracts.
+
+For the first implementation, capture the launch CWD basename when the local
+controller endpoint starts. Publish it as a display-safe hint only when it is
+non-empty UTF-8 text without control characters; otherwise omit the field.
+Preserve the captured value when metadata is updated with `mainThreadId`.
+Title-derived labels are deferred until a strong downstream need exists.
+
+The implementation must test initial metadata publication and the later
+`mainThreadId` update.
+
 The local-controller metadata directory is the launch-discovery contract for controller products. Generic Codex lifecycle hooks such as `SessionStart` are not controller-inventory hooks: they run inside an agent/thread workflow, are subject to hook configuration and trust policy, and do not publish the per-launch socket, nonce, process ID, or immutable main-thread binding as their contract. The app-server `fs/watch` API is also not a bootstrap mechanism because a controller must already have chosen and connected to a launch before it can call any app-server RPC.
 
 A controller that wants to maintain a live inventory should watch `$CODEX_HOME/local-controllers` with the host operating system's file-watch facility and perform a full directory rescan after every create, modify, delete, or overflow event. Polling is acceptable as a fallback; the authoritative operation is always a rescan of the directory, not trusting an individual watch event. The controller treats `launch-*.json` files as candidates only after validating the owner-private directory/file/socket invariants, metadata version, filename launch ID, endpoint URI, and nonce-bearing socket path. It must ignore or remove from presentation any candidate whose `processId` is no longer live, whose socket is missing or invalid, or whose metadata fails validation. A candidate with `mainThreadId: null` is a starting launch, not an offline launch; it should remain pending until metadata is updated or the process exits.
