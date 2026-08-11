@@ -101,26 +101,22 @@ Controllers must still treat launch discovery as an eventually consistent filesy
 
 ### Controller-side launch discovery and presentation
 
-#### Follow-up feature request: provisional launch labels
+#### Follow-up feature request: session working directory
 
-Controller products need a meaningful provisional name before they attach to a
-launch and can read thread metadata. Add optional
-`provisionalDisplayName` to the existing metadata JSON payload. It is a
-presentation-only hint and must not affect endpoint discovery, launch identity,
-authorization, or control ownership. Readers that do not use it keep their
-existing fallback label. This is an optional metadata-v1 extension: readers
-must ignore unrecognized optional members and use the fallback unless this
-member is a usable string.
+Controller products need the session working directory before they attach to a
+launch and can read thread metadata. Add optional `sessionWorkingDirectory` to
+the existing metadata JSON payload. It is launch metadata only and must not
+affect endpoint discovery, launch identity, authorization, or control
+ownership. This is an optional metadata-v1 extension: readers must ignore
+unrecognized optional members.
 
 This feature changes only the external-controller discovery metadata JSON
 payload (`launch-*.json`). It must not add or alter app-server v2 methods,
 WebSocket/JSON-RPC payloads, TUI events, or in-process interaction contracts.
 
-For the first implementation, capture the launch CWD basename when the local
-controller endpoint starts. Publish it as a display-safe hint only when it is
-non-empty UTF-8 text without control characters; otherwise omit the field.
-Preserve the captured value when metadata is updated with `mainThreadId`.
-Title-derived labels are deferred until a strong downstream need exists.
+Capture the full launch CWD when the local controller endpoint starts. Publish
+it when it is valid UTF-8; otherwise omit the field. Preserve the captured
+value when metadata is updated with `mainThreadId`.
 
 The implementation must test initial metadata publication and the later
 `mainThreadId` update.

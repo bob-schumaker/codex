@@ -55,7 +55,7 @@ async fn publish_metadata_creates_private_directory_and_owner_only_regular_file(
     assert!(
         read_metadata_payload(paths.metadata_path.as_path())
             .await
-            .get("provisionalDisplayName")
+            .get("sessionWorkingDirectory")
             .is_none()
     );
     let metadata_file_type = tokio::fs::symlink_metadata(paths.metadata_path.as_path())
@@ -313,9 +313,9 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
     .expect("local-controller acceptor should start");
     let paths = local_controller_endpoint_paths(temp_dir.path(), &handle.metadata().launch_id)
         .expect("paths should resolve");
-    let expected_display_name =
-        provisional_display_name_from_cwd(std::env::current_dir().ok().as_deref())
-            .expect("test CWD should have a usable basename");
+    let expected_working_directory =
+        session_working_directory_from_cwd(std::env::current_dir().ok().as_deref())
+            .expect("test CWD should be valid UTF-8");
 
     assert_eq!(
         read_metadata(paths.metadata_path.as_path())
@@ -326,9 +326,9 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
     assert_eq!(
         read_metadata_payload(paths.metadata_path.as_path())
             .await
-            .get("provisionalDisplayName")
+            .get("sessionWorkingDirectory")
             .and_then(serde_json::Value::as_str),
-        Some(expected_display_name.as_str())
+        Some(expected_working_directory.as_str())
     );
 
     handle
@@ -347,9 +347,9 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
     assert_eq!(
         read_metadata_payload(paths.metadata_path.as_path())
             .await
-            .get("provisionalDisplayName")
+            .get("sessionWorkingDirectory")
             .and_then(serde_json::Value::as_str),
-        Some(expected_display_name.as_str())
+        Some(expected_working_directory.as_str())
     );
 
     handle
@@ -591,16 +591,19 @@ async fn read_metadata_payload(path: &Path) -> serde_json::Value {
 }
 
 #[test]
-fn provisional_display_name_omits_unusable_cwds() {
-    assert_eq!(provisional_display_name_from_cwd(None), None);
-    assert_eq!(
-        provisional_display_name_from_cwd(Some(Path::new("/"))),
-        None
-    );
-    assert_eq!(
-        provisional_display_name_from_cwd(Some(Path::new("project/unsafe\u{7}"))),
-        None
-    );
+fn session_working_directory_omits_unavailable_or_non_utf8_cwds() {
+    assert_eq!(session_working_directory_from_cwd(None), None);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        let non_utf8_cwd = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
+        assert_eq!(
+            session_working_directory_from_cwd(Some(&non_utf8_cwd)),
+            None
+        );
+    }
 }
 
 #[cfg(unix)]

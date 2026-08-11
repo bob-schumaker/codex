@@ -96,7 +96,7 @@ struct LocalControllerEndpointMetadataPayload<'a> {
     #[serde(flatten)]
     metadata: &'a LocalControllerEndpointMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
-    provisional_display_name: Option<&'a str>,
+    session_working_directory: Option<&'a str>,
 }
 
 impl LocalControllerEndpointMetadata {
@@ -160,7 +160,7 @@ impl Drop for LocalControllerEndpointGuard {
 pub struct LocalControllerEndpointHandle {
     codex_home: AbsolutePathBuf,
     metadata: LocalControllerEndpointMetadata,
-    provisional_display_name: Option<String>,
+    session_working_directory: Option<String>,
     socket_path: AbsolutePathBuf,
     shutdown_token: CancellationToken,
     accept_handle: Option<JoinHandle<()>>,
@@ -196,7 +196,7 @@ impl LocalControllerEndpointHandle {
         write_local_controller_metadata(
             self.codex_home.as_path(),
             &metadata,
-            self.provisional_display_name.as_deref(),
+            self.session_working_directory.as_deref(),
         )
         .await?;
         self.metadata = metadata;
@@ -264,7 +264,7 @@ pub async fn start_local_controller_acceptor(
 ) -> io::Result<LocalControllerEndpointHandle> {
     ensure_local_controller_endpoint_available(local_controller_endpoint_support())?;
     let cwd = std::env::current_dir().ok();
-    let provisional_display_name = provisional_display_name_from_cwd(cwd.as_deref());
+    let session_working_directory = session_working_directory_from_cwd(cwd.as_deref());
     prune_stale_local_controller_endpoints(codex_home).await;
 
     let metadata = LocalControllerEndpointMetadata::new(codex_home, main_thread_id)?;
@@ -276,10 +276,10 @@ pub async fn start_local_controller_acceptor(
     };
     set_socket_permissions(socket_guard.socket_path.as_path()).await?;
 
-    let metadata_guard = match publish_local_controller_metadata_with_display_name(
+    let metadata_guard = match publish_local_controller_metadata_with_working_directory(
         codex_home,
         &metadata,
-        provisional_display_name.as_deref(),
+        session_working_directory.as_deref(),
     )
     .await
     {
@@ -310,7 +310,7 @@ pub async fn start_local_controller_acceptor(
     Ok(LocalControllerEndpointHandle {
         codex_home: absolute_path(codex_home.to_path_buf())?,
         metadata,
-        provisional_display_name,
+        session_working_directory,
         socket_path: paths.socket_path,
         shutdown_token: endpoint_shutdown_token,
         accept_handle: Some(accept_handle),
@@ -333,25 +333,24 @@ fn local_controller_unavailable_error(reason: LocalControllerUnavailableReason) 
     io::Error::new(ErrorKind::Unsupported, reason.message())
 }
 
-fn provisional_display_name_from_cwd(cwd: Option<&Path>) -> Option<String> {
-    let basename = cwd?.file_name()?.to_str()?;
-    (!basename.is_empty() && !basename.chars().any(char::is_control)).then(|| basename.to_string())
+fn session_working_directory_from_cwd(cwd: Option<&Path>) -> Option<String> {
+    cwd?.to_str().map(str::to_owned)
 }
 
 pub async fn publish_local_controller_metadata(
     codex_home: &Path,
     metadata: &LocalControllerEndpointMetadata,
 ) -> io::Result<LocalControllerEndpointGuard> {
-    publish_local_controller_metadata_with_display_name(codex_home, metadata, None).await
+    publish_local_controller_metadata_with_working_directory(codex_home, metadata, None).await
 }
 
-async fn publish_local_controller_metadata_with_display_name(
+async fn publish_local_controller_metadata_with_working_directory(
     codex_home: &Path,
     metadata: &LocalControllerEndpointMetadata,
-    provisional_display_name: Option<&str>,
+    session_working_directory: Option<&str>,
 ) -> io::Result<LocalControllerEndpointGuard> {
     let metadata_path =
-        write_local_controller_metadata(codex_home, metadata, provisional_display_name).await?;
+        write_local_controller_metadata(codex_home, metadata, session_working_directory).await?;
 
     Ok(LocalControllerEndpointGuard {
         metadata_path,
@@ -363,7 +362,7 @@ async fn publish_local_controller_metadata_with_display_name(
 async fn write_local_controller_metadata(
     codex_home: &Path,
     metadata: &LocalControllerEndpointMetadata,
-    provisional_display_name: Option<&str>,
+    session_working_directory: Option<&str>,
 ) -> io::Result<AbsolutePathBuf> {
     let paths = local_controller_endpoint_paths(codex_home, &metadata.launch_id)?;
     codex_uds::prepare_private_socket_directory(paths.directory.as_path()).await?;
@@ -375,7 +374,7 @@ async fn write_local_controller_metadata(
         .join(format!(".{}.tmp", Uuid::now_v7()));
     let payload = LocalControllerEndpointMetadataPayload {
         metadata,
-        provisional_display_name,
+        session_working_directory,
     };
     let mut payload = serde_json::to_vec_pretty(&payload).map_err(io::Error::other)?;
     payload.push(b'\n');
