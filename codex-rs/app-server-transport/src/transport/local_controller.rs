@@ -92,12 +92,14 @@ pub struct LocalControllerEndpointMetadata {
 
 impl LocalControllerEndpointMetadata {
     pub fn new(codex_home: &Path, main_thread_id: Option<String>) -> io::Result<Self> {
-        let launch_id = new_local_controller_launch_id();
+        let launch_id = Uuid::now_v7().to_string();
         let paths = local_controller_endpoint_paths(codex_home, &launch_id)?;
+        let mut launch_nonce_bytes = [0_u8; 32];
+        rand::rng().fill_bytes(&mut launch_nonce_bytes);
         Ok(Self {
             version: LOCAL_CONTROLLER_METADATA_VERSION,
             launch_id,
-            launch_nonce: new_local_controller_launch_nonce(),
+            launch_nonce: URL_SAFE_NO_PAD.encode(launch_nonce_bytes),
             endpoint_uri: format!("unix://{}", paths.socket_path.display()),
             process_id: std::process::id(),
             created_at: now_unix_seconds(),
@@ -208,16 +210,6 @@ impl Drop for LocalControllerEndpointHandle {
             accept_handle.abort();
         }
     }
-}
-
-pub fn new_local_controller_launch_id() -> String {
-    Uuid::now_v7().to_string()
-}
-
-pub fn new_local_controller_launch_nonce() -> String {
-    let mut bytes = [0_u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub fn local_controller_endpoint_paths(
