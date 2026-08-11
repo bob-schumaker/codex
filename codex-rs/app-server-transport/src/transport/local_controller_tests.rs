@@ -52,6 +52,12 @@ async fn publish_metadata_creates_private_directory_and_owner_only_regular_file(
 
     let stored = read_metadata(paths.metadata_path.as_path()).await;
     assert_eq!(stored, metadata);
+    assert!(
+        read_metadata_payload(paths.metadata_path.as_path())
+            .await
+            .get("provisionalDisplayName")
+            .is_none()
+    );
     let metadata_file_type = tokio::fs::symlink_metadata(paths.metadata_path.as_path())
         .await
         .expect("metadata file should exist")
@@ -307,12 +313,22 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
     .expect("local-controller acceptor should start");
     let paths = local_controller_endpoint_paths(temp_dir.path(), &handle.metadata().launch_id)
         .expect("paths should resolve");
+    let expected_display_name =
+        provisional_display_name_from_cwd(std::env::current_dir().ok().as_deref())
+            .expect("test CWD should have a usable basename");
 
     assert_eq!(
         read_metadata(paths.metadata_path.as_path())
             .await
             .main_thread_id,
         None
+    );
+    assert_eq!(
+        read_metadata_payload(paths.metadata_path.as_path())
+            .await
+            .get("provisionalDisplayName")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_display_name.as_str())
     );
 
     handle
@@ -327,6 +343,13 @@ async fn local_controller_acceptor_republishes_metadata_with_main_thread_id() {
     assert_eq!(
         read_metadata(paths.metadata_path.as_path()).await,
         handle.metadata().clone()
+    );
+    assert_eq!(
+        read_metadata_payload(paths.metadata_path.as_path())
+            .await
+            .get("provisionalDisplayName")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_display_name.as_str())
     );
 
     handle
@@ -560,6 +583,24 @@ async fn write_metadata(path: &Path, metadata: &LocalControllerEndpointMetadata)
 async fn read_metadata(path: &Path) -> LocalControllerEndpointMetadata {
     serde_json::from_slice(&tokio::fs::read(path).await.expect("metadata should read"))
         .expect("metadata should deserialize")
+}
+
+async fn read_metadata_payload(path: &Path) -> serde_json::Value {
+    serde_json::from_slice(&tokio::fs::read(path).await.expect("metadata should read"))
+        .expect("metadata payload should deserialize")
+}
+
+#[test]
+fn provisional_display_name_omits_unusable_cwds() {
+    assert_eq!(provisional_display_name_from_cwd(None), None);
+    assert_eq!(
+        provisional_display_name_from_cwd(Some(Path::new("/"))),
+        None
+    );
+    assert_eq!(
+        provisional_display_name_from_cwd(Some(Path::new("project/unsafe\u{7}"))),
+        None
+    );
 }
 
 #[cfg(unix)]
