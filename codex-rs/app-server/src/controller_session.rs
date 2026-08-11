@@ -783,7 +783,6 @@ impl ControllerSessionCoordinator {
 
     fn transfer_to_tui_owned_after(&mut self, owner_epoch: u64) {
         let owner_epoch = owner_epoch + 1;
-        self.set_owner(InteractiveOwner::TransferPending { owner_epoch });
         self.set_owner(InteractiveOwner::TuiOwned { owner_epoch });
     }
 
