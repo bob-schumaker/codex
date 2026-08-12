@@ -21,6 +21,145 @@ The design has two goals:
 - Starting a second app-server runtime for a controller.
 - Making the socket a network or cross-user API.
 - Letting a controller receive TUI prompts, approvals, or user-input requests without explicit transfer of input ownership.
+
+## Feature request: transfer an already-delivered pending prompt to the active controller
+
+### Problem observed in live downstream validation
+
+An external controller can successfully acquire a TUI main-thread lease and
+resolve an approval that is created while that controller owns the thread. This
+has been verified end to end with a raw local-controller client: acquire the
+exact temporary launch, start a command requiring approval, receive
+`item/commandExecution/requestApproval`, reply `{"decision":"accept"}`, and
+release the lease.
+
+The corresponding human workflow still fails when Codex created and delivered
+the approval to the TUI before the external controller acquired control. The
+controller obtains the lease but receives no pending server request, so its
+explicit affirmative action cannot resolve the TUI-visible prompt. A downstream
+device controller consequently waits for the request until its bounded timeout,
+then reports failure while the original TUI remains at the approval UI.
+
+The present implementation explains the distinction: pending-request rebinding
+only selects entries for which `has_external_delivery_or_started_write()` is
+false. A request that has already been delivered to the TUI is therefore not
+eligible for the ownership handoff described below, even after the controller
+becomes the active interactive owner.
+
+### Requested behavior
+
+Implement the explicit-transfer case already intended by this specification:
+when an authorized controller successfully acquires `interactive-control` for
+the main thread, every still-`pending` eligible thread-scoped request must be
+atomically rebound from the TUI to that controller, even when the TUI
+previously received it. This is not concurrent authorized delivery: the
+earlier TUI delivery becomes stale, and each committed transfer epoch produces
+at most one additional controller redelivery.
+
+The eligible protocol variants are `CommandExecutionRequestApproval`,
+`FileChangeRequestApproval`, `PermissionsRequestApproval`, and
+`ToolRequestUserInput`. `McpServerElicitationRequest`, `DynamicToolCall`,
+`ChatgptAuthTokensRefresh`, `AttestationGenerate`, `CurrentTimeRead`,
+`ApplyPatchApproval`, and `ExecCommandApproval` are out of scope until their
+interaction and ownership semantics are specified separately. Process-wide and
+otherwise non-thread-scoped requests remain TUI-only.
+
+The handoff must use the existing per-thread transition barrier and be
+linearized as follows:
+
+1. At one per-thread snapshot/linearization point that covers both the
+   interactive owner and pending-request bindings, select every eligible,
+   still-`pending` request for the granted main thread. Requests resolved,
+   cancelled, or superseded before that point are skipped; the remaining batch
+   transfers together.
+2. Advance/record the interactive-owner epoch, commit controller ownership,
+   invalidate the TUI recipient bindings and all TUI reply permits for every
+   selected request, and bind each original server-request ID to the acquiring
+   controller connection and owner epoch. No response authorization or
+   ownership reclaim may observe the new owner with an old binding still valid.
+3. Before releasing the transition barrier, publish the existing sequenced
+   in-process ownership update. While the owner is external, the TUI disables
+   local action affordances for every still-pending eligible prompt in that
+   thread and visibly marks it as remotely controlled (for example, "Awaiting
+   external controller") without pretending it was resolved. Recipient-binding
+   authorization remains authoritative if this display update is delayed, lost,
+   or processed out of order.
+4. After the transfer commit, enqueue at most one redelivery per selected
+   request to the controller. Each queued controller write carries the prompt
+   binding and owner epoch and checks its revocable write permit immediately
+   before writing. Reclaim/revocation atomically revokes that permit and
+   tombstones stale queued envelopes.
+5. Look up every reply by the original request ID and receiving connection, then
+   check the server-stored prompt binding and owner epoch; unchanged response
+   payloads do not carry these fields. Unknown, consumed, or nonmatching
+   bindings are rejected. A former TUI recipient receives the equivalent typed
+   in-process `stale-ownership` rejection; an external controller receives the
+   normal JSON-RPC typed controller error whose `ControllerErrorData.code` is
+   `stale-ownership` if its reply loses a transfer or reclaim race. A response
+   to a transferred prompt must not invoke
+   the normal TUI-input reclaim path: only a separate thread-affecting TUI
+   action may reclaim ownership, and that reclaim must first invalidate the
+   controller binding under the same transfer critical section.
+
+If the controller disconnects, signs off, is revoked, expires, or encounters
+controller-redelivery failure, the runtime must rebind the still-pending prompt
+to the viable TUI recipient under the same critical section. A redelivery is
+successfully enqueued only after it carries that fence. `write_started` means
+the frame may be externally disclosed, while `write_completed` records
+successful frame completion; neither is a recovery cutoff. Any enqueue, write,
+or connection-closed failure triggers serialized TUI recovery.
+After a write starts, recovery and an in-flight controller reply race by
+atomically consuming the same binding and epoch: if the reply wins it resolves
+the prompt; otherwise the reply gets the applicable typed `stale-ownership`
+rejection and recovery proceeds. A successful recovery may redeliver the
+still-pending original request to the TUI. If no viable TUI recipient exists or
+that redelivery fails, the coordinator cancels/fails the prompt and enters or
+retains terminal `TuiUnavailable`; it never leaves a pending prompt owned by a
+dead controller. This is a sequential
+ownership transfer, not simultaneous delivery to two authorized resolvers. A
+later reacquisition after recovery is a new epoch and can produce one new
+controller redelivery. It must never silently resolve, discard, or leave the
+prompt owned by a dead controller.
+Persistent approval decisions remain forbidden for a controller-owned prompt;
+only the existing non-persistent decisions are valid.
+
+### Why this is required
+
+This preserves the ownership safety model while making a physical controller a
+usable explicit input method. The device cannot know whether a TUI created the
+prompt before a human tapped it. Once the human explicitly transfers input to
+the controller, they need a safe way to make the same affirmative decision
+there. Requiring the controller to have originated the command is not a
+workable interaction contract for status/control hardware.
+
+### Acceptance criteria
+
+- A TUI-originated command approval is shown in the TUI; an approved external
+  controller acquires control without any new TUI mutation; at most one
+  additional copy of the original approval is delivered to the controller per
+  transfer epoch, the TUI marks it
+  remotely controlled, and the controller's `accept` resolves the original
+  command.
+- The equivalent file-change and user-input requests transfer with their
+  original request IDs and normal response shapes; permissions approvals are
+  covered as well. MCP elicitation and dynamic-tool calls remain TUI-only.
+- Competing TUI and controller replies produce exactly one successful resolution
+  and one transport-appropriate stale-ownership rejection; no double execution
+  is possible. A controller reply racing a non-response TUI reclaim either
+  resolves before reclaim or is stale after it; in the latter case the prompt is
+  TUI-actionable rather than spuriously resolved.
+- A disconnect, explicit sign-off, lease expiry, controller egress failure, or
+  controller redelivery failure restores the pending prompt to the TUI and
+  leaves it locally actionable, with recovery serialized against an in-flight
+  controller reply. If the TUI is unavailable or cannot accept recovery, the
+  prompt instead fails terminally and the launch enters or retains
+  `TuiUnavailable`.
+- An already resolved, cancelled, or no-longer-thread-scoped request is never
+  replayed; acquiring control does not create duplicate prompt notifications.
+- Integration coverage exercises this through the public local-controller
+  WebSocket protocol with a live in-process TUI, not only by calling internal
+  rebinding helpers. Use deterministic test-only barriers for the transfer/reply
+  and recovery/reply races so those assertions do not depend on timing.
 - Reusing or changing the existing app-server remote-control service. Local external controllers are a separate transport origin and never enroll in, publish to, or inherit lifecycle from remote control.
 
 ## Scope
@@ -173,7 +312,7 @@ An approved controller sees the same app-server v2 interface as the TUI's synthe
 
 The converse is also required: controller-originated work is visible to the TUI through the same app-server event types and state transitions as TUI-originated work. The TUI must remain an up-to-date display/control surface while it is not the input owner.
 
-The authorization gate applies that normal interface to the TUI main thread. A controller may use normal reads and subscriptions for that thread and receives the same data the TUI would receive. `thread/list` is filtered to the main thread, and a different target has the normal non-enumerating not-found behavior. Cursors, subscriptions, resume tokens, and implicit targets are bound server-side to the main thread and `ConnectionId`; any continuation resolving elsewhere is denied. It may perform every existing thread-scoped operation the TUI connection may perform for the main thread while it owns it, and it receives that thread's approvals and user-input requests. Process-wide and non-thread-scoped server requests remain TUI-only. Thread-affecting TUI operations are always primary: when one targets the controller-owned main thread, admission first invalidates that controller's active input lease and transfers the thread to `TuiOwned`, then admits the TUI input. Reclaiming input means a TUI-originated thread-affecting operation: submit/resume/cancel/interrupt, approval or user-input response, slash command that mutates the main thread, or composer text accepted as a pending user turn. Pure display actions such as scrolling, focus changes, pane navigation, and draft text editing without submission do not reclaim control. The controller remains connected with standing authorization and can later call `controller/acquireControl`; it cannot send thread mutations or resolve prompts until then.
+The authorization gate applies that normal interface to the TUI main thread. A controller may use normal reads and subscriptions for that thread and receives the same data the TUI would receive. `thread/list` is filtered to the main thread, and a different target has the normal non-enumerating not-found behavior. Cursors, subscriptions, resume tokens, and implicit targets are bound server-side to the main thread and `ConnectionId`; any continuation resolving elsewhere is denied. It may perform every existing thread-scoped operation the TUI connection may perform for the main thread while it owns it, and it receives that thread's approvals and user-input requests. Process-wide and non-thread-scoped server requests remain TUI-only. Thread-affecting TUI operations are always primary: when one targets the controller-owned main thread, admission first invalidates that controller's active input lease and transfers the thread to `TuiOwned`, then admits the TUI input. Reclaiming input means a TUI-originated thread-affecting operation: submit/resume/cancel/interrupt, a slash command that mutates the main thread, or composer text accepted as a pending user turn. An approval or user-input response first checks that prompt's current recipient binding: a response to a still-pending controller-transferred prompt fails `stale-ownership` and does not reclaim; a separate thread-affecting TUI operation may reclaim before resolving a subsequently TUI-bound prompt. Pure display actions such as scrolling, focus changes, pane navigation, and draft text editing without submission do not reclaim control. The controller remains connected with standing authorization and can later call `controller/acquireControl`; it cannot send thread mutations or resolve prompts until then.
 
 ### Control ownership
 
@@ -197,9 +336,9 @@ Approval decisions are responses to server-to-client requests, not new client RP
 
 Controller input and mutation requests are eligible only while the controller is the current `InteractiveOwner`. Thread-affecting TUI input is always eligible and atomically reclaims an owned thread before it is scheduled, so it wins any acquire-versus-input race at the coordinator's linearization point. Display-only TUI interactions do not enter this scheduler and do not reclaim ownership. Priority is applied at dequeue boundaries only for concurrently admissible non-interactive work, such as reads and subscriptions. Those requests are FIFO within the TUI and controller classes. TUI work wins the next dequeue when both classes are eligible, but after eight consecutive eligible TUI dequeues the coordinator must run one valid controller request. This bound does not override TUI input reclamation, ownership, revocation, expiry, or a serialization lock held by in-flight work.
 
-Every approval or input request is atomically bound at creation to one owner connection and ownership epoch. Inbound responses, revocation/disconnect, and redelivery are all serialized through the per-thread coordinator: exactly one wins, and the loser receives a deterministic stale-ownership error. A new binding cannot be delivered until the old binding is invalidated.
+Every approval or input request is atomically bound at creation to one owner connection and ownership epoch. Inbound responses atomically consume that binding; revocation/disconnect/reclaim and redelivery are serialized through the per-thread coordinator: exactly one wins. A losing reply receives a deterministic transport-appropriate `stale-ownership` rejection; a losing recovery observes that the prompt is already resolved. A new binding cannot be delivered until the old binding is invalidated and all queued egress under it is fenced.
 
-Interactive handoff enters `TransferPending` behind an atomic transition barrier. At one per-thread sequence point it invalidates the old prompt binding, sets the new owner/epoch, commits local ownership, admits a pending TUI input if applicable, then enqueues prompt redelivery and publishes the ownership/state bundle in that order. The TUI reclaim never waits for a UI egress queue; if its local reducer cannot accept the bundle, the runtime enters terminal `TuiUnavailable` and closes the launch. Prompts have coordinator-owned `pending`, `resolved`, or `cancelled` state and are rechecked at delivery dequeue; only `pending` prompts are redelivered. A controller-bound prompt crosses the `externalDelivery` boundary only after the egress item passes immediate pre-write revalidation for connection, owner epoch, and prompt binding and the WebSocket writer successfully writes the frame. Enqueue success only reserves delivery capacity. If enqueue fails, pre-write revalidation fails, or the socket write fails before `externalDelivery` is recorded, the coordinator records a terminal transport result for that controller path, runs the disconnect or stale-egress handling required by the failure, and rebinds the still-pending prompt to the TUI before any later resolver can act on it. If ownership changes after `externalDelivery`, the prompt is not redelivered merely because of that later revocation; any later controller reply is accepted or rejected by the original request ID, recipient `ConnectionId`, prompt binding, and interactive-owner epoch. Committed controller progress/results remain in the canonical `threadSequence`; only stale prompt/control deliveries and replies are discarded. Terminal revocation cancels subscriptions/cursors and fences queued controller egress before emitting its change notification. The TUI event stream is lossless to its reserved queue; overflow marks the thread desynchronized and obtains an atomic snapshot-at-sequence containing thread state, `InteractiveOwner`, owner epoch, prompt bindings, and `lastSequence`. The reducer replaces state at that sequence, drops buffered events at or below it, applies later events exactly once, and enters terminal `TuiUnavailable` if recovery fails. Normal TUI shutdown closes the runtime.
+Interactive handoff enters `TransferPending` behind an atomic transition barrier. At one per-thread sequence point it invalidates the old prompt binding, sets the new owner/epoch, commits local ownership, admits a pending TUI input if applicable, assigns and publishes the ownership/state bundle, then enqueues prompt redelivery in that order. The TUI reclaim never waits for a UI egress queue; if its local reducer cannot accept the bundle, the runtime enters terminal `TuiUnavailable` and closes the launch. Prompts have coordinator-owned `pending`, `resolved`, or `cancelled` state and are rechecked at delivery dequeue; only `pending` prompts are redelivered. `write_started` means a controller frame may have been disclosed; `write_completed` records `externalDelivery` after the WebSocket writer successfully writes the frame. Enqueue success only reserves delivery capacity. Neither delivery state is a recovery cutoff: when controller ownership is lost or controller egress fails, the coordinator atomically invalidates the controller binding and rebinds a still-pending prompt to the viable TUI before any later resolver can act. An old controller reply then resolves only if it consumed the binding first; otherwise it is stale. If no viable TUI recipient exists or TUI redelivery fails, the coordinator cancels/fails the prompt and enters or retains terminal `TuiUnavailable`. Committed controller progress/results remain in the canonical `threadSequence`; only stale prompt/control deliveries and replies are discarded. Terminal revocation cancels subscriptions/cursors and fences queued controller egress before emitting its change notification. The TUI event stream is lossless to its reserved queue; overflow marks the thread desynchronized and obtains an atomic snapshot-at-sequence containing thread state, `InteractiveOwner`, owner epoch, prompt bindings, and `lastSequence`. The reducer replaces state at that sequence, drops buffered events at or below it, applies later events exactly once, and enters terminal `TuiUnavailable` if recovery fails. Normal TUI shutdown closes the runtime.
 
 An approved controller may call experimental `controller/signOff` to relinquish its controller session. Sign-off and unexpected socket disconnect use the same revocation path: invalidate every connection-bound lease, reject queued controller work, restore prompt ownership to the TUI, and emit a typed in-process TUI ownership-status event containing main thread ID, owner, owner epoch, and reason. For sign-off, the connection teardown barrier rejects new ingress, lets already-admitted requests receive their normal response or one `transport-closing` result, fences controller egress, flushes only the sign-off response, then closes the socket. Any later operation requires a new connection and enrollment.
 
@@ -285,7 +424,7 @@ External ingress is quota-limited per connection before shared runtime admission
 - Schema/golden tests cover every controller response, error, and notification; deterministic tests cover acquire-versus-TUI-input, prompt rebinding, and terminal-revocation egress fencing.
 - Participation rejection, `controller/signOff`, and unexpected disconnect revoke every connection-bound lease and restore TUI prompt ownership.
 - Saturated normal controller ingress returns `-32001` with typed overload data; a slow, saturated, or disconnected controller cannot block the TUI or prevent controller participation, acquire, release, or sign-off requests from using their separate bounded control-plane ingress.
-- Controller prompt `externalDelivery` is recorded only after pre-write validation succeeds and the WebSocket writer successfully writes the frame. Enqueue failure, stale pre-write validation, or write failure before `externalDelivery` records a terminal controller-path result and rebinds the still-pending prompt to the TUI before any controller resolver can act. Revocation after `externalDelivery` does not redeliver the prompt; the later resolver path accepts or rejects by request ID, recipient connection, prompt binding, and owner epoch.
+- Controller prompt `externalDelivery` is recorded after successful frame completion, while a begun write is treated as potentially disclosed. Neither state prevents recovery: enqueue/write failure, release, reclaim, expiry, revocation, disconnect, and sign-off atomically fence the controller binding and recover a still-pending eligible prompt to the viable TUI. The old controller reply resolves only if it already consumed the binding; otherwise it is stale. If TUI recovery is unavailable or fails, the prompt fails terminally and the launch enters or retains `TuiUnavailable`.
 - The authorization gate is ready before any endpoint accepts connections; every controller is default-denied from its first byte.
 - The public experimental surface enumerates canonical error codes for pre-participation denial, enrollment denial, main-thread readiness/closure, TUI unavailability, ownership conflicts, stale ownership, forbidden controller decisions, transport teardown, target mismatch, expiry, and overload, with typed retryability data.
 - Unix-socket and Windows local-endpoint creation, validation, peer verification, nonce handshake, and cleanup reject foreign resources and do not delete a live launch's endpoint.
@@ -483,7 +622,7 @@ Recorded build and validation evidence:
 | `git diff --check` | Passed after the controller-visible state lossless-delivery source slice. | Subsecond. |
 | `just fmt` | Passed after the controller prompt egress-fencing slice. | Final shell wall time was 6.610s. |
 | `just test -p codex-app-server-transport outgoing_message` | Passed: 4 test runs, 4 passed, 157 skipped. This covers controller write permits, revoked pre-write permits, and begin-write marking for queued external-controller egress. | Compile reported 6.14s; nextest reported 0.061s. |
-| `just test -p codex-app-server outgoing_message in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller` | Passed: 131 test runs, 131 passed, 1118 skipped. This covers pre-`externalDelivery` prompt rebind, fallback after a controller write begins and then fails, no automatic TUI redelivery after external delivery or write-begin, controller prompt reclaim semantics, and native local-controller TUI reclaim behavior. | Compile reported 27.69s; nextest reported 27.903s. |
+| `just test -p codex-app-server outgoing_message in_process::tests::local_controller_socket_uses_main_thread_interface_and_tui_reclaim controller` | Historical result: passed before the pending-prompt transfer request. Its assertion of no automatic TUI redelivery after external delivery or write-begin is superseded by this feature request and must be replaced with post-delivery recovery coverage. | Compile reported 27.69s; nextest reported 27.903s. |
 | `just test -p codex-app-server-transport` | Passed: 161 test runs, 161 passed, 0 skipped. This covers the changed transport crate across stdio, websocket, remote-control, local-controller, and Unix-socket transport tests. | Compile reported 1.02s; nextest reported 9.481s. |
 | `just fix -p codex-app-server-transport` | Passed after the controller prompt egress-fencing slice. | Cargo reported 4.63s. |
 | `just fix -p codex-app-server` | Passed after the controller prompt egress-fencing slice. It rewrote unrelated `config_manager_service.rs` and `turn_start_zsh_fork.rs` hunks; those were reviewed and reverted so the source commit stayed scoped. | Cargo reported 35.10s. |

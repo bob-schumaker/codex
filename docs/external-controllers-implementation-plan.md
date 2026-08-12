@@ -175,6 +175,11 @@ connections.
 - Primary files:
   - new controller request processor under `codex-rs/app-server/src/request_processors/`
   - `codex-rs/app-server/src/message_processor.rs`
+- Interim boundary:
+  - until Commit 10 lands the prompt binding and response gate, eligible prompt
+    creation/delivery and responses remain TUI-only even when a controller has
+    an active lease; no controller-owned prompt may exist without its request
+    ID, recipient connection, and owner epoch binding
 - Validation:
   - JSON-RPC integration tests for pre-participation denial, experimental opt-in
     gating, enrollment rejection, approved session, `activeLease: null`,
@@ -223,76 +228,93 @@ Commit 9: Add priority and stale-epoch behavior around serialized requests.
 Commit 10: Add prompt owner binding and controller prompt decision rules.
 
 - Scope:
-  - prompt binding by request ID, recipient `ConnectionId`, prompt binding, and
-    owner epoch
-  - reject controller `acceptForSession`
+  - bind eligible thread-scoped prompt variants by original request ID,
+    recipient `ConnectionId`, and owner epoch
+  - include `CommandExecutionRequestApproval`, `FileChangeRequestApproval`,
+    `PermissionsRequestApproval`, and `ToolRequestUserInput`; keep MCP
+    elicitation, dynamic-tool, auth, attestation, time, patch, and legacy exec
+    requests out of this transfer slice
+  - authorize responses by server-stored `(request ID, receiving connection,
+    owner epoch)` rather than changing existing response payloads
+  - map stale responses to typed in-process rejection for the TUI and the
+    existing JSON-RPC `ControllerErrorData.code: stale-ownership` for external
+    controllers
+  - reject every controller decision that outlives its lease: `acceptForSession`,
+    exec-policy amendments, network-policy amendments, and session-scoped
+    permission grants
 - Primary files:
   - `codex-rs/app-server/src/outgoing_message.rs`
   - `codex-rs/app-server/src/transport.rs`
   - controller session/coordinator module
 - Validation:
   - prompt binding and single-authorized-resolver tests
-  - controller `accept`/`cancel` acceptance and `acceptForSession` rejection
-    tests
+  - controller `accept`/`cancel` acceptance and lifetime-extending-decision
+    rejection tests
   - stale resolver tests
 
-Commit 11: Add prompt rebinding on ownership transitions.
+Commit 11: Add atomic pending-prompt transfer, egress fencing, and recovery.
 
 - Scope:
-  - rebind pending prompts on release, TUI reclaim, lease expiry, authorization
-    revocation, controller disconnect, and sign-off
+  - extend the existing per-thread coordinator/transition barrier and outgoing
+    write permit rather than adding a parallel prompt coordinator or event path
+  - inside one barrier spanning owner state and pending-request bindings, select
+    every eligible still-pending main-thread prompt, advance the owner epoch,
+    commit controller ownership, and invalidate every former TUI reply binding
+    before either state becomes externally visible
+  - publish the existing sequenced in-process ownership update before releasing
+    that barrier, then enqueue controller prompt egress; while controller-owned,
+    the TUI disables local actions for eligible still-pending prompts
+  - allow at most one controller redelivery for each prompt in a transfer epoch;
+    reclaim/revocation tombstones stale queued envelopes before a later transfer
+    can redeliver
+  - carry the current prompt binding and owner epoch through controller prompt
+    egress and revalidate the existing revocable write permit immediately before
+    writing
+  - define `write_started` as possibly disclosed and record `externalDelivery`
+    on successful frame completion; neither state blocks prompt recovery
+  - rebind still-pending prompts to the TUI on release, separate thread-affecting
+    TUI reclaim, lease expiry, authorization revocation, controller disconnect,
+    and sign-off
+  - on controller egress failure or ownership loss, atomically fence stale queued
+    egress and recover the still-pending prompt to the viable TUI recipient;
+    if recovery cannot reach the TUI, cancel/fail the prompt and enter or retain
+    terminal `TuiUnavailable`
   - preserve coordinator-owned `pending`, `resolved`, and `cancelled` prompt
     state
-  - publish ownership-status changes in canonical order
 - Validation:
-  - prompt redelivery tests for each rebinding trigger
-  - disconnect/revocation egress-fencing tests
-  - deterministic race tests for response-versus-revoke and expiry-versus-reply
-
-Commit 12: Add controller egress delivery and backpressure semantics.
-
-- Scope:
-  - pre-`externalDelivery` egress validation and write-failure handling
-  - post-`externalDelivery` stale response rejection without redelivery
-  - isolated controller egress queues and reserved TUI capacity
-  - saturated controller ingress overload responses
-  - separate bounded controller control-plane ingress so saturated normal
-    controller traffic cannot block participation, acquire, release, or sign-off
-- Primary files:
-  - `codex-rs/app-server/src/outgoing_message.rs`
-  - `codex-rs/app-server/src/transport.rs`
-  - controller session/coordinator module
-- Validation:
-  - implemented checkpoint `7359445`:
-    - queued controller-bound prompts carry a connection-bound write permit;
-    - all outbound writers revalidate the permit at begin-write before
-      serialization/send;
-    - automatic redelivery/replay treats a begun controller write as already
-      committed for duplicate-prevention, while a failed write removes that
-      in-flight marker and falls back to the TUI when the prompt is still
-      pending; and
-    - post-delivery and begin-write controller paths avoid duplicate prompt
-      redelivery while retaining the TUI-primary prompt-reclaim path.
+  - TUI display/reducer tests showing transferred prompts are remotely controlled
+    and no longer locally actionable
+  - deterministic barriers for TUI-reply-versus-transfer,
+    controller-reply-versus-TUI-reclaim, and controller-reply-versus-recovery
+    races; competing replies resolve once and the losing reply is stale, while a
+    reclaim-winning race leaves the prompt TUI-actionable
+  - deterministic pre-linearization tests proving resolved, cancelled,
+    superseded, and no-longer-thread-scoped requests are not transferred
+  - acquire/reclaim/reacquire tests proving at most one redelivery per transfer
+    epoch and no duplicate active resolver
+  - update the historical checkpoint `7359445`: retain its connection-bound
+    write permit and pre-write revalidation, but replace the old no-rebind
+    behavior after begun/completed controller delivery with the recovery rule
+    above
   - implemented checkpoint `9bdbda6`:
     - slow external-controller queue overflow disconnects only that external
       connection and preserves subsequent primary delivery; and
     - controller-bound prompt overflow through the real outbound router drops
       the controller delivery before `externalDelivery` and rebinds the still
       pending prompt to the TUI.
-  - write-failure and pre-/post-`externalDelivery` tests
-  - saturated controller ingress returns `-32001` or typed
-    `controller-overloaded` according to the design path being exercised
-  - saturated normal controller ingress still allows `controller/releaseControl`
-    and `controller/signOff` to reach dispatch through their separate bounded
-    control-plane reservation
-  - slow or disconnected controller cannot block TUI ingress, TUI egress, or the
-    runtime dispatcher
-  - isolated egress queue overflow disconnects or drops only explicitly lossy
-    notifications
+  - deterministic enqueue, write-start/write-failure, connection-closed, and
+    post-delivery disconnect/revocation/expiry/sign-off tests proving recovery,
+    stale old controller replies, and no double authorization
+  - terminal `TuiUnavailable` tests for missing or failed TUI fallback
+
+Deferred follow-up: keep generic controller ingress reservations, queue sizing,
+and lossy-notification policy in a separately reviewable hardening slice. This
+feature changes only prompt-bound egress/recovery and reuses the existing
+queues and control-plane reservation behavior.
 
 ### 6. Local controller endpoint
 
-Commit 13: Add portable local-controller endpoint metadata and cleanup,
+Commit 12: Add portable local-controller endpoint metadata and cleanup,
 disabled by default.
 
 - Scope:
@@ -315,7 +337,7 @@ disabled by default.
   - tests proving cleanup never follows symlinks or deletes resources not owned
     by the launch ID and nonce
 
-Commit 14: Add the Unix local-controller WebSocket transport, still disabled by
+Commit 13: Add the Unix local-controller WebSocket transport, still disabled by
 default.
 
 - Scope:
@@ -333,7 +355,7 @@ default.
   - nonce rejection tests
   - standalone app-server listener regression for `--listen unix://...`
 
-Commit 15: Add Windows `codex-uds` support or explicit unavailable fallback.
+Commit 14: Add Windows `codex-uds` support or explicit unavailable fallback.
 
 - Scope:
   - Windows `codex-uds` adapter with equivalent same-user endpoint semantics, or
@@ -347,7 +369,7 @@ Commit 15: Add Windows `codex-uds` support or explicit unavailable fallback.
 
 ### 7. TUI reclaim, reflection, and endpoint publication
 
-Commit 16: Add a TUI command classifier and reclaim hook.
+Commit 15: Add a TUI command classifier and reclaim hook.
 
 - Scope:
   - classify every TUI-originated command that can reach the coordinator as
@@ -363,10 +385,12 @@ Commit 16: Add a TUI command classifier and reclaim hook.
   - `codex-rs/tui/src/app.rs`, only for narrow integration wiring
 - Validation:
   - classifier tests
-  - reclaim tests for submit/resume/cancel/interrupt, approvals, user-input
-    replies, mutating slash commands, and display-only actions
+  - reclaim tests for submit/resume/cancel/interrupt, mutating slash commands,
+    and display-only actions
+  - tests proving a TUI approval or user-input reply to a still-pending
+    controller-transferred prompt fails stale and does not reclaim control
 
-Commit 17: Ensure controller-originated work is reflected through the canonical
+Commit 16: Ensure controller-originated work is reflected through the canonical
 TUI event stream only.
 
 - Scope:
@@ -430,7 +454,7 @@ TUI event stream only.
     - remote/daemon TUI sessions continue to fall back to the public
       `thread/read` path.
 
-Commit 18: Start the endpoint from embedded TUI launches only, after admission,
+Commit 17: Start the endpoint from embedded TUI launches only, after admission,
 ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
 
 - Scope:
@@ -465,7 +489,7 @@ ownership, enrollment, prompt fencing, reclaim, and reflection are in place.
     - local-controller transport coverage preserves nonce-gated metadata
       publication and existing Unix control-socket/default `unix://` behavior.
 
-Commit 18a: Publish the session working directory in local-controller
+Commit 17a: Publish the session working directory in local-controller
 metadata.
 
 - Scope:
@@ -490,6 +514,34 @@ metadata.
     rewrite
   - `just fmt`
   - `just test -p codex-app-server-transport local_controller`
+
+Commit 18: Validate pending-prompt transfer through the published local
+controller endpoint.
+
+- Scope:
+  - use the public local-controller WebSocket protocol against a live embedded
+    in-process TUI; do not substitute internal rebind helpers for this slice
+  - transfer already TUI-delivered command, file-change, permissions, and
+    user-input prompts with their original request IDs and normal response
+    shapes
+  - retain MCP elicitation and dynamic-tool calls as TUI-only while a controller
+    holds the lease
+- Validation:
+  - controller acquire causes exactly one additional redelivery per transfer
+    epoch; the TUI marks the prompt remotely controlled and controller `accept`
+    resolves the original request
+  - disconnect, sign-off, revocation, expiry, and enqueue/write failure recover
+    the still-pending prompt to the TUI, including after completed controller
+    delivery
+  - a controller reply versus TUI reclaim is deterministic: a reclaim win leaves
+    the prompt locally actionable, while a reply win resolves it; stale replies
+    use the transport-appropriate error form
+  - deterministic public-protocol barriers cover former-TUI-reply versus
+    transfer, controller-reply versus TUI reclaim, and controller-reply versus
+    recovery; verify the former TUI reply is typed in-process stale without
+    reclaim and exactly one reply can resolve
+  - resolved, cancelled, superseded, and non-thread-scoped requests are never
+    replayed
 
 ### 8. Downstream controller-host discovery and presentation
 
