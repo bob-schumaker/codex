@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 use super::ConnectionOrigin;
 use super::TransportEvent;
+#[cfg(feature = "test-support")]
+pub use crate::transport::websocket::LocalControllerWriterTestGate;
 use crate::transport::websocket::run_websocket_connection;
 use codex_uds::PeerCredentials;
 use codex_uds::UnixListener;
@@ -262,6 +264,44 @@ pub async fn start_local_controller_acceptor(
     transport_event_tx: mpsc::Sender<TransportEvent>,
     shutdown_token: CancellationToken,
 ) -> io::Result<LocalControllerEndpointHandle> {
+    start_local_controller_acceptor_inner(
+        codex_home,
+        main_thread_id,
+        transport_event_tx,
+        shutdown_token,
+        #[cfg(feature = "test-support")]
+        None,
+    )
+    .await
+}
+
+/// Starts a local-controller endpoint with a one-shot writer-failure gate for
+/// an app-server integration test.
+#[cfg(feature = "test-support")]
+pub async fn start_local_controller_acceptor_with_writer_test_gate(
+    codex_home: &Path,
+    main_thread_id: Option<String>,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+    writer_test_gate: LocalControllerWriterTestGate,
+) -> io::Result<LocalControllerEndpointHandle> {
+    start_local_controller_acceptor_inner(
+        codex_home,
+        main_thread_id,
+        transport_event_tx,
+        shutdown_token,
+        Some(writer_test_gate),
+    )
+    .await
+}
+
+async fn start_local_controller_acceptor_inner(
+    codex_home: &Path,
+    main_thread_id: Option<String>,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+    #[cfg(feature = "test-support")] writer_test_gate: Option<LocalControllerWriterTestGate>,
+) -> io::Result<LocalControllerEndpointHandle> {
     ensure_local_controller_endpoint_available(local_controller_endpoint_support())?;
     let cwd = std::env::current_dir().ok();
     let session_working_directory = session_working_directory_from_cwd(cwd.as_deref());
@@ -300,6 +340,8 @@ pub async fn start_local_controller_acceptor(
         metadata_guard,
         metadata.launch_nonce.clone(),
         failure_tx,
+        #[cfg(feature = "test-support")]
+        writer_test_gate,
     ));
     tracing::info!(
         socket_path = %paths.socket_path.display(),
@@ -544,6 +586,7 @@ async fn run_local_controller_acceptor(
     metadata_guard: LocalControllerEndpointGuard,
     launch_nonce: String,
     failure_tx: oneshot::Sender<LocalControllerEndpointFailure>,
+    #[cfg(feature = "test-support")] writer_test_gate: Option<LocalControllerWriterTestGate>,
 ) {
     let _socket_guard = socket_guard;
     let _metadata_guard = metadata_guard;
@@ -573,6 +616,8 @@ async fn run_local_controller_acceptor(
 
         let transport_event_tx = transport_event_tx.clone();
         let launch_nonce = launch_nonce.clone();
+        #[cfg(feature = "test-support")]
+        let writer_test_gate = writer_test_gate.clone();
         tokio::spawn(async move {
             if let Err(err) = verify_same_user_peer(&stream) {
                 tracing::warn!(%err, "rejecting local-controller peer");
@@ -600,6 +645,8 @@ async fn run_local_controller_acceptor(
                 websocket_reader,
                 transport_event_tx,
                 ConnectionOrigin::ExternalController,
+                #[cfg(feature = "test-support")]
+                writer_test_gate,
             )
             .await;
         });

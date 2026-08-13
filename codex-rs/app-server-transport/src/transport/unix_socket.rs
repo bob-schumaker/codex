@@ -90,6 +90,8 @@ async fn run_control_socket_acceptor(
                 websocket_reader,
                 transport_event_tx,
                 ConnectionOrigin::WebSocket,
+                #[cfg(feature = "test-support")]
+                None,
             )
             .await;
         });

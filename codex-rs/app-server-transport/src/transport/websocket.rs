@@ -34,7 +34,13 @@ use owo_colors::Style;
 use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
+#[cfg(feature = "test-support")]
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "test-support")]
+use std::sync::atomic::Ordering;
 use tokio::net::TcpListener;
+#[cfg(feature = "test-support")]
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as TungsteniteWebSocketMessage;
@@ -47,6 +53,145 @@ use tracing::warn;
 /// writer task is healthy, so give them more headroom than internal channels.
 const WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY: usize = 32 * 1024;
 const _: () = assert!(WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY > CHANNEL_CAPACITY);
+
+/// Test-only control for one local-controller writer failure after it has
+/// consumed an external prompt's write permit.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug)]
+pub struct LocalControllerWriterTestGate {
+    state: Arc<LocalControllerWriterTestGateState>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct LocalControllerWriterTestGateState {
+    armed: AtomicBool,
+    write_started: AtomicBool,
+    fail_next_write: AtomicBool,
+    released: AtomicBool,
+    pause_before_next_queue_receive: AtomicBool,
+    writer_paused: AtomicBool,
+    write_started_notify: Notify,
+    writer_paused_notify: Notify,
+    queue_pause_notify: Notify,
+    release_notify: Notify,
+    outbound_channel_capacity: usize,
+}
+
+#[cfg(feature = "test-support")]
+impl LocalControllerWriterTestGate {
+    pub fn pause_after_write_started() -> Self {
+        Self {
+            state: Arc::new(LocalControllerWriterTestGateState {
+                armed: AtomicBool::new(false),
+                write_started: AtomicBool::new(false),
+                fail_next_write: AtomicBool::new(false),
+                released: AtomicBool::new(false),
+                pause_before_next_queue_receive: AtomicBool::new(false),
+                writer_paused: AtomicBool::new(false),
+                write_started_notify: Notify::new(),
+                writer_paused_notify: Notify::new(),
+                queue_pause_notify: Notify::new(),
+                release_notify: Notify::new(),
+                outbound_channel_capacity: WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY,
+            }),
+        }
+    }
+
+    pub fn pause_before_queue_receive() -> Self {
+        Self {
+            state: Arc::new(LocalControllerWriterTestGateState {
+                armed: AtomicBool::new(false),
+                write_started: AtomicBool::new(false),
+                fail_next_write: AtomicBool::new(false),
+                released: AtomicBool::new(false),
+                pause_before_next_queue_receive: AtomicBool::new(false),
+                writer_paused: AtomicBool::new(false),
+                write_started_notify: Notify::new(),
+                writer_paused_notify: Notify::new(),
+                queue_pause_notify: Notify::new(),
+                release_notify: Notify::new(),
+                outbound_channel_capacity: 4,
+            }),
+        }
+    }
+
+    pub fn arm_next_write_failure(&self) {
+        self.state.armed.store(true, Ordering::Release);
+    }
+
+    pub fn arm_queue_pause(&self) {
+        self.state
+            .pause_before_next_queue_receive
+            .store(true, Ordering::Release);
+        self.state.queue_pause_notify.notify_waiters();
+    }
+
+    pub async fn wait_until_writer_paused(&self) {
+        while !self.state.writer_paused.load(Ordering::Acquire) {
+            self.state.writer_paused_notify.notified().await;
+        }
+    }
+
+    pub async fn wait_until_write_started(&self) {
+        while !self.state.write_started.load(Ordering::Acquire) {
+            self.state.write_started_notify.notified().await;
+        }
+    }
+
+    pub fn fail_next_write_and_release(&self) {
+        self.state.fail_next_write.store(true, Ordering::Release);
+        self.state.released.store(true, Ordering::Release);
+        self.state.release_notify.notify_waiters();
+    }
+
+    async fn pause_after_write_started_if_armed(&self) -> bool {
+        if !self.state.armed.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        self.state.write_started.store(true, Ordering::Release);
+        self.state.write_started_notify.notify_waiters();
+        while !self.state.released.load(Ordering::Acquire) {
+            self.state.release_notify.notified().await;
+        }
+        self.state.fail_next_write.swap(false, Ordering::AcqRel)
+    }
+
+    fn outbound_channel_capacity(&self) -> usize {
+        self.state.outbound_channel_capacity
+    }
+
+    async fn pause_before_queue_receive_if_armed(&self, disconnect_token: &CancellationToken) {
+        if !self
+            .state
+            .pause_before_next_queue_receive
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        self.state.writer_paused.store(true, Ordering::Release);
+        self.state.writer_paused_notify.notify_waiters();
+        loop {
+            if self.state.released.load(Ordering::Acquire) {
+                return;
+            }
+            tokio::select! {
+                _ = self.state.release_notify.notified() => {}
+                _ = disconnect_token.cancelled() => return,
+            }
+        }
+    }
+
+    async fn wait_for_queue_pause_arm(&self) {
+        while !self
+            .state
+            .pause_before_next_queue_receive
+            .load(Ordering::Acquire)
+        {
+            self.state.queue_pause_notify.notified().await;
+        }
+    }
+}
 
 fn colorize(text: &str, style: Style) -> String {
     text.if_supports_color(Stream::Stderr, |value| value.style(style))
@@ -125,6 +270,8 @@ async fn websocket_upgrade_handler(
                 websocket_reader,
                 state.transport_event_tx,
                 ConnectionOrigin::WebSocket,
+                #[cfg(feature = "test-support")]
+                None,
             )
             .await;
         })
@@ -179,14 +326,21 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
     websocket_reader: impl futures::stream::Stream<Item = Result<M, StreamError>> + Send + 'static,
     transport_event_tx: mpsc::Sender<TransportEvent>,
     origin: ConnectionOrigin,
+    #[cfg(feature = "test-support")] writer_test_gate: Option<LocalControllerWriterTestGate>,
 ) where
     M: AppServerWebSocketMessage + Send + 'static,
     SinkError: Send + 'static,
     StreamError: std::fmt::Display + Send + 'static,
 {
     let connection_id = next_connection_id();
-    let (writer_tx, writer_rx) =
-        mpsc::channel::<QueuedOutgoingMessage>(WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY);
+    #[cfg(feature = "test-support")]
+    let outbound_channel_capacity = writer_test_gate.as_ref().map_or(
+        WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY,
+        LocalControllerWriterTestGate::outbound_channel_capacity,
+    );
+    #[cfg(not(feature = "test-support"))]
+    let outbound_channel_capacity = WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY;
+    let (writer_tx, writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(outbound_channel_capacity);
     let writer_tx_for_reader = writer_tx.clone();
     let disconnect_token = CancellationToken::new();
     if transport_event_tx
@@ -208,6 +362,8 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
         writer_rx,
         writer_control_rx,
         disconnect_token.clone(),
+        #[cfg(feature = "test-support")]
+        writer_test_gate,
     ));
     let mut inbound_task = tokio::spawn(run_websocket_inbound_loop(
         websocket_reader,
@@ -297,6 +453,7 @@ async fn run_websocket_outbound_loop<M, SinkError>(
     mut writer_rx: mpsc::Receiver<QueuedOutgoingMessage>,
     mut writer_control_rx: mpsc::Receiver<M>,
     disconnect_token: CancellationToken,
+    #[cfg(feature = "test-support")] writer_test_gate: Option<LocalControllerWriterTestGate>,
 ) where
     M: AppServerWebSocketMessage + Send + 'static,
     SinkError: Send + 'static,
@@ -304,6 +461,17 @@ async fn run_websocket_outbound_loop<M, SinkError>(
     tokio::pin!(websocket_writer);
     loop {
         tokio::select! {
+            _ = wait_for_queue_pause_arm(
+                #[cfg(feature = "test-support")]
+                writer_test_gate.as_ref(),
+            ) => {
+                #[cfg(feature = "test-support")]
+                writer_test_gate
+                    .as_ref()
+                    .expect("queue pause branch requires a writer test gate")
+                    .pause_before_queue_receive_if_armed(&disconnect_token)
+                    .await;
+            }
             _ = disconnect_token.cancelled() => {
                 break;
             }
@@ -322,6 +490,13 @@ async fn run_websocket_outbound_loop<M, SinkError>(
                 if !queued_message.begin_write() {
                     continue;
                 }
+                #[cfg(feature = "test-support")]
+                if queued_message.write_complete_tx.is_some()
+                    && let Some(writer_test_gate) = &writer_test_gate
+                    && writer_test_gate.pause_after_write_started_if_armed().await
+                {
+                    break;
+                }
                 let Some(json) = serialize_outgoing_message(queued_message.message) else {
                     continue;
                 };
@@ -334,6 +509,20 @@ async fn run_websocket_outbound_loop<M, SinkError>(
             }
         }
     }
+}
+
+async fn wait_for_queue_pause_arm(
+    #[cfg(feature = "test-support")] writer_test_gate: Option<&LocalControllerWriterTestGate>,
+) {
+    #[cfg(feature = "test-support")]
+    {
+        match writer_test_gate {
+            Some(writer_test_gate) => writer_test_gate.wait_for_queue_pause_arm().await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+    #[cfg(not(feature = "test-support"))]
+    std::future::pending::<()>().await;
 }
 
 async fn run_websocket_inbound_loop<M, StreamError>(
