@@ -87,11 +87,11 @@ async fn account_updated_with_backend_only_auth_enables_thread_usage() -> Result
         test_path_buf("/tmp/project"),
     ));
     while app_event_rx.try_recv().is_ok() {}
-    let app_server =
+    let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         AppServerEvent::ServerNotification(Box::new(ServerNotification::AccountUpdated(
             AccountUpdatedNotification {
                 auth_mode: Some(AuthMode::AgentIdentity),
@@ -248,7 +248,7 @@ async fn account_change_discards_thread_usage_deferred_while_overlay_is_open() -
     assert!(app.pending_thread_usage_history_refresh);
 
     app.handle_app_server_event(
-        &app_server,
+        &mut app_server,
         AppServerEvent::ServerNotification(Box::new(ServerNotification::AccountUpdated(
             AccountUpdatedNotification {
                 auth_mode: Some(AuthMode::AgentIdentity),
