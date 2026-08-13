@@ -225,6 +225,90 @@ Commit 9: Add priority and stale-epoch behavior around serialized requests.
 
 ### 5. Prompt and egress transactionality
 
+#### Current delivery status
+
+The current worktree implements the core of Commits 10 and 11: eligible
+pending-prompt transfer, recipient/epoch fencing, typed stale rejection,
+sequenced in-process ownership updates, TUI remote-control presentation,
+controller egress recovery, embedded-runtime deadline expiry, native
+thread-scoped controller revocation, and deterministic test-only TUI egress
+failure controls. It also covers the live local-controller WebSocket/TUI
+command-approval flow.
+
+The remaining work is deliberately not represented as complete: add public
+transport deterministic barriers for every required interleaving, complete the
+full per-variant WebSocket acceptance matrix, and run/resolve the complete
+crate-suite validation before landing. The detailed gaps remain listed under
+Commit 11 and Commit 18 rather than being hidden by the implemented focused
+tests.
+
+#### Implementation-ready remaining slices (ROI order)
+
+1. **Terminal TUI recovery proof:** in
+   `codex-rs/app-server/src/in_process.rs`, extend the live embedded WebSocket
+   fixture to transfer an eligible command prompt, trigger controller ownership
+   loss with independently addressable one-shot hooks already armed for (a) prompt
+   redelivery enqueue rejection and (b) server-request-consumer closure. The
+   former, while its event sink remains live, also asserts the sequenced
+   `TuiUnavailable` event; the closed-consumer case instead asserts terminal
+   coordinator/runtime state. Both assert the prompt callback is
+   failed/cancelled, controller binding and write permit are gone, all leases
+   are revoked, the old controller reply is JSON-RPC `stale-ownership`, and
+   subsequent controller participation/mutation receives JSON-RPC
+   `tui-unavailable`. Do not add a third ownership-bundle hook until an actual
+   lossless ownership-bundle sink exists; these hooks are `cfg(test)` only and
+   do not cover controller egress faults.
+2. **Native TUI revocation affordance:** in the existing main-thread ownership
+   UI module and `app_server_requests.rs`, add a labeled, no-confirmation
+   “Revoke controller access” action. Enable it whenever the main thread has
+   an active controller owner *or* a read-capable standing controller session.
+   Add a sequenced native `hasControllerSession` state bit with ownership,
+   disconnect, and revocation updates; it exposes no controller identity or
+   control-plane notification to the TUI. The action is absent/disabled when no
+   session exists and remains idempotent if it disappears before dispatch. Route it to
+   `AppServerClient::revoke_controller_access`, report transport/terminal
+   failure through the existing status surface, and snapshot active-owner,
+   standing-only, and no-session states without transcript mutation.
+3. **Public race barriers:** in `outgoing_message.rs`, controller processor
+   tests, and the local-controller test fixture, use the smallest test-local
+   `cfg(test)` gate needed by each race: pre-transfer linearization for TUI
+   reply, pre-consumption for controller reply versus reclaim, and recovery
+   entry after completed/possibly disclosed delivery for controller reply
+   versus recovery. Each gate asserts its current binding/delivery lifecycle
+   and no gate exposes a partial ownership/binding transition. Drive one
+   WebSocket controller plus one in-process TUI through: TUI reply versus
+   transfer (TUI stale, no reclaim); controller reply versus thread-affecting
+   TUI reclaim (reply-win resolves, reclaim-win makes TUI actionable); and
+   controller reply versus recovery (exactly one binding consumer, stale
+   loser). No barrier is reachable through public RPC in production.
+4. **Public variant/loss matrix:** in the same live fixture, give each of the
+   four eligible variants one public transfer-and-normal-response case using
+   the existing mock-response producers for command execution, file change,
+   permission, and tool user-input server requests; each asserts the original
+   public request ID and normal response shape. Prove
+   dynamic tool and MCP elicitation stay TUI-only under controller ownership.
+   Keep the other excluded families on the existing static classifier path; do
+   not duplicate that classification in another unit table. Use one command-approval representative for
+   controller egress/ownership loss: queue rejection, write-start/write
+   failure, connection-closed, completed-delivery then disconnect, release,
+   sign-off, explicit policy revocation, manual-clock expiry, and a separate
+   thread-affecting TUI reclaim. Each successful fallback is locally actionable
+   with stale old-controller reply; TUI fallback failure belongs only to slice
+   1. This is deliberately pairwise, not a Cartesian product.
+5. **Selection and release audit:** in `outgoing_message`/controller tests,
+   reuse slice 3's pre-transfer gate to establish resolved (consume response),
+   cancelled (cancel callback), and superseded (use the real producer
+   cancellation/supersession signal to mark
+   the original request cancelled/failed and create any later request under a
+   distinct request ID/binding); use an auth/attestation process-wide request
+   for non-thread-scoped. Assert
+   the original and later IDs independently; neither terminal original is
+   transferred or resolvable. For each pending prompt, assert exactly one controller
+   redelivery per *new transfer epoch*, including after successful recovery and
+   reacquire; never more than one in an epoch and never simultaneous active
+   resolvers. After these code slices, run scoped app-server/TUI suites and ask
+   before the complete workspace suite.
+
 Commit 10: Add prompt owner binding and controller prompt decision rules.
 
 - Scope:
@@ -275,6 +359,10 @@ Commit 11: Add atomic pending-prompt transfer, egress fencing, and recovery.
   - rebind still-pending prompts to the TUI on release, separate thread-affecting
     TUI reclaim, lease expiry, authorization revocation, controller disconnect,
     and sign-off
+  - add the native, thread-scoped TUI
+    `revokeControllerAccess(mainThreadId)` action; it is idempotent and revokes
+    every controller session for that main thread, including read-capable
+    standing sessions, rather than merely releasing the active lease
   - on controller egress failure or ownership loss, atomically fence stale queued
     egress and recover the still-pending prompt to the viable TUI recipient;
     if recovery cannot reach the TUI, cancel/fail the prompt and enter or retain
@@ -306,6 +394,17 @@ Commit 11: Add atomic pending-prompt transfer, egress fencing, and recovery.
     post-delivery disconnect/revocation/expiry/sign-off tests proving recovery,
     stale old controller replies, and no double authorization
   - terminal `TuiUnavailable` tests for missing or failed TUI fallback
+  - add a test-only in-process TUI egress-sink fault hook with two deterministic
+    modes: reject the next server-request enqueue, or close the server-request
+    consumer. It is unavailable in production builds and verifies that either
+    failed recovery path cancels/fails the prompt and enters terminal
+    `TuiUnavailable` without leaving a controller binding live.
+
+Implementation note: the current worktree covers transfer/reply and
+recovery/reply races with deterministic internal barriers and exercises the
+former TUI stale result through the live in-process/WebSocket path. It does not
+yet supply public-transport deterministic barriers for every listed race or a
+complete post-delivery ownership-loss matrix for every loss cause.
 
 Deferred follow-up: keep generic controller ingress reservations, queue sizing,
 and lossy-notification policy in a separately reviewable hardening slice. This
@@ -542,6 +641,11 @@ controller endpoint.
     reclaim and exactly one reply can resolve
   - resolved, cancelled, superseded, and non-thread-scoped requests are never
     replayed
+
+Implementation note: the current local-controller e2e covers a TUI-originated
+command approval, native participation/acquisition, stale former-TUI reply,
+and controller resolution. File-change, permissions, user-input, and every
+ownership-loss case still need equivalent public-WebSocket/live-TUI coverage.
 
 ### 8. Downstream controller-host discovery and presentation
 
