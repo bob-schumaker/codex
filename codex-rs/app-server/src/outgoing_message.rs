@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -24,6 +25,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use tokio::sync::Mutex;
+use tokio::sync::OwnedMutexGuard;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -46,6 +48,7 @@ pub(crate) use codex_app_server_transport::TrackedWriteCompletion;
 use codex_protocol::account::PlanType;
 
 pub(crate) type ClientRequestResult = std::result::Result<Result, JSONRPCErrorError>;
+type ExternalPromptDeliveryFailureHandler = dyn Fn(ExternalPromptDeliveryFailure) + Send + Sync;
 
 static IN_FLIGHT_REQUESTS: Gauge = Gauge::new("app.requests.in_flight");
 static PENDING_SERVER_REQUESTS: Gauge = Gauge::new("app.server_requests.pending");
@@ -119,6 +122,14 @@ pub(crate) struct OutgoingMessageSender {
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
+    /// Serializes controller ownership changes with prompt-binding consumption.
+    ///
+    /// The controller coordinator takes this guard before changing ownership and
+    /// holds it through sequenced status publication and prompt rebinding. A
+    /// responder takes the same guard before consuming its prompt binding.
+    prompt_transition_barrier: Arc<Mutex<()>>,
+    external_prompt_delivery_failure_handler:
+        StdMutex<Option<Arc<ExternalPromptDeliveryFailureHandler>>>,
     analytics_events_client: AnalyticsEventsClient,
     thread_sequences: ThreadSequenceTracker,
 }
@@ -139,6 +150,8 @@ struct PendingCallbackEntry {
     external_delivery_fallback_connection_id: Option<ConnectionId>,
     external_delivery_write_permits: HashMap<ConnectionId, ExternalDeliveryWritePermit>,
     external_controller_owner_epoch: Option<u64>,
+    requires_external_controller_epoch: bool,
+    externally_transferred_from_tui: bool,
     thread_id: Option<ThreadId>,
     thread_sequence: Option<u64>,
     request: ServerRequest,
@@ -156,6 +169,13 @@ struct ExternalDeliveryWritePermit {
     write_started: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+pub(crate) struct ExternalPromptDeliveryFailure {
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) request_id: RequestId,
+    pub(crate) thread_id: ThreadId,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServerRequestRecipients {
     connection_ids: Vec<ConnectionId>,
@@ -171,6 +191,8 @@ pub(crate) struct PendingServerRequest {
     pub(crate) thread_sequence: Option<u64>,
     pub(crate) request: ServerRequest,
     pub(crate) external_controller_owner_epoch: Option<u64>,
+    pub(crate) requires_external_controller_epoch: bool,
+    pub(crate) externally_transferred_from_tui: bool,
 }
 
 enum TakeRequestCallbackResult {
@@ -195,10 +217,6 @@ impl PendingCallbackEntry {
             self.external_delivery_connection_ids.push(connection_id);
         }
         self.external_delivery_write_permits.remove(&connection_id);
-    }
-
-    fn has_external_delivery(&self) -> bool {
-        !self.external_delivery_connection_ids.is_empty()
     }
 
     fn replace_external_delivery_write_permit(
@@ -227,12 +245,26 @@ impl PendingCallbackEntry {
     }
 
     fn has_external_delivery_or_started_write(&self) -> bool {
-        self.has_external_delivery()
+        !self.external_delivery_connection_ids.is_empty()
             || self
                 .external_delivery_write_permits
                 .values()
                 .any(|permit| permit.write_started.load(Ordering::Acquire))
     }
+
+    fn clear_external_delivery(&mut self) {
+        self.external_delivery_connection_ids.clear();
+    }
+}
+
+pub(crate) fn is_transferable_external_controller_prompt(request: &ServerRequest) -> bool {
+    matches!(
+        request,
+        ServerRequest::CommandExecutionRequestApproval { .. }
+            | ServerRequest::FileChangeRequestApproval { .. }
+            | ServerRequest::PermissionsRequestApproval { .. }
+            | ServerRequest::ToolRequestUserInput { .. }
+    )
 }
 
 impl ThreadScopedOutgoingMessageSender {
@@ -404,6 +436,16 @@ impl ServerRequestRecipients {
             ServerRequestDelivery::Normal
         }
     }
+
+    fn for_request(&self, request: &ServerRequest) -> Self {
+        if self.external_controller_owner_epoch.is_some()
+            && !is_transferable_external_controller_prompt(request)
+            && let Some(fallback_connection_id) = self.external_delivery_fallback_connection_id
+        {
+            return Self::normal(vec![fallback_connection_id]);
+        }
+        self.clone()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,6 +464,8 @@ impl OutgoingMessageSender {
             sender,
             request_id_to_callback: Arc::new(Mutex::new(HashMap::new())),
             request_contexts: Mutex::new(HashMap::new()),
+            prompt_transition_barrier: Arc::new(Mutex::new(())),
+            external_prompt_delivery_failure_handler: StdMutex::new(None),
             analytics_events_client,
             thread_sequences: ThreadSequenceTracker::default(),
         }
@@ -429,6 +473,27 @@ impl OutgoingMessageSender {
 
     pub(crate) fn thread_sequence(&self, thread_id: ThreadId) -> u64 {
         self.thread_sequences.current(thread_id)
+    }
+
+    pub(crate) fn advance_thread_sequence(&self, thread_id: ThreadId) -> u64 {
+        self.thread_sequences.advance(thread_id)
+    }
+
+    pub(crate) async fn lock_prompt_transition(&self) -> OwnedMutexGuard<()> {
+        Arc::clone(&self.prompt_transition_barrier)
+            .lock_owned()
+            .await
+    }
+
+    pub(crate) fn set_external_prompt_delivery_failure_handler(
+        &self,
+        handler: Arc<ExternalPromptDeliveryFailureHandler>,
+    ) {
+        let mut failure_handler = self
+            .external_prompt_delivery_failure_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *failure_handler = Some(handler);
     }
 
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
@@ -521,6 +586,8 @@ impl OutgoingMessageSender {
                     external_delivery_fallback_connection_id: None,
                     external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: None,
+                    requires_external_controller_epoch: false,
+                    externally_transferred_from_tui: false,
                     thread_id,
                     thread_sequence,
                     request: request.clone(),
@@ -584,6 +651,7 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
+        let recipients = recipients.for_request(&request);
 
         let (tx_approve, rx_approve) = oneshot::channel();
         let thread_sequence = {
@@ -599,6 +667,10 @@ impl OutgoingMessageSender {
                         .external_delivery_fallback_connection_id,
                     external_delivery_write_permits: HashMap::new(),
                     external_controller_owner_epoch: recipients.external_controller_owner_epoch,
+                    requires_external_controller_epoch: recipients
+                        .external_controller_owner_epoch
+                        .is_some(),
+                    externally_transferred_from_tui: false,
                     thread_id,
                     thread_sequence,
                     request: request.clone(),
@@ -660,11 +732,18 @@ impl OutgoingMessageSender {
             entry.replace_external_delivery_write_permit(connection_id)
         };
         let request_id_to_callback = Arc::clone(&self.request_id_to_callback);
+        let prompt_transition_barrier = Arc::clone(&self.prompt_transition_barrier);
         let sender = self.sender.clone();
+        let failure_handler = self
+            .external_prompt_delivery_failure_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         tokio::spawn(async move {
             let write_completed = write_complete_rx.await.is_ok();
+            let _transition = prompt_transition_barrier.lock_owned().await;
 
-            let fallback_request = {
+            let (thread_id, fallback_request) = {
                 let mut request_id_to_callback = request_id_to_callback.lock().await;
                 let Some(entry) = request_id_to_callback.get_mut(&request_id) else {
                     return;
@@ -675,34 +754,48 @@ impl OutgoingMessageSender {
                 }
 
                 entry.external_delivery_write_permits.remove(&connection_id);
-                if !entry.can_resolve_from(connection_id)
-                    || entry.has_external_delivery_or_started_write()
-                {
+                if !entry.can_resolve_from(connection_id) {
                     return;
                 }
-                let Some(fallback_connection_id) = entry.external_delivery_fallback_connection_id
-                else {
-                    return;
-                };
-                entry.recipient_connection_ids = Some(vec![fallback_connection_id]);
-                entry.external_delivery_fallback_connection_id = None;
-                entry.revoke_external_delivery_write_permits();
-                entry.external_controller_owner_epoch = None;
-                (
-                    fallback_connection_id,
-                    entry.request.clone(),
-                    entry.thread_sequence,
-                )
+                if failure_handler.is_some() {
+                    (entry.thread_id, None)
+                } else {
+                    let Some(fallback_connection_id) =
+                        entry.external_delivery_fallback_connection_id
+                    else {
+                        return;
+                    };
+                    entry.recipient_connection_ids = Some(vec![fallback_connection_id]);
+                    entry.external_delivery_fallback_connection_id = None;
+                    entry.revoke_external_delivery_write_permits();
+                    entry.clear_external_delivery();
+                    entry.external_controller_owner_epoch = None;
+                    (
+                        None,
+                        Some((
+                            fallback_connection_id,
+                            entry.request.clone(),
+                            entry.thread_sequence,
+                        )),
+                    )
+                }
             };
 
-            let (fallback_connection_id, request, thread_sequence) = fallback_request;
-            if let Err(err) = sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id: fallback_connection_id,
-                    message: server_request_outgoing_message(request, thread_sequence),
-                    write_complete_tx: None,
-                })
-                .await
+            if let (Some(handler), Some(thread_id)) = (failure_handler, thread_id) {
+                handler(ExternalPromptDeliveryFailure {
+                    connection_id,
+                    request_id,
+                    thread_id,
+                });
+            } else if let Some((fallback_connection_id, request, thread_sequence)) =
+                fallback_request
+                && let Err(err) = sender
+                    .send(OutgoingEnvelope::ToConnection {
+                        connection_id: fallback_connection_id,
+                        message: server_request_outgoing_message(request, thread_sequence),
+                        write_complete_tx: None,
+                    })
+                    .await
             {
                 warn!(
                     "failed to rebind externally undelivered request to fallback client: {err:?}"
@@ -726,26 +819,29 @@ impl OutgoingMessageSender {
             .await;
     }
 
+    #[cfg(test)]
     pub(crate) async fn rebind_requests_for_thread_to_connection(
         &self,
         thread_id: ThreadId,
         connection_id: ConnectionId,
-    ) {
+    ) -> bool {
         let requests = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             let mut requests = request_id_to_callback
                 .values_mut()
                 .filter_map(|entry| {
-                    if entry.thread_id == Some(thread_id)
-                        && !entry.has_external_delivery_or_started_write()
-                    {
+                    if entry.thread_id == Some(thread_id) {
+                        let thread_sequence = self.thread_sequences.advance(thread_id);
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         entry.external_delivery_fallback_connection_id = None;
                         entry.revoke_external_delivery_write_permits();
+                        entry.clear_external_delivery();
                         entry.external_controller_owner_epoch = None;
+                        entry.externally_transferred_from_tui = false;
+                        entry.thread_sequence = Some(thread_sequence);
                         Some(PendingRequestReplay {
                             request: entry.request.clone(),
-                            thread_sequence: entry.thread_sequence,
+                            thread_sequence: Some(thread_sequence),
                         })
                     } else {
                         None
@@ -756,7 +852,48 @@ impl OutgoingMessageSender {
             requests
         };
         self.send_pending_requests_to_connection(connection_id, requests)
-            .await;
+            .await
+    }
+
+    /// Rebinds only prompts whose current authorized recipient is not the TUI.
+    pub(crate) async fn rebind_transferred_requests_for_thread_to_connection(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        let requests = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            let mut requests = request_id_to_callback
+                .values_mut()
+                .filter_map(|entry| {
+                    if entry.thread_id == Some(thread_id)
+                        && entry
+                            .recipient_connection_ids
+                            .as_ref()
+                            .is_some_and(|connection_ids| !connection_ids.contains(&connection_id))
+                    {
+                        let thread_sequence = self.thread_sequences.advance(thread_id);
+                        entry.recipient_connection_ids = Some(vec![connection_id]);
+                        entry.external_delivery_fallback_connection_id = None;
+                        entry.revoke_external_delivery_write_permits();
+                        entry.clear_external_delivery();
+                        entry.external_controller_owner_epoch = None;
+                        entry.externally_transferred_from_tui = false;
+                        entry.thread_sequence = Some(thread_sequence);
+                        Some(PendingRequestReplay {
+                            request: entry.request.clone(),
+                            thread_sequence: Some(thread_sequence),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            requests.sort_by(|left, right| left.request.id().cmp(right.request.id()));
+            requests
+        };
+        self.send_pending_requests_to_connection(connection_id, requests)
+            .await
     }
 
     pub(crate) async fn rebind_requests_for_thread_to_external_controller_connection(
@@ -772,12 +909,19 @@ impl OutgoingMessageSender {
                 .values_mut()
                 .filter_map(|entry| {
                     if entry.thread_id == Some(thread_id)
-                        && !entry.has_external_delivery_or_started_write()
+                        && is_transferable_external_controller_prompt(&entry.request)
+                        && !(entry.external_controller_owner_epoch == Some(owner_epoch)
+                            && entry.can_resolve_from(connection_id))
                     {
+                        entry.externally_transferred_from_tui =
+                            fallback_connection_id.is_some_and(|fallback_connection_id| {
+                                entry.can_resolve_from(fallback_connection_id)
+                            });
                         entry.recipient_connection_ids = Some(vec![connection_id]);
                         entry.external_delivery_fallback_connection_id = fallback_connection_id;
                         entry.revoke_external_delivery_write_permits();
                         entry.external_controller_owner_epoch = Some(owner_epoch);
+                        entry.requires_external_controller_epoch = true;
                         Some(PendingRequestReplay {
                             request: entry.request.clone(),
                             thread_sequence: entry.thread_sequence,
@@ -807,6 +951,8 @@ impl OutgoingMessageSender {
                 thread_sequence: entry.thread_sequence,
                 request: entry.request.clone(),
                 external_controller_owner_epoch: entry.external_controller_owner_epoch,
+                requires_external_controller_epoch: entry.requires_external_controller_epoch,
+                externally_transferred_from_tui: entry.externally_transferred_from_tui,
             })
     }
 
@@ -827,7 +973,9 @@ impl OutgoingMessageSender {
         entry.recipient_connection_ids = Some(vec![connection_id]);
         entry.external_delivery_fallback_connection_id = None;
         entry.revoke_external_delivery_write_permits();
+        entry.clear_external_delivery();
         entry.external_controller_owner_epoch = None;
+        entry.externally_transferred_from_tui = false;
         true
     }
 
@@ -835,7 +983,8 @@ impl OutgoingMessageSender {
         &self,
         connection_id: ConnectionId,
         requests: Vec<PendingRequestReplay>,
-    ) {
+    ) -> bool {
+        let mut enqueued = true;
         for PendingRequestReplay {
             request,
             thread_sequence,
@@ -851,8 +1000,10 @@ impl OutgoingMessageSender {
                 .await
             {
                 warn!("failed to resend request to client: {err:?}");
+                enqueued = false;
             }
         }
+        enqueued
     }
 
     async fn send_pending_requests_to_external_controller_connection(
@@ -887,17 +1038,29 @@ impl OutgoingMessageSender {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn notify_client_response_from_connection(
         &self,
         connection_id: ConnectionId,
         id: RequestId,
         result: Result,
-    ) {
+    ) -> bool {
+        let _transition = self.lock_prompt_transition().await;
+        self.notify_client_response_from_connection_with_transition_held(connection_id, id, result)
+            .await
+    }
+
+    /// Resolves a response while the caller holds the prompt-transition barrier.
+    pub(crate) async fn notify_client_response_from_connection_with_transition_held(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        result: Result,
+    ) -> bool {
         let entry = self
             .take_request_callback_from_connection(connection_id, &id)
             .await;
-
-        self.notify_client_response_entry(entry, id, result).await;
+        self.notify_client_response_entry(entry, id, result).await
     }
 
     async fn notify_client_response_entry(
@@ -905,7 +1068,7 @@ impl OutgoingMessageSender {
         entry: TakeRequestCallbackResult,
         id: RequestId,
         result: Result,
-    ) {
+    ) -> bool {
         match entry {
             TakeRequestCallbackResult::Found(id, entry) => {
                 let entry = *entry;
@@ -919,11 +1082,13 @@ impl OutgoingMessageSender {
                 if let Err(err) = entry.callback.send(Ok(result)) {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
+                true
             }
             TakeRequestCallbackResult::Missing => {
                 warn!("could not find callback for {id:?}");
+                false
             }
-            TakeRequestCallbackResult::UnauthorizedConnection => {}
+            TakeRequestCallbackResult::UnauthorizedConnection => false,
         }
     }
 
@@ -932,12 +1097,23 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         id: RequestId,
         error: JSONRPCErrorError,
-    ) {
+    ) -> bool {
+        let _transition = self.lock_prompt_transition().await;
+        self.notify_client_error_from_connection_with_transition_held(connection_id, id, error)
+            .await
+    }
+
+    /// Rejects a response while the caller holds the prompt-transition barrier.
+    pub(crate) async fn notify_client_error_from_connection_with_transition_held(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> bool {
         let entry = self
             .take_request_callback_from_connection(connection_id, &id)
             .await;
-
-        self.notify_client_error_entry(entry, id, error).await;
+        self.notify_client_error_entry(entry, id, error).await
     }
 
     async fn notify_client_error_entry(
@@ -945,7 +1121,7 @@ impl OutgoingMessageSender {
         entry: TakeRequestCallbackResult,
         id: RequestId,
         error: JSONRPCErrorError,
-    ) {
+    ) -> bool {
         match entry {
             TakeRequestCallbackResult::Found(id, entry) => {
                 let entry = *entry;
@@ -955,11 +1131,13 @@ impl OutgoingMessageSender {
                 if let Err(err) = entry.callback.send(Err(error)) {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
+                true
             }
             TakeRequestCallbackResult::Missing => {
                 warn!("could not find callback for {id:?}");
+                false
             }
-            TakeRequestCallbackResult::UnauthorizedConnection => {}
+            TakeRequestCallbackResult::UnauthorizedConnection => false,
         }
     }
 
@@ -1472,18 +1650,23 @@ mod tests {
     use codex_app_server_protocol::DynamicToolCallParams;
     use codex_app_server_protocol::FileChangeRequestApprovalParams;
     use codex_app_server_protocol::GuardianWarningNotification;
+    use codex_app_server_protocol::McpServerElicitationRequest;
+    use codex_app_server_protocol::McpServerElicitationRequestParams;
     use codex_app_server_protocol::ModelRerouteReason;
     use codex_app_server_protocol::ModelReroutedNotification;
     use codex_app_server_protocol::ModelVerification;
     use codex_app_server_protocol::ModelVerificationNotification;
+    use codex_app_server_protocol::PermissionsRequestApprovalParams;
     use codex_app_server_protocol::RateLimitSnapshot;
     use codex_app_server_protocol::RateLimitWindow;
+    use codex_app_server_protocol::RequestPermissionProfile;
     use codex_app_server_protocol::ServerResponse;
     use codex_app_server_protocol::ThreadStatus;
     use codex_app_server_protocol::ThreadStatusChangedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::sync::Arc;
@@ -2268,7 +2451,7 @@ mod tests {
         let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(rebound_request.id(), &request_id);
-        assert_eq!(rebound_thread_sequence, Some(1));
+        assert_eq!(rebound_thread_sequence, Some(2));
 
         outgoing
             .notify_client_response_from_connection(
@@ -2296,6 +2479,446 @@ mod tests {
             .expect("waiter should receive a callback")
             .expect("authorized response should resolve successfully");
         assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn externally_rebinds_prompt_already_delivered_to_tui() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            Arc::clone(&outgoing),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+
+        let (request_id, mut wait_for_result) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = rx.recv().await.expect("TUI request should be sent")
+        else {
+            panic!("expected TUI request envelope");
+        };
+        let (tui_request, tui_thread_sequence) = request_from_message(message);
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(tui_request.id(), &request_id);
+        assert_eq!(tui_thread_sequence, Some(1));
+        assert!(write_complete_tx.is_none());
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            )
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = rx
+            .recv()
+            .await
+            .expect("controller redelivery should be sent")
+        else {
+            panic!("expected controller request envelope");
+        };
+        let (controller_request, controller_thread_sequence) = request_from_message(message);
+        assert_eq!(connection_id, ConnectionId(2));
+        assert_eq!(controller_request.id(), &request_id);
+        assert_eq!(controller_thread_sequence, Some(1));
+        assert!(write_complete_tx.is_some());
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            )
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                request_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(10), &mut wait_for_result)
+                .await
+                .is_err()
+        );
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(2),
+                request_id,
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("wait should not time out")
+            .expect("waiter should receive a callback")
+            .expect("controller response should resolve successfully");
+        assert_eq!(result, json!({ "decision": "accept" }));
+    }
+
+    #[tokio::test]
+    async fn external_rebind_replays_only_eligible_pending_prompt_variants() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            Arc::clone(&outgoing),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+
+        let (command_approval_id, _command_waiter) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+
+        let (dynamic_tool_id, _dynamic_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::DynamicToolCall(
+                DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    namespace: None,
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                },
+            ))
+            .await;
+        let (mcp_elicitation_id, _mcp_elicitation_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::McpServerElicitationRequest(
+                McpServerElicitationRequestParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    server_name: "test-mcp".to_string(),
+                    request: McpServerElicitationRequest::Url {
+                        meta: None,
+                        message: "Open this page".to_string(),
+                        url: "https://example.test".to_string(),
+                        elicitation_id: "elicitation-1".to_string(),
+                    },
+                },
+            ))
+            .await;
+        let (user_input_id, _user_input_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::ToolRequestUserInput(
+                ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-input".to_string(),
+                    questions: vec![],
+                    is_blocking: true,
+                    auto_resolution_ms: None,
+                },
+            ))
+            .await;
+        let (permissions_id, _permissions_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::PermissionsRequestApproval(
+                PermissionsRequestApprovalParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-permissions".to_string(),
+                    environment_id: None,
+                    started_at_ms: 0,
+                    cwd: AbsolutePathBuf::try_from(std::env::temp_dir())
+                        .expect("temporary directory should be absolute"),
+                    reason: None,
+                    permissions: RequestPermissionProfile {
+                        network: None,
+                        file_system: None,
+                    },
+                },
+            ))
+            .await;
+        let (file_change_id, _file_change_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::FileChangeRequestApproval(
+                FileChangeRequestApprovalParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-file-change".to_string(),
+                    started_at_ms: 0,
+                    reason: None,
+                    grant_root: None,
+                },
+            ))
+            .await;
+
+        for _ in 0..6 {
+            let envelope = rx.recv().await.expect("TUI prompt should be sent");
+            let OutgoingEnvelope::ToConnection { connection_id, .. } = envelope else {
+                panic!("expected TUI prompt envelope");
+            };
+            assert_eq!(connection_id, ConnectionId(1));
+        }
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            )
+            .await;
+
+        let mut replayed_ids = Vec::new();
+        let mut write_completions = Vec::new();
+        for _ in 0..4 {
+            let envelope = rx
+                .recv()
+                .await
+                .expect("controller prompt replay should be sent");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx,
+            } = envelope
+            else {
+                panic!("expected controller prompt envelope");
+            };
+            assert_eq!(connection_id, ConnectionId(2));
+            replayed_ids.push(request_from_message(message).0.id().clone());
+            write_completions.push(
+                write_complete_tx.expect("controller prompt replay should track write completion"),
+            );
+        }
+        replayed_ids.sort();
+        let mut expected_replayed_ids = vec![
+            command_approval_id,
+            user_input_id,
+            permissions_id,
+            file_change_id,
+        ];
+        expected_replayed_ids.sort();
+        assert_eq!(replayed_ids, expected_replayed_ids);
+        assert!(!replayed_ids.contains(&dynamic_tool_id));
+        assert!(!replayed_ids.contains(&mcp_elicitation_id));
+        for write_completion in write_completions {
+            assert!(write_completion.begin_write());
+            write_completion.complete();
+        }
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .rebind_transferred_requests_for_thread_to_connection(thread_id, ConnectionId(1))
+            .await;
+        let mut rebound_ids = Vec::new();
+        for _ in 0..4 {
+            let envelope = rx
+                .recv()
+                .await
+                .expect("only transferred prompts should rebind to the TUI");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx,
+            } = envelope
+            else {
+                panic!("expected TUI prompt envelope");
+            };
+            assert_eq!(connection_id, ConnectionId(1));
+            assert!(write_complete_tx.is_none());
+            rebound_ids.push(request_from_message(message).0.id().clone());
+        }
+        rebound_ids.sort();
+        assert_eq!(rebound_ids, expected_replayed_ids);
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 2,
+            )
+            .await;
+        let mut reacquired_ids = Vec::new();
+        for _ in 0..4 {
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx,
+            } = rx
+                .recv()
+                .await
+                .expect("each recovered prompt should redeliver once in the next epoch")
+            else {
+                panic!("expected controller prompt envelope");
+            };
+            assert_eq!(connection_id, ConnectionId(2));
+            reacquired_ids.push(request_from_message(message).0.id().clone());
+            let write_completion =
+                write_complete_tx.expect("controller prompt redelivery should track its write");
+            assert!(write_completion.begin_write());
+            write_completion.complete();
+        }
+        reacquired_ids.sort();
+        assert_eq!(reacquired_ids, expected_replayed_ids);
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 2,
+            )
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn external_rebind_skips_resolved_and_cancelled_prompts() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+            Arc::clone(&outgoing),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+
+        let (resolved_id, resolved_waiter) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+        let (cancelled_id, cancelled_waiter) = thread_outgoing
+            .send_request(command_execution_request_approval(thread_id))
+            .await;
+        for _ in 0..2 {
+            rx.recv().await.expect("TUI request should be sent");
+        }
+
+        outgoing
+            .notify_client_response_from_connection(
+                ConnectionId(1),
+                resolved_id.clone(),
+                json!({ "decision": "accept" }),
+            )
+            .await;
+        assert_eq!(
+            resolved_waiter
+                .await
+                .expect("resolved callback should complete")
+                .expect("resolved callback should succeed"),
+            json!({ "decision": "accept" })
+        );
+        assert!(outgoing.cancel_request(&cancelled_id).await);
+        assert!(cancelled_waiter.await.is_err());
+
+        outgoing
+            .rebind_requests_for_thread_to_external_controller_connection(
+                thread_id,
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            )
+            .await;
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+        assert!(
+            outgoing
+                .pending_server_request(&resolved_id)
+                .await
+                .is_none()
+        );
+        assert!(
+            outgoing
+                .pending_server_request(&cancelled_id)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_owned_excluded_prompts_stay_with_tui_fallback() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            Arc::clone(&outgoing),
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            ),
+            vec![ConnectionId(1), ConnectionId(2)],
+            thread_id,
+        );
+
+        let (dynamic_tool_id, _dynamic_tool_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::DynamicToolCall(
+                DynamicToolCallParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    namespace: None,
+                    tool: "tool".to_string(),
+                    arguments: json!({}),
+                },
+            ))
+            .await;
+        let (mcp_elicitation_id, _mcp_elicitation_waiter) = thread_outgoing
+            .send_request(ServerRequestPayload::McpServerElicitationRequest(
+                McpServerElicitationRequestParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    server_name: "test-mcp".to_string(),
+                    request: McpServerElicitationRequest::Url {
+                        meta: None,
+                        message: "Open this page".to_string(),
+                        url: "https://example.test".to_string(),
+                        elicitation_id: "elicitation-1".to_string(),
+                    },
+                },
+            ))
+            .await;
+
+        let mut tui_request_ids = Vec::new();
+        for _ in 0..2 {
+            let envelope = rx
+                .recv()
+                .await
+                .expect("excluded prompt should be delivered to the TUI");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                write_complete_tx,
+            } = envelope
+            else {
+                panic!("expected TUI prompt envelope");
+            };
+            assert_eq!(connection_id, ConnectionId(1));
+            assert!(write_complete_tx.is_none());
+            tui_request_ids.push(request_from_message(message).0.id().clone());
+        }
+        tui_request_ids.sort();
+        let mut expected_request_ids = vec![dynamic_tool_id, mcp_elicitation_id];
+        expected_request_ids.sort();
+        assert_eq!(tui_request_ids, expected_request_ids);
+        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
     }
 
     #[tokio::test]
@@ -2353,7 +2976,7 @@ mod tests {
         let (rebound_request, rebound_thread_sequence) = request_from_message(message);
         assert_eq!(connection_id, ConnectionId(1));
         assert_eq!(rebound_request.id(), &request_id);
-        assert_eq!(rebound_thread_sequence, Some(1));
+        assert_eq!(rebound_thread_sequence, Some(2));
         assert!(write_complete_tx.is_none());
 
         outgoing
@@ -2419,10 +3042,10 @@ mod tests {
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
         assert_eq!(initial_thread_sequence, Some(1));
-        let write_complete_tx =
+        let external_write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
-        assert!(write_complete_tx.begin_write());
-        drop(write_complete_tx);
+        assert!(external_write_complete_tx.begin_write());
+        drop(external_write_complete_tx);
 
         let OutgoingEnvelope::ToConnection {
             connection_id,
@@ -2582,7 +3205,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_controller_request_is_not_redelivered_after_external_delivery() {
+    async fn external_controller_request_rebinds_after_external_delivery() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             tx,
@@ -2600,7 +3223,7 @@ mod tests {
             thread_id,
         );
 
-        let (request_id, mut wait_for_result) = thread_outgoing
+        let (request_id, wait_for_result) = thread_outgoing
             .send_request(command_execution_request_approval(thread_id))
             .await;
 
@@ -2616,10 +3239,10 @@ mod tests {
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
         assert_eq!(initial_thread_sequence, Some(1));
-        let write_complete_tx =
+        let external_write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
-        assert!(write_complete_tx.begin_write());
-        write_complete_tx.complete();
+        assert!(external_write_complete_tx.begin_write());
+        external_write_complete_tx.complete();
         timeout(Duration::from_secs(1), async {
             loop {
                 if outgoing
@@ -2637,25 +3260,24 @@ mod tests {
         outgoing
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
             .await;
-        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = rx.recv().await.expect("rebound request should be sent")
+        else {
+            panic!("expected rebound request envelope");
+        };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(2));
+        assert!(write_complete_tx.is_none());
 
         outgoing
             .notify_client_response_from_connection(
                 ConnectionId(1),
                 request_id.clone(),
-                json!({ "decision": "accept" }),
-            )
-            .await;
-        assert!(
-            timeout(Duration::from_millis(10), &mut wait_for_result)
-                .await
-                .is_err()
-        );
-
-        outgoing
-            .notify_client_response_from_connection(
-                ConnectionId(2),
-                request_id,
                 json!({ "decision": "accept" }),
             )
             .await;
@@ -2668,7 +3290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_controller_request_is_not_redelivered_after_write_begins() {
+    async fn external_controller_request_rebinds_after_write_begins() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             tx,
@@ -2686,7 +3308,7 @@ mod tests {
             thread_id,
         );
 
-        let (request_id, mut wait_for_result) = thread_outgoing
+        let (request_id, wait_for_result) = thread_outgoing
             .send_request(command_execution_request_approval(thread_id))
             .await;
 
@@ -2702,33 +3324,32 @@ mod tests {
         assert_eq!(connection_id, ConnectionId(2));
         assert_eq!(initial_request.id(), &request_id);
         assert_eq!(initial_thread_sequence, Some(1));
-        let write_complete_tx =
+        let external_write_complete_tx =
             write_complete_tx.expect("external controller request should track write completion");
-        assert!(write_complete_tx.begin_write());
+        assert!(external_write_complete_tx.begin_write());
 
         outgoing
             .rebind_requests_for_thread_to_connection(thread_id, ConnectionId(1))
             .await;
-        assert!(timeout(Duration::from_millis(10), rx.recv()).await.is_err());
-        write_complete_tx.complete();
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = rx.recv().await.expect("rebound request should be sent")
+        else {
+            panic!("expected rebound request envelope");
+        };
+        let (rebound_request, rebound_thread_sequence) = request_from_message(message);
+        assert_eq!(connection_id, ConnectionId(1));
+        assert_eq!(rebound_request.id(), &request_id);
+        assert_eq!(rebound_thread_sequence, Some(2));
+        assert!(write_complete_tx.is_none());
+        external_write_complete_tx.complete();
 
         outgoing
             .notify_client_response_from_connection(
                 ConnectionId(1),
                 request_id.clone(),
-                json!({ "decision": "accept" }),
-            )
-            .await;
-        assert!(
-            timeout(Duration::from_millis(10), &mut wait_for_result)
-                .await
-                .is_err()
-        );
-
-        outgoing
-            .notify_client_response_from_connection(
-                ConnectionId(2),
-                request_id,
                 json!({ "decision": "accept" }),
             )
             .await;

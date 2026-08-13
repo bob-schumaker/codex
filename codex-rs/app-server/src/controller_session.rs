@@ -226,6 +226,9 @@ pub struct ControllerOwnershipStatus {
     pub main_thread_id: ThreadId,
     pub owner: ControllerOwnershipStatusOwner,
     pub owner_epoch: u64,
+    /// Whether this main thread still has any controller session, including a
+    /// read-capable session that is not currently the interactive owner.
+    pub has_controller_session: bool,
     pub reason: ControllerControlOwnershipChangedReason,
 }
 
@@ -286,6 +289,7 @@ impl ControllerSessionCoordinator {
             main_thread_id: self.main_thread_id,
             owner: self.ownership_status_owner(),
             owner_epoch: self.owner_epoch_for_notification(),
+            has_controller_session: !self.sessions.is_empty(),
             reason,
         }
     }
@@ -365,6 +369,7 @@ impl ControllerSessionCoordinator {
         if authorization_expired {
             return Err(ControllerSessionError::AuthorizationExpired);
         }
+        self.ensure_not_terminal()?;
         self.require_live_session(connection_id, now)?;
         if matches!(
             self.owner,
@@ -395,6 +400,7 @@ impl ControllerSessionCoordinator {
         if authorization_expired {
             return Err(ControllerSessionError::AuthorizationExpired);
         }
+        self.ensure_not_terminal()?;
         self.require_live_session(connection_id, now)?;
         match self.owner.clone() {
             InteractiveOwner::TuiOwned { owner_epoch } => {
@@ -464,6 +470,7 @@ impl ControllerSessionCoordinator {
         if authorization_expired {
             return Err(ControllerSessionError::AuthorizationExpired);
         }
+        self.ensure_not_terminal()?;
         self.require_live_session(connection_id, now)?;
 
         match self.owner.clone() {
@@ -591,6 +598,33 @@ impl ControllerSessionCoordinator {
         );
     }
 
+    /// Revokes every controller session for this thread in response to an owning-TUI policy action.
+    pub(crate) fn revoke_all_sessions_for_tui_policy(&mut self) {
+        let mut revoked_sessions = std::mem::take(&mut self.sessions)
+            .into_values()
+            .collect::<Vec<_>>();
+        if revoked_sessions.is_empty() {
+            return;
+        }
+        if let InteractiveOwner::ControllerOwned { owner_epoch, .. } = self.owner.clone() {
+            self.transfer_to_tui_owned_after(owner_epoch);
+        }
+        for session in &mut revoked_sessions {
+            session.session_sequence = self.next_session_sequence();
+            self.push_control_ownership_changed_for_session(
+                session,
+                ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+                ControlNotificationLease::None,
+            );
+            self.push_authorization_changed_for_session(
+                session,
+                ControllerAuthorizationChangedReason::Revoked,
+                AuthorizationNotificationSession::None,
+            );
+        }
+        self.push_ownership_status(ControllerControlOwnershipChangedReason::AuthorizationRevoked);
+    }
+
     pub(crate) fn sign_off_session(&mut self, connection_id: ConnectionId) {
         self.revoke_session_with_reason(
             connection_id,
@@ -621,13 +655,22 @@ impl ControllerSessionCoordinator {
         self.clear_all_active_leases();
         let owner_epoch = self.next_owner_epoch();
         self.set_owner(InteractiveOwner::TuiUnavailable { owner_epoch });
-        self.push_control_ownership_changed_for_all_sessions(
-            ControllerControlOwnershipChangedReason::TuiUnavailable,
-        );
-        self.push_authorization_changed_for_all_sessions(
-            ControllerAuthorizationChangedReason::TuiUnavailable,
-            AuthorizationNotificationSession::None,
-        );
+        let sessions = std::mem::take(&mut self.sessions)
+            .into_values()
+            .collect::<Vec<_>>();
+        for session in &sessions {
+            self.push_control_ownership_changed_for_session(
+                session,
+                ControllerControlOwnershipChangedReason::TuiUnavailable,
+                ControlNotificationLease::None,
+            );
+            self.push_authorization_changed_for_session(
+                session,
+                ControllerAuthorizationChangedReason::TuiUnavailable,
+                AuthorizationNotificationSession::None,
+            );
+        }
+        self.push_ownership_status(ControllerControlOwnershipChangedReason::TuiUnavailable);
         Ok(())
     }
 
@@ -635,14 +678,22 @@ impl ControllerSessionCoordinator {
         self.clear_all_active_leases();
         self.last_owner_epoch = self.next_owner_epoch();
         self.owner = InteractiveOwner::Closed;
-        self.push_control_ownership_changed_for_all_sessions(
-            ControllerControlOwnershipChangedReason::MainThreadClosed,
-        );
-        self.push_authorization_changed_for_all_sessions(
-            ControllerAuthorizationChangedReason::MainThreadClosed,
-            AuthorizationNotificationSession::None,
-        );
-        self.sessions.clear();
+        let sessions = std::mem::take(&mut self.sessions)
+            .into_values()
+            .collect::<Vec<_>>();
+        for session in &sessions {
+            self.push_control_ownership_changed_for_session(
+                session,
+                ControllerControlOwnershipChangedReason::MainThreadClosed,
+                ControlNotificationLease::None,
+            );
+            self.push_authorization_changed_for_session(
+                session,
+                ControllerAuthorizationChangedReason::MainThreadClosed,
+                AuthorizationNotificationSession::None,
+            );
+        }
+        self.push_ownership_status(ControllerControlOwnershipChangedReason::MainThreadClosed);
     }
 
     fn upsert_session(&mut self, connection_id: ConnectionId, grant: ControllerEnrollmentGrant) {
@@ -959,6 +1010,7 @@ impl ControllerSessionCoordinator {
             main_thread_id: self.main_thread_id,
             owner: self.ownership_status_owner(),
             owner_epoch: self.owner_epoch_for_notification(),
+            has_controller_session: !self.sessions.is_empty(),
             reason,
         });
     }

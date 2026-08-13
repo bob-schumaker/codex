@@ -562,6 +562,7 @@ pub(crate) use config_processor::ConfigRequestProcessor;
 pub(crate) use controller_processor::ControllerNormalAuthorization;
 pub(crate) use controller_processor::ControllerRequestProcessor;
 pub(crate) use controller_processor::ControllerRequestTarget;
+pub(crate) use controller_processor::controller_session_error;
 pub(crate) use diagnostics::read_server_diagnostics;
 pub(crate) use environment_processor::EnvironmentRequestProcessor;
 pub(crate) use feedback_processor::FeedbackRequestProcessor;

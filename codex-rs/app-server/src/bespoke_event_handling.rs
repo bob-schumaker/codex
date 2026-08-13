@@ -2107,6 +2107,7 @@ mod tests {
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
     use crate::outgoing_message::OutgoingMessageSender;
+    use crate::outgoing_message::ServerRequestRecipients;
     use anyhow::Result;
     use anyhow::anyhow;
     use anyhow::bail;
@@ -3487,7 +3488,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_dynamic_tool_start_emits_item_and_requests_client() -> Result<()> {
+    async fn controller_owned_dynamic_tool_start_stays_with_tui() -> Result<()> {
         let codex_home = TempDir::new()?;
         let config = load_default_config_for_test(&codex_home).await;
         let thread_manager = Arc::new(
@@ -3510,8 +3511,13 @@ mod tests {
             tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
         ));
-        let outgoing = ThreadScopedOutgoingMessageSender::new(
+        let outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
             outgoing,
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            ),
             vec![ConnectionId(1)],
             conversation_id,
         );
@@ -3553,8 +3559,21 @@ mod tests {
         };
         assert_eq!(payload.item.id(), "dynamic-1");
 
-        let request = recv_broadcast_message(&mut rx).await?;
-        let params = match request {
+        let envelope = rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("dynamic tool request should be sent"))?;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = envelope
+        else {
+            bail!("dynamic tool request should be sent to the TUI");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert!(write_complete_tx.is_none());
+        let params = match message {
             OutgoingMessage::Request(ServerRequest::DynamicToolCall { params, .. })
             | OutgoingMessage::SequencedRequest(ServerRequestEnvelope {
                 request: ServerRequest::DynamicToolCall { params, .. },
@@ -3564,9 +3583,9 @@ mod tests {
             | OutgoingMessage::SequencedRequest(ServerRequestEnvelope { request, .. }) => {
                 bail!("unexpected request: {request:?}");
             }
-            OutgoingMessage::AppServerNotification(_)
+            message @ (OutgoingMessage::AppServerNotification(_)
             | OutgoingMessage::Response(_)
-            | OutgoingMessage::Error(_) => bail!("unexpected message: {request:?}"),
+            | OutgoingMessage::Error(_)) => bail!("unexpected message: {message:?}"),
         };
         assert_eq!(
             params,
@@ -3579,6 +3598,99 @@ mod tests {
                 arguments: json!({"id": "123"}),
             }
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controller_owned_mcp_elicitation_stays_with_tui() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?;
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new_with_request_recipients(
+            outgoing,
+            ServerRequestRecipients::external_controller_with_fallback(
+                ConnectionId(2),
+                Some(ConnectionId(1)),
+                /*owner_epoch*/ 1,
+            ),
+            Vec::new(),
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::ElicitationRequest(
+                    codex_protocol::approvals::ElicitationRequestEvent {
+                        turn_id: Some("turn-1".to_string()),
+                        server_name: "test-mcp".to_string(),
+                        id: codex_protocol::mcp::RequestId::String("elicitation-1".to_string()),
+                        request: codex_protocol::approvals::ElicitationRequest::Url {
+                            meta: None,
+                            message: "Open this page".to_string(),
+                            url: "https://example.test".to_string(),
+                            elicitation_id: "elicitation-1".to_string(),
+                        },
+                    },
+                ),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            new_thread_state(),
+            ThreadWatchManager::new(),
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        let envelope = rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("MCP elicitation request should be sent"))?;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            write_complete_tx,
+        } = envelope
+        else {
+            bail!("MCP elicitation request should be sent to the TUI");
+        };
+        assert_eq!(connection_id, ConnectionId(1));
+        assert!(write_complete_tx.is_none());
+        let (OutgoingMessage::Request(ServerRequest::McpServerElicitationRequest {
+            params, ..
+        })
+        | OutgoingMessage::SequencedRequest(ServerRequestEnvelope {
+            request: ServerRequest::McpServerElicitationRequest { params, .. },
+            ..
+        })) = message
+        else {
+            bail!("unexpected MCP elicitation request message: {message:?}");
+        };
+        assert_eq!(params.thread_id, conversation_id.to_string());
+        assert_eq!(params.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(params.server_name, "test-mcp");
         Ok(())
     }
 

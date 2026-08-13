@@ -1099,6 +1099,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             InProcessServerEvent::SequencedServerRequest(event) => {
                 handle_server_request(&client, *event.request, &mut error_seen).await;
             }
+            InProcessServerEvent::ServerRequestRejected(_) => {}
             InProcessServerEvent::ControllerOwnershipStatus(_) => {}
             InProcessServerEvent::LocalControllerEndpointUnavailable { .. } => {}
             event @ (InProcessServerEvent::ServerNotification(_)
@@ -1111,6 +1112,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
                     | InProcessServerEvent::Lagged { .. } => unreachable!(),
                 };
                 if let ServerNotification::Error(payload) = &notification {

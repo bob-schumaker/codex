@@ -23,9 +23,9 @@ use crate::controller_enrollment::ControllerCredentialProof;
 use crate::controller_enrollment::ControllerEnrollmentPolicy;
 use crate::controller_enrollment::ControllerEnrollmentSource;
 use crate::controller_native_approval::NativeControllerParticipationApprover;
-use crate::controller_session::ControllerOwnershipStatus;
 use crate::controller_session::ControllerSessionClock;
 use crate::controller_session::ControllerSessionConfig;
+use crate::controller_session::ControllerSessionError;
 use crate::current_time::app_server_time_provider;
 use crate::error_code::invalid_request;
 use crate::extensions::ThreadExtensionDependencies;
@@ -35,9 +35,12 @@ use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
+use crate::in_process::IN_PROCESS_CONNECTION_ID;
+use crate::in_process::InProcessSequencedControllerOwnershipStatus;
 use crate::in_process_snapshot::InProcessThreadSnapshot;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use crate::outgoing_message::ExternalPromptDeliveryFailure;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::request_processors::AccountRequestProcessor;
@@ -64,6 +67,7 @@ use crate::request_processors::ThreadListScope;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
+use crate::request_processors::controller_session_error;
 use crate::request_processors::read_server_diagnostics;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationPriority;
@@ -282,7 +286,11 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) controller_enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     pub(crate) native_controller_participation_approver:
         Option<NativeControllerParticipationApprover>,
-    pub(crate) controller_ownership_status_tx: Option<mpsc::Sender<ControllerOwnershipStatus>>,
+    pub(crate) controller_ownership_status_tx:
+        Option<mpsc::Sender<InProcessSequencedControllerOwnershipStatus>>,
+    #[cfg(test)]
+    pub(crate) controller_session_test_config:
+        Option<(ControllerSessionClock, ControllerSessionConfig)>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
 }
 
@@ -322,6 +330,8 @@ impl MessageProcessor {
             controller_enrollment_source,
             native_controller_participation_approver,
             controller_ownership_status_tx,
+            #[cfg(test)]
+            controller_session_test_config,
             plugin_startup_tasks,
         } = args;
         let thread_state_manager = ThreadStateManager::new();
@@ -347,17 +357,51 @@ impl MessageProcessor {
             ),
         );
         let goal_service = Arc::new(GoalService::new());
+        #[cfg(test)]
+        let (controller_clock, controller_session_config) = controller_session_test_config
+            .unwrap_or_else(|| {
+                (
+                    ControllerSessionClock::from_fn(std::time::Instant::now),
+                    ControllerSessionConfig {
+                        lease_duration: Duration::from_secs(5 * 60),
+                    },
+                )
+            });
+        #[cfg(not(test))]
+        let (controller_clock, controller_session_config) = (
+            ControllerSessionClock::from_fn(std::time::Instant::now),
+            ControllerSessionConfig {
+                lease_duration: Duration::from_secs(5 * 60),
+            },
+        );
         let controller_processor = ControllerRequestProcessor::new(
             outgoing.clone(),
             controller_enrollment_source,
             native_controller_participation_approver,
             controller_ownership_status_tx,
             ControllerEnrollmentPolicy::BestEffort,
-            ControllerSessionClock::from_fn(std::time::Instant::now),
-            ControllerSessionConfig {
-                lease_duration: Duration::from_secs(5 * 60),
-            },
+            controller_clock,
+            controller_session_config,
         );
+        let controller_processor_for_delivery_recovery = controller_processor.clone();
+        outgoing.set_external_prompt_delivery_failure_handler(Arc::new(
+            move |ExternalPromptDeliveryFailure {
+                      connection_id,
+                      request_id,
+                      thread_id,
+                  }| {
+                let controller_processor = controller_processor_for_delivery_recovery.clone();
+                tokio::spawn(async move {
+                    controller_processor
+                        .recover_external_prompt_delivery_failure(
+                            thread_id,
+                            connection_id,
+                            &request_id,
+                        )
+                        .await;
+                });
+            },
+        ));
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             let manager = ThreadManager::new(
                 config.as_ref(),
@@ -396,6 +440,7 @@ impl MessageProcessor {
                 Some(app_server_attestation_provider(
                     outgoing.clone(),
                     thread_state_manager.clone(),
+                    controller_processor.clone(),
                 )),
                 Some(app_server_time_provider(
                     outgoing.clone(),
@@ -452,6 +497,7 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            controller_processor.clone(),
         );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
@@ -873,6 +919,25 @@ impl MessageProcessor {
         self.thread_processor.shutdown_threads().await;
     }
 
+    pub(crate) async fn expire_controller_deadlines(&self) {
+        self.controller_processor.expire_deadlines().await;
+    }
+
+    /// Applies a native embedded-TUI policy revocation for the given main thread.
+    pub(crate) async fn revoke_controller_access_from_tui(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), JSONRPCErrorError> {
+        self.controller_processor
+            .revoke_controller_access_from_tui(thread_id)
+            .await
+    }
+
+    /// Handles a failed delivery to the embedded TUI's lossless request sink.
+    pub(crate) async fn tui_server_request_delivery_failed(&self, reason: String) {
+        self.controller_processor.mark_tui_unavailable(reason).await;
+    }
+
     pub(crate) async fn connection_closed(
         &self,
         connection_id: ConnectionId,
@@ -924,6 +989,63 @@ impl MessageProcessor {
             .subscribe_running_assistant_turn_count()
     }
 
+    /// Resolves an embedded-TUI server request under the same prompt-transition
+    /// barrier and owner checks as every other server-request response.
+    pub(crate) async fn process_in_process_server_request_response(
+        &self,
+        request_id: RequestId,
+        result: codex_app_server_protocol::Result,
+    ) -> bool {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        if self
+            .authorize_server_request_response(
+                IN_PROCESS_CONNECTION_ID,
+                ConnectionOrigin::InProcess,
+                &request_id,
+                &result,
+            )
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.outgoing
+            .notify_client_response_from_connection_with_transition_held(
+                IN_PROCESS_CONNECTION_ID,
+                request_id,
+                result,
+            )
+            .await
+    }
+
+    /// Rejects an embedded-TUI server request under the same prompt-transition
+    /// barrier and owner checks as every other server-request error.
+    pub(crate) async fn process_in_process_server_request_error(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> bool {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        if self
+            .authorize_server_request_error(
+                IN_PROCESS_CONNECTION_ID,
+                ConnectionOrigin::InProcess,
+                &request_id,
+            )
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.outgoing
+            .notify_client_error_from_connection_with_transition_held(
+                IN_PROCESS_CONNECTION_ID,
+                request_id,
+                error,
+            )
+            .await
+    }
+
     /// Handle a standalone JSON-RPC response originating from the peer.
     pub(crate) async fn process_response(
         &self,
@@ -933,14 +1055,29 @@ impl MessageProcessor {
     ) {
         tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
+        let _transition = self.outgoing.lock_prompt_transition().await;
         match self
             .authorize_server_request_response(connection_id, connection_origin, &id, &result)
             .await
         {
             Ok(()) => {
-                self.outgoing
-                    .notify_client_response_from_connection(connection_id, id, result)
+                let resolved = self
+                    .outgoing
+                    .notify_client_response_from_connection_with_transition_held(
+                        connection_id,
+                        id.clone(),
+                        result,
+                    )
                     .await;
+                if !resolved && matches!(connection_origin, ConnectionOrigin::ExternalController) {
+                    self.outgoing
+                        .send_error_to_connection(
+                            connection_id,
+                            id,
+                            controller_session_error(ControllerSessionError::StaleOwnership),
+                        )
+                        .await;
+                }
             }
             Err(error) => {
                 self.outgoing
@@ -959,14 +1096,29 @@ impl MessageProcessor {
     ) {
         tracing::error!("<- error: {:?}", err);
         let JSONRPCError { id, error } = err;
+        let _transition = self.outgoing.lock_prompt_transition().await;
         match self
             .authorize_server_request_error(connection_id, connection_origin, &id)
             .await
         {
             Ok(()) => {
-                self.outgoing
-                    .notify_client_error_from_connection(connection_id, id, error)
+                let resolved = self
+                    .outgoing
+                    .notify_client_error_from_connection_with_transition_held(
+                        connection_id,
+                        id.clone(),
+                        error,
+                    )
                     .await;
+                if !resolved && matches!(connection_origin, ConnectionOrigin::ExternalController) {
+                    self.outgoing
+                        .send_error_to_connection(
+                            connection_id,
+                            id,
+                            controller_session_error(ControllerSessionError::StaleOwnership),
+                        )
+                        .await;
+                }
             }
             Err(rejection) => {
                 self.outgoing
@@ -992,6 +1144,13 @@ impl MessageProcessor {
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
             return Ok(());
         };
+        if pending_request.requires_external_controller_epoch
+            && pending_request.external_controller_owner_epoch.is_none()
+        {
+            return Err(controller_session_error(
+                ControllerSessionError::StaleOwnership,
+            ));
+        }
         let response = match pending_request.request.response_from_result(result.clone()) {
             Ok(response) => response,
             Err(err) => {
@@ -1042,6 +1201,13 @@ impl MessageProcessor {
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
             return Ok(());
         };
+        if pending_request.requires_external_controller_epoch
+            && pending_request.external_controller_owner_epoch.is_none()
+        {
+            return Err(controller_session_error(
+                ControllerSessionError::StaleOwnership,
+            ));
+        }
         if let Err(err) = self
             .controller_processor
             .authorize_server_request_error(
@@ -1072,6 +1238,11 @@ impl MessageProcessor {
         let Some(pending_request) = self.outgoing.pending_server_request(request_id).await else {
             return Ok(());
         };
+        if pending_request.externally_transferred_from_tui {
+            return Err(controller_session_error(
+                ControllerSessionError::StaleOwnership,
+            ));
+        }
         let Some(rule) = server_request_response_rule_for_request(&pending_request.request) else {
             return Ok(());
         };
@@ -1083,7 +1254,7 @@ impl MessageProcessor {
         };
 
         self.controller_processor
-            .reclaim_for_primary_thread_input(thread_id.to_string().as_str())
+            .reclaim_for_primary_thread_input_with_transition_held(thread_id.to_string().as_str())
             .await?;
         self.outgoing
             .rebind_request_resolution_to_connection(request_id, thread_id, connection_id)

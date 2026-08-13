@@ -338,24 +338,23 @@ impl ThreadStateManager {
             .insert(connection_id, capabilities);
     }
 
-    pub(crate) async fn first_attestation_capable_connection_for_thread(
+    pub(crate) async fn attestation_capable_connection_for_thread(
         &self,
         thread_id: ThreadId,
+        connection_id: ConnectionId,
     ) -> Option<ConnectionId> {
         let state = self.state.lock().await;
         state
             .threads
             .get(&thread_id)?
             .connection_ids
-            .iter()
-            .filter_map(|connection_id| {
-                state
-                    .live_connections
-                    .get(connection_id)?
-                    .request_attestation
-                    .then_some(*connection_id)
-            })
-            .min_by_key(|connection_id| connection_id.0)
+            .contains(&connection_id)
+            .then_some(())?;
+        state
+            .live_connections
+            .get(&connection_id)?
+            .request_attestation
+            .then_some(connection_id)
     }
 
     pub(crate) async fn wait_for_thread_subscriber(&self, thread_id: ThreadId) {

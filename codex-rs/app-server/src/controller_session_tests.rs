@@ -140,6 +140,72 @@ fn ownership_lifecycle_preserves_standing_authorization() {
 }
 
 #[test]
+fn tui_policy_revocation_removes_active_and_standing_controller_sessions() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let owner = connection_id(10);
+    let observer = connection_id(11);
+    let mut coordinator = new_coordinator(main_thread_id, &clock);
+
+    coordinator
+        .request_participation(owner, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("first controller should own the thread");
+    coordinator
+        .request_participation(observer, grant(&clock, main_thread_id, /*epoch*/ 4))
+        .expect("second controller should receive standing access");
+    coordinator.drain_events();
+
+    coordinator.revoke_all_sessions_for_tui_policy();
+
+    assert_eq!(coordinator.session_for(owner), None);
+    assert_eq!(coordinator.session_for(observer), None);
+    assert_eq!(
+        coordinator.interactive_owner(),
+        &InteractiveOwner::TuiOwned { owner_epoch: 2 }
+    );
+    assert_eq!(
+        coordinator.drain_events().ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Tui,
+            owner_epoch: 2,
+            has_controller_session: false,
+            reason: ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+        }]
+    );
+}
+
+#[test]
+fn tui_policy_revocation_updates_standing_session_status() {
+    let clock = ManualClock::new();
+    let main_thread_id = thread_id(1);
+    let controller = connection_id(10);
+    let mut coordinator = new_coordinator(main_thread_id, &clock);
+
+    coordinator
+        .request_participation(controller, grant(&clock, main_thread_id, /*epoch*/ 3))
+        .expect("controller should own the thread");
+    coordinator
+        .release_control(controller)
+        .expect("controller should retain standing access after release");
+    coordinator.drain_events();
+
+    coordinator.revoke_all_sessions_for_tui_policy();
+
+    assert_eq!(coordinator.session_for(controller), None);
+    assert_eq!(
+        coordinator.drain_events().ownership_statuses,
+        vec![ControllerOwnershipStatus {
+            main_thread_id,
+            owner: ControllerOwnershipStatusOwner::Tui,
+            owner_epoch: 2,
+            has_controller_session: false,
+            reason: ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+        }]
+    );
+}
+
+#[test]
 fn active_owner_authority_rejects_controllers_without_control() {
     let clock = ManualClock::new();
     let main_thread_id = thread_id(1);
@@ -417,6 +483,7 @@ fn ownership_statuses_track_transitions_for_tui() {
                 session_id: session_id.clone(),
             },
             owner_epoch: 1,
+            has_controller_session: true,
             reason: ControllerControlOwnershipChangedReason::InitialLeaseGranted,
         }]
     );
@@ -431,6 +498,7 @@ fn ownership_statuses_track_transitions_for_tui() {
             main_thread_id,
             owner: ControllerOwnershipStatusOwner::Tui,
             owner_epoch: 2,
+            has_controller_session: true,
             reason: ControllerControlOwnershipChangedReason::Released,
         }]
     );
@@ -445,6 +513,7 @@ fn ownership_statuses_track_transitions_for_tui() {
             main_thread_id,
             owner: ControllerOwnershipStatusOwner::Controller { session_id },
             owner_epoch: 3,
+            has_controller_session: true,
             reason: ControllerControlOwnershipChangedReason::Acquired,
         }]
     );
@@ -457,6 +526,7 @@ fn ownership_statuses_track_transitions_for_tui() {
             main_thread_id,
             owner: ControllerOwnershipStatusOwner::Tui,
             owner_epoch: 4,
+            has_controller_session: false,
             reason: ControllerControlOwnershipChangedReason::ControllerDisconnected,
         }]
     );
@@ -487,6 +557,7 @@ fn ownership_statuses_report_terminal_owner_states() {
             main_thread_id,
             owner: ControllerOwnershipStatusOwner::TuiUnavailable,
             owner_epoch: 2,
+            has_controller_session: false,
             reason: ControllerControlOwnershipChangedReason::TuiUnavailable,
         }]
     );
@@ -504,6 +575,7 @@ fn ownership_statuses_report_terminal_owner_states() {
             main_thread_id,
             owner: ControllerOwnershipStatusOwner::Closed,
             owner_epoch: 2,
+            has_controller_session: false,
             reason: ControllerControlOwnershipChangedReason::MainThreadClosed,
         }]
     );

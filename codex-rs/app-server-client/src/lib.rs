@@ -33,9 +33,12 @@ pub use codex_app_server::in_process::InProcessControllerOwnershipStatusOwner;
 pub use codex_app_server::in_process::InProcessControllerParticipationRequest;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointConfig;
 pub use codex_app_server::in_process::InProcessLocalControllerEndpointStatus;
+pub use codex_app_server::in_process::InProcessSequencedControllerOwnershipStatus;
 pub use codex_app_server::in_process::InProcessSequencedServerNotification;
 pub use codex_app_server::in_process::InProcessSequencedServerRequest;
 pub use codex_app_server::in_process::InProcessServerEvent;
+pub use codex_app_server::in_process::InProcessServerRequestRejection;
+pub use codex_app_server::in_process::InProcessServerRequestRejectionReason;
 use codex_app_server::in_process::InProcessStartArgs;
 pub use codex_app_server::in_process::InProcessThreadSnapshot;
 pub use codex_app_server::in_process::InProcessThreadSnapshotServerRequest;
@@ -111,12 +114,13 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 pub enum AppServerEvent {
     Lagged { skipped: usize },
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
-    ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
+    ControllerOwnershipStatus(Box<InProcessSequencedControllerOwnershipStatus>),
     LocalControllerEndpointUnavailable { reason: String },
     ServerNotification(Box<ServerNotification>),
     SequencedServerNotification(Box<InProcessSequencedServerNotification>),
     ServerRequest(Box<ServerRequest>),
     SequencedServerRequest(Box<InProcessSequencedServerRequest>),
+    ServerRequestRejected(Box<InProcessServerRequestRejection>),
     Disconnected { message: String },
 }
 
@@ -143,6 +147,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
             InProcessServerEvent::SequencedServerRequest(event) => {
                 Self::SequencedServerRequest(event)
             }
+            InProcessServerEvent::ServerRequestRejected(rejection) => {
+                Self::ServerRequestRejected(rejection)
+            }
         }
     }
 }
@@ -162,6 +169,7 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
         InProcessServerEvent::ControllerParticipationRequest(_) => true,
         InProcessServerEvent::ControllerOwnershipStatus(_) => true,
         InProcessServerEvent::LocalControllerEndpointUnavailable { .. } => true,
+        InProcessServerEvent::ServerRequestRejected(_) => true,
         _ => false,
     }
 }
@@ -174,6 +182,7 @@ fn take_server_request(event: InProcessServerEvent) -> Option<ServerRequest> {
         | InProcessServerEvent::ControllerParticipationRequest(_)
         | InProcessServerEvent::ControllerOwnershipStatus(_)
         | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+        | InProcessServerEvent::ServerRequestRejected(_)
         | InProcessServerEvent::ServerNotification(_)
         | InProcessServerEvent::SequencedServerNotification(_) => None,
     }
@@ -187,6 +196,7 @@ fn chatgpt_auth_tokens_refresh_request_id(event: &InProcessServerEvent) -> Optio
         | InProcessServerEvent::ControllerParticipationRequest(_)
         | InProcessServerEvent::ControllerOwnershipStatus(_)
         | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+        | InProcessServerEvent::ServerRequestRejected(_)
         | InProcessServerEvent::ServerNotification(_)
         | InProcessServerEvent::SequencedServerNotification(_) => return None,
     };
@@ -495,6 +505,10 @@ enum ClientCommand {
             IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
         >,
     },
+    RevokeControllerAccess {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<IoResult<std::result::Result<(), JSONRPCErrorError>>>,
+    },
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
@@ -617,6 +631,13 @@ impl InProcessAppServerClient {
                                 response_tx,
                             }) => {
                                 let result = handle.thread_snapshot(thread_id, include_turns).await;
+                                let _ = response_tx.send(result);
+                            }
+                            Some(ClientCommand::RevokeControllerAccess {
+                                thread_id,
+                                response_tx,
+                            }) => {
+                                let result = handle.revoke_controller_access(thread_id).await;
                                 let _ = response_tx.send(result);
                             }
                             Some(ClientCommand::Shutdown { response_tx }) => {
@@ -923,6 +944,32 @@ impl InProcessAppServerClient {
         })?
     }
 
+    /// Revokes every external-controller session for this embedded TUI main thread.
+    pub async fn revoke_controller_access(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> IoResult<std::result::Result<(), JSONRPCErrorError>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::RevokeControllerAccess {
+                thread_id,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process controller revocation channel is closed",
+            )
+        })?
+    }
+
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
@@ -1135,6 +1182,20 @@ impl AppServerClient {
             Self::Remote(_) => Err(IoError::new(
                 ErrorKind::Unsupported,
                 "in-process thread snapshots are only supported by embedded app-server",
+            )),
+        }
+    }
+
+    /// Revokes every external-controller session for an embedded TUI main thread.
+    pub async fn revoke_controller_access(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> IoResult<std::result::Result<(), JSONRPCErrorError>> {
+        match self {
+            Self::InProcess(client) => client.revoke_controller_access(thread_id).await,
+            Self::Remote(_) => Err(IoError::new(
+                ErrorKind::Unsupported,
+                "native controller revocation is only supported by embedded app-server",
             )),
         }
     }
@@ -1786,6 +1847,7 @@ mod tests {
                 main_thread_id: thread_id,
                 owner: InProcessControllerOwnershipStatusOwner::Tui,
                 owner_epoch: 0,
+                has_controller_session: false,
                 reason:
                     codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
             })
@@ -1942,6 +2004,19 @@ mod tests {
             request_event,
             AppServerEvent::SequencedServerRequest(event)
                 if event.thread_sequence == 13 && event.request.id() == &request_id
+        ));
+
+        let rejection_event = AppServerEvent::from(InProcessServerEvent::ServerRequestRejected(
+            Box::new(InProcessServerRequestRejection {
+                request_id: request_id.clone(),
+                reason: InProcessServerRequestRejectionReason::StaleOwnership,
+            }),
+        ));
+        assert!(matches!(
+            rejection_event,
+            AppServerEvent::ServerRequestRejected(rejection)
+                if rejection.request_id == request_id
+                    && rejection.reason == InProcessServerRequestRejectionReason::StaleOwnership
         ));
     }
 
@@ -2978,15 +3053,18 @@ mod tests {
         ));
         assert!(event_requires_delivery(
             &InProcessServerEvent::ControllerOwnershipStatus(Box::new(
-                InProcessControllerOwnershipStatus {
-                    main_thread_id: codex_protocol::ThreadId::from_string(
-                        "00000000-0000-0000-0000-000000000001"
-                    )
-                    .expect("test thread id should parse"),
-                    owner: InProcessControllerOwnershipStatusOwner::Tui,
-                    owner_epoch: 2,
-                    reason:
-                        codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
+                InProcessSequencedControllerOwnershipStatus {
+                    status: Box::new(InProcessControllerOwnershipStatus {
+                        main_thread_id: codex_protocol::ThreadId::from_string(
+                            "00000000-0000-0000-0000-000000000001"
+                        )
+                        .expect("test thread id should parse"),
+                        owner: InProcessControllerOwnershipStatusOwner::Tui,
+                        owner_epoch: 2,
+                        has_controller_session: false,
+                        reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
+                    }),
+                    thread_sequence: 2,
                 }
             ))
         ));

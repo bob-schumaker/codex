@@ -65,6 +65,10 @@ use crate::controller_native_approval::NativeControllerParticipationRequest;
 pub use crate::controller_native_approval::NativeControllerParticipationRequestId;
 pub use crate::controller_session::ControllerOwnershipStatus as InProcessControllerOwnershipStatus;
 pub use crate::controller_session::ControllerOwnershipStatusOwner as InProcessControllerOwnershipStatusOwner;
+#[cfg(test)]
+use crate::controller_session::ControllerSessionClock;
+#[cfg(test)]
+use crate::controller_session::ControllerSessionConfig;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
@@ -120,7 +124,7 @@ use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use tracing::warn;
 
-const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(u64::MAX);
+pub(crate) const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(u64::MAX);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // Covers both bounded runtime drains plus the analytics client's 25-second best-effort flush.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(35);
@@ -268,6 +272,12 @@ pub struct InProcessStartArgs {
     /// Optional embedded local-controller endpoint startup policy.
     pub local_controller_endpoint: InProcessLocalControllerEndpointConfig,
     #[cfg(test)]
+    pub(crate) local_controller_writer_test_gate:
+        Option<codex_app_server_transport::local_controller::LocalControllerWriterTestGate>,
+    #[cfg(test)]
+    pub(crate) controller_session_test_config:
+        Option<(ControllerSessionClock, ControllerSessionConfig)>,
+    #[cfg(test)]
     pub(crate) controller_enrollment_source:
         Arc<dyn crate::controller_enrollment::ControllerEnrollmentSource>,
     #[cfg(test)]
@@ -291,12 +301,35 @@ pub struct InProcessSequencedServerNotification {
     pub thread_sequence: u64,
 }
 
+/// Controller ownership state paired with its canonical thread sequence.
+#[derive(Debug, Clone)]
+pub struct InProcessSequencedControllerOwnershipStatus {
+    pub status: Box<InProcessControllerOwnershipStatus>,
+    pub thread_sequence: u64,
+}
+
+/// Reason an in-process response to a server request was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InProcessServerRequestRejectionReason {
+    /// The request is no longer owned by the in-process client.
+    StaleOwnership,
+}
+
+/// Typed rejection of an in-process response to a server request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InProcessServerRequestRejection {
+    /// Identifier of the request whose response was rejected.
+    pub request_id: RequestId,
+    /// Why the response was rejected.
+    pub reason: InProcessServerRequestRejectionReason,
+}
+
 #[derive(Debug, Clone)]
 pub enum InProcessServerEvent {
     /// Local-controller participation request that requires owning TUI approval.
     ControllerParticipationRequest(Box<InProcessControllerParticipationRequest>),
     /// Controller input-ownership status update for the owning in-process TUI.
-    ControllerOwnershipStatus(Box<InProcessControllerOwnershipStatus>),
+    ControllerOwnershipStatus(Box<InProcessSequencedControllerOwnershipStatus>),
     /// Local-controller endpoint failed after startup; controllers are no
     /// longer available for this embedded launch.
     LocalControllerEndpointUnavailable { reason: String },
@@ -304,6 +337,8 @@ pub enum InProcessServerEvent {
     ServerRequest(Box<ServerRequest>),
     /// Server request with a canonical per-thread sequence.
     SequencedServerRequest(Box<InProcessSequencedServerRequest>),
+    /// A response to a server request was rejected by its current owner binding.
+    ServerRequestRejected(Box<InProcessServerRequestRejection>),
     /// App-server notification directed to the embedded client.
     ServerNotification(Box<ServerNotification>),
     /// App-server notification with a canonical per-thread sequence.
@@ -347,6 +382,10 @@ enum InProcessClientMessage {
         response_tx:
             oneshot::Sender<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
     },
+    RevokeControllerAccess {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<std::result::Result<(), JSONRPCErrorError>>,
+    },
     Shutdown {
         done_tx: oneshot::Sender<()>,
     },
@@ -364,6 +403,21 @@ enum ProcessorCommand {
         include_turns: bool,
         response_tx:
             oneshot::Sender<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>>,
+    },
+    RevokeControllerAccess {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<std::result::Result<(), JSONRPCErrorError>>,
+    },
+    ServerRequestResponse {
+        request_id: RequestId,
+        result: Result,
+    },
+    ServerRequestError {
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    },
+    TuiServerRequestDeliveryFailed {
+        reason: String,
     },
 }
 
@@ -474,6 +528,26 @@ impl InProcessClientSender {
         })
     }
 
+    /// Revokes every external-controller session for the given embedded TUI main thread.
+    ///
+    /// This is a native TUI policy operation, not a public app-server RPC.
+    pub async fn revoke_controller_access(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> IoResult<std::result::Result<(), JSONRPCErrorError>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.try_send_client_message(InProcessClientMessage::RevokeControllerAccess {
+            thread_id,
+            response_tx,
+        })?;
+        response_rx.await.map_err(|err| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                format!("in-process controller revocation response channel closed: {err}"),
+            )
+        })
+    }
+
     fn try_send_client_message(&self, message: InProcessClientMessage) -> IoResult<()> {
         match self.client_tx.try_send(message) {
             Ok(()) => Ok(()),
@@ -500,10 +574,35 @@ pub struct InProcessClientHandle {
     runtime_handle: tokio::task::JoinHandle<()>,
     local_controller_endpoint_status: InProcessLocalControllerEndpointStatus,
     #[cfg(test)]
+    test_fail_next_tui_server_request_delivery: Arc<AtomicBool>,
+    #[cfg(test)]
+    test_outgoing_message_sender: Arc<OutgoingMessageSender>,
+    #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
 
 impl InProcessClientHandle {
+    /// Makes the next server request directed to this test in-process TUI fail delivery.
+    #[cfg(test)]
+    pub(crate) fn fail_next_tui_server_request_delivery(&self) {
+        self.test_fail_next_tui_server_request_delivery
+            .store(true, Ordering::Release);
+    }
+
+    /// Closes the test in-process TUI event sink so subsequent request delivery fails.
+    #[cfg(test)]
+    pub(crate) fn close_tui_server_request_consumer(&mut self) {
+        self.event_rx.close();
+    }
+
+    /// Holds the existing atomic prompt-transition barrier for an in-process test.
+    #[cfg(test)]
+    pub(crate) async fn lock_prompt_transition_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.test_outgoing_message_sender
+            .lock_prompt_transition()
+            .await
+    }
+
     /// Sends a typed client request into the in-process runtime.
     ///
     /// The returned value is a transport-level `IoResult` containing either a
@@ -579,6 +678,14 @@ impl InProcessClientHandle {
         include_turns: bool,
     ) -> IoResult<std::result::Result<InProcessThreadSnapshot, JSONRPCErrorError>> {
         self.client.thread_snapshot(thread_id, include_turns).await
+    }
+
+    /// Revokes every external-controller session for this embedded TUI main thread.
+    pub async fn revoke_controller_access(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> IoResult<std::result::Result<(), JSONRPCErrorError>> {
+        self.client.revoke_controller_access(thread_id).await
     }
 
     /// Receives the next server event from the in-process runtime.
@@ -863,6 +970,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let controller_credential_proof_factory = args.controller_credential_proof_factory.clone();
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    #[cfg(test)]
+    let test_fail_next_tui_server_request_delivery = Arc::new(AtomicBool::new(false));
+    #[cfg(test)]
+    let test_fail_next_tui_server_request_delivery_for_runtime =
+        Arc::clone(&test_fail_next_tui_server_request_delivery);
+    #[cfg(test)]
+    let (test_outgoing_message_sender_tx, test_outgoing_message_sender_rx) = oneshot::channel();
     let pending_controller_participation = Arc::new(AsyncMutex::new(HashMap::new()));
     let next_controller_participation_request_id = Arc::new(AtomicU64::new(1));
     let native_controller_participation_approver = native_controller_participation_approver(
@@ -880,14 +994,36 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             (None, InProcessLocalControllerEndpointStatus::Disabled)
         }
         InProcessLocalControllerEndpointConfig::BestEffort { main_thread_id } => {
-            match codex_app_server_transport::local_controller::start_local_controller_acceptor(
-                args.config.codex_home.as_path(),
-                main_thread_id.clone(),
-                external_transport_event_tx.clone(),
-                external_transport_shutdown_token.clone(),
-            )
-            .await
-            {
+            #[cfg(test)]
+            let result = match args.local_controller_writer_test_gate.clone() {
+                Some(writer_test_gate) => {
+                    codex_app_server_transport::local_controller::start_local_controller_acceptor_with_writer_test_gate(
+                        args.config.codex_home.as_path(),
+                        main_thread_id.clone(),
+                        external_transport_event_tx.clone(),
+                        external_transport_shutdown_token.clone(),
+                        writer_test_gate,
+                    )
+                    .await
+                }
+                None => codex_app_server_transport::local_controller::start_local_controller_acceptor(
+                    args.config.codex_home.as_path(),
+                    main_thread_id.clone(),
+                    external_transport_event_tx.clone(),
+                    external_transport_shutdown_token.clone(),
+                )
+                .await,
+            };
+            #[cfg(not(test))]
+            let result =
+                codex_app_server_transport::local_controller::start_local_controller_acceptor(
+                    args.config.codex_home.as_path(),
+                    main_thread_id.clone(),
+                    external_transport_event_tx.clone(),
+                    external_transport_shutdown_token.clone(),
+                )
+                .await;
+            match result {
                 Ok(handle) => {
                     let metadata = handle.metadata().clone();
                     (
@@ -907,6 +1043,27 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             }
         }
         InProcessLocalControllerEndpointConfig::Enabled { main_thread_id } => {
+            #[cfg(test)]
+            let handle = match args.local_controller_writer_test_gate.clone() {
+                Some(writer_test_gate) => {
+                    codex_app_server_transport::local_controller::start_local_controller_acceptor_with_writer_test_gate(
+                        args.config.codex_home.as_path(),
+                        main_thread_id.clone(),
+                        external_transport_event_tx.clone(),
+                        external_transport_shutdown_token.clone(),
+                        writer_test_gate,
+                    )
+                    .await?
+                }
+                None => codex_app_server_transport::local_controller::start_local_controller_acceptor(
+                    args.config.codex_home.as_path(),
+                    main_thread_id.clone(),
+                    external_transport_event_tx.clone(),
+                    external_transport_shutdown_token.clone(),
+                )
+                .await?
+            };
+            #[cfg(not(test))]
             let handle =
                 codex_app_server_transport::local_controller::start_local_controller_acceptor(
                     args.config.codex_home.as_path(),
@@ -937,6 +1094,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             outgoing_tx,
             analytics_events_client.clone(),
         ));
+        #[cfg(test)]
+        let _ = test_outgoing_message_sender_tx.send(Arc::clone(&outgoing_message_sender));
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
@@ -977,7 +1136,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         );
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let (controller_ownership_status_tx, mut controller_ownership_status_rx) =
-            mpsc::channel::<InProcessControllerOwnershipStatus>(channel_capacity);
+            mpsc::channel::<InProcessSequencedControllerOwnershipStatus>(channel_capacity);
+        let event_tx_for_processor = event_tx.clone();
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
@@ -1001,12 +1161,17 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     native_controller_participation_approver,
                 ),
                 controller_ownership_status_tx: Some(controller_ownership_status_tx),
+                #[cfg(test)]
+                controller_session_test_config: args.controller_session_test_config,
                 plugin_startup_tasks: crate::PluginStartupTasks::Start,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
             let mut external_transport_event_rx = external_transport_event_rx;
             let mut listen_for_threads = true;
             let mut listen_for_external_transport = true;
+            let mut controller_deadline_tick = tokio::time::interval(Duration::from_secs(1));
+            controller_deadline_tick
+                .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
             connections.insert(
                 IN_PROCESS_CONNECTION_ID,
@@ -1055,6 +1220,57 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     .in_process_thread_snapshot(thread_id, include_turns)
                                     .await;
                                 let _ = response_tx.send(response);
+                            }
+                            Some(ProcessorCommand::RevokeControllerAccess {
+                                thread_id,
+                                response_tx,
+                            }) => {
+                                let response = processor
+                                    .revoke_controller_access_from_tui(thread_id)
+                                    .await;
+                                let _ = response_tx.send(response);
+                            }
+                            Some(ProcessorCommand::ServerRequestResponse {
+                                request_id,
+                                result,
+                            }) => {
+                                if !processor
+                                    .process_in_process_server_request_response(
+                                        request_id.clone(),
+                                        result,
+                                    )
+                                    .await
+                                {
+                                    let _ = event_tx_for_processor
+                                        .send(InProcessServerEvent::ServerRequestRejected(Box::new(
+                                            InProcessServerRequestRejection {
+                                                request_id,
+                                                reason: InProcessServerRequestRejectionReason::StaleOwnership,
+                                            },
+                                        )))
+                                        .await;
+                                }
+                            }
+                            Some(ProcessorCommand::ServerRequestError {
+                                request_id,
+                                error,
+                            }) => {
+                                if !processor
+                                    .process_in_process_server_request_error(request_id.clone(), error)
+                                    .await
+                                {
+                                    let _ = event_tx_for_processor
+                                        .send(InProcessServerEvent::ServerRequestRejected(Box::new(
+                                            InProcessServerRequestRejection {
+                                                request_id,
+                                                reason: InProcessServerRequestRejectionReason::StaleOwnership,
+                                            },
+                                        )))
+                                        .await;
+                                }
+                            }
+                            Some(ProcessorCommand::TuiServerRequestDeliveryFailed { reason }) => {
+                                processor.tui_server_request_delivery_failed(reason).await;
                             }
                             Some(ProcessorCommand::LocalControllerEndpointFailed {
                                 reason,
@@ -1263,6 +1479,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                     }
+                    _ = controller_deadline_tick.tick() => {
+                        processor.expire_controller_deadlines().await;
+                    }
                 }
             }
 
@@ -1281,6 +1500,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
         let mut listen_for_controller_ownership_status = true;
+        let mut tui_event_sink_closed = false;
 
         loop {
             tokio::select! {
@@ -1339,22 +1559,28 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         Some(InProcessClientMessage::ServerRequestResponse { request_id, result }) => {
-                            outgoing_message_sender
-                                .notify_client_response_from_connection(
-                                    IN_PROCESS_CONNECTION_ID,
+                            if processor_tx
+                                .send(ProcessorCommand::ServerRequestResponse {
                                     request_id,
                                     result,
-                                )
-                                .await;
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         Some(InProcessClientMessage::ServerRequestError { request_id, error }) => {
-                            outgoing_message_sender
-                                .notify_client_error_from_connection(
-                                    IN_PROCESS_CONNECTION_ID,
+                            if processor_tx
+                                .send(ProcessorCommand::ServerRequestError {
                                     request_id,
                                     error,
-                                )
-                                .await;
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                         Some(InProcessClientMessage::ControllerParticipationResponse {
                             request_id,
@@ -1392,6 +1618,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 .send(ProcessorCommand::ThreadSnapshot {
                                     thread_id,
                                     include_turns,
+                                    response_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Some(InProcessClientMessage::RevokeControllerAccess {
+                            thread_id,
+                            response_tx,
+                        }) => {
+                            if processor_tx
+                                .send(ProcessorCommand::RevokeControllerAccess {
+                                    thread_id,
                                     response_tx,
                                 })
                                 .await
@@ -1457,12 +1698,22 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         listen_for_controller_ownership_status = false;
                         continue;
                     };
-                    if event_tx
+                    if !tui_event_sink_closed && event_tx
                         .send(InProcessServerEvent::ControllerOwnershipStatus(Box::new(status)))
                         .await
                         .is_err()
                     {
-                        break;
+                        if processor_tx
+                            .send(ProcessorCommand::TuiServerRequestDeliveryFailed {
+                                reason: "in-process controller ownership status consumer is closed"
+                                    .to_string(),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        tui_event_sink_closed = true;
                     }
                 }
                 queued_message = writer_rx.recv() => {
@@ -1503,34 +1754,41 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             if let Err(send_error) = event_tx
                                 .try_send(InProcessServerEvent::ServerRequest(Box::new(request)))
                             {
-                                let (error, inner) = match send_error {
-                                    mpsc::error::TrySendError::Full(inner) => (
-                                        JSONRPCErrorError {
+                                match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => {
+                                        let error = JSONRPCErrorError {
                                             code: OVERLOADED_ERROR_CODE,
                                             message:
                                                 "in-process server request queue is full".to_string(),
                                             data: None,
-                                        },
-                                        inner,
-                                    ),
-                                    mpsc::error::TrySendError::Closed(inner) => (
-                                        internal_error(
-                                            "in-process server request consumer is closed",
-                                        ),
-                                        inner,
-                                    ),
-                                };
-                                let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
-                                    _ => unreachable!("we just sent a ServerRequest variant"),
-                                };
-                                outgoing_message_sender
-                                    .notify_client_error_from_connection(
-                                        IN_PROCESS_CONNECTION_ID,
-                                        request_id,
-                                        error,
-                                    )
-                                    .await;
+                                        };
+                                        let InProcessServerEvent::ServerRequest(request) = inner else {
+                                            unreachable!("we just sent a ServerRequest variant");
+                                        };
+                                        outgoing_message_sender
+                                            .notify_client_error_from_connection(
+                                                IN_PROCESS_CONNECTION_ID,
+                                                request.id().clone(),
+                                                error,
+                                            )
+                                            .await;
+                                    }
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        if !tui_event_sink_closed {
+                                            if processor_tx
+                                                .send(ProcessorCommand::TuiServerRequestDeliveryFailed {
+                                                    reason: "in-process server request consumer is closed"
+                                                        .to_string(),
+                                                })
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                            tui_event_sink_closed = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                         OutgoingMessage::SequencedRequest(
@@ -1548,38 +1806,64 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 ),
                                 None => InProcessServerEvent::ServerRequest(Box::new(request)),
                             };
-                            if let Err(send_error) = event_tx.try_send(event) {
-                                let (error, inner) = match send_error {
-                                    mpsc::error::TrySendError::Full(inner) => (
-                                        JSONRPCErrorError {
+                            #[cfg(test)]
+                            let fail_delivery = test_fail_next_tui_server_request_delivery_for_runtime
+                                .swap(false, Ordering::AcqRel);
+                            #[cfg(not(test))]
+                            let fail_delivery = false;
+                            if fail_delivery {
+                                if processor_tx
+                                    .send(ProcessorCommand::TuiServerRequestDeliveryFailed {
+                                        reason: "test-only in-process TUI server-request delivery failure"
+                                            .to_string(),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            } else if let Err(send_error) = event_tx.try_send(event) {
+                                match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => {
+                                        let error = JSONRPCErrorError {
                                             code: OVERLOADED_ERROR_CODE,
                                             message:
                                                 "in-process server request queue is full".to_string(),
                                             data: None,
-                                        },
-                                        inner,
-                                    ),
-                                    mpsc::error::TrySendError::Closed(inner) => (
-                                        internal_error(
-                                            "in-process server request consumer is closed",
-                                        ),
-                                        inner,
-                                    ),
-                                };
-                                let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
-                                    InProcessServerEvent::SequencedServerRequest(event) => {
-                                        event.request.id().clone()
+                                        };
+                                        let request_id = match inner {
+                                            InProcessServerEvent::ServerRequest(request) => {
+                                                request.id().clone()
+                                            }
+                                            InProcessServerEvent::SequencedServerRequest(event) => {
+                                                event.request.id().clone()
+                                            }
+                                            _ => unreachable!("we just sent a server request variant"),
+                                        };
+                                        outgoing_message_sender
+                                            .notify_client_error_from_connection(
+                                                IN_PROCESS_CONNECTION_ID,
+                                                request_id,
+                                                error,
+                                            )
+                                            .await;
                                     }
-                                    _ => unreachable!("we just sent a server request variant"),
-                                };
-                                outgoing_message_sender
-                                    .notify_client_error_from_connection(
-                                        IN_PROCESS_CONNECTION_ID,
-                                        request_id,
-                                        error,
-                                    )
-                                    .await;
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        if !tui_event_sink_closed {
+                                            if processor_tx
+                                                .send(ProcessorCommand::TuiServerRequestDeliveryFailed {
+                                                    reason: "in-process server request consumer is closed"
+                                                        .to_string(),
+                                                })
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                            tui_event_sink_closed = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
@@ -1602,7 +1886,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             };
                             if requires_delivery {
                                 if event_tx.send(event).await.is_err() {
-                                    break;
+                                    tui_event_sink_closed = true;
                                 }
                             } else if let Err(send_error) = event_tx.try_send(event) {
                                 match send_error {
@@ -1610,7 +1894,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                         warn!("dropping in-process server notification (queue full)");
                                     }
                                     mpsc::error::TrySendError::Closed(_) => {
-                                        break;
+                                        tui_event_sink_closed = true;
                                     }
                                 }
                             }
@@ -1671,11 +1955,23 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         }
     });
 
+    #[cfg(test)]
+    let test_outgoing_message_sender = test_outgoing_message_sender_rx.await.map_err(|err| {
+        IoError::new(
+            ErrorKind::BrokenPipe,
+            format!("in-process test outgoing sender channel closed: {err}"),
+        )
+    })?;
+
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
         local_controller_endpoint_status,
+        #[cfg(test)]
+        test_fail_next_tui_server_request_delivery,
+        #[cfg(test)]
+        test_outgoing_message_sender,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -1687,9 +1983,15 @@ mod tests {
     #[cfg(unix)]
     use app_test_support::MockResponsesConfig;
     #[cfg(unix)]
+    use app_test_support::create_apply_patch_sse_response;
+    #[cfg(unix)]
     use app_test_support::create_final_assistant_message_sse_response;
     #[cfg(unix)]
     use app_test_support::create_mock_responses_server_sequence;
+    #[cfg(unix)]
+    use app_test_support::create_request_permissions_sse_response;
+    #[cfg(unix)]
+    use app_test_support::create_request_user_input_sse_response;
     #[cfg(unix)]
     use app_test_support::create_shell_command_sse_response;
     use codex_app_server_protocol::AutoReviewDecisionSource;
@@ -1717,6 +2019,12 @@ mod tests {
     use codex_app_server_protocol::ControllerSignOffResponse;
     use codex_app_server_protocol::ErrorNotification;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    #[cfg(unix)]
+    use codex_app_server_protocol::FileChangeApprovalDecision;
+    #[cfg(unix)]
+    use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+    #[cfg(unix)]
+    use codex_app_server_protocol::GrantedPermissionProfile;
     use codex_app_server_protocol::GuardianApprovalReview;
     use codex_app_server_protocol::GuardianApprovalReviewAction;
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
@@ -1744,6 +2052,10 @@ mod tests {
     use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
     use codex_app_server_protocol::ModelVerification;
     use codex_app_server_protocol::ModelVerificationNotification;
+    #[cfg(unix)]
+    use codex_app_server_protocol::PermissionGrantScope;
+    #[cfg(unix)]
+    use codex_app_server_protocol::PermissionsRequestApprovalResponse;
     use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
     use codex_app_server_protocol::ServerRequestResolvedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
@@ -1798,6 +2110,16 @@ mod tests {
     use codex_app_server_protocol::UserInput;
     use codex_app_server_protocol::WarningNotification;
     use codex_core::config::ConfigBuilder;
+    #[cfg(unix)]
+    use codex_features::Feature;
+    #[cfg(unix)]
+    use codex_protocol::ThreadId;
+    #[cfg(unix)]
+    use codex_protocol::config_types::CollaborationMode;
+    #[cfg(unix)]
+    use codex_protocol::config_types::ModeKind;
+    #[cfg(unix)]
+    use codex_protocol::config_types::Settings;
     use codex_utils_absolute_path::AbsolutePathBuf;
     #[cfg(unix)]
     use futures::SinkExt;
@@ -1887,6 +2209,8 @@ mod tests {
             },
             channel_capacity,
             local_controller_endpoint,
+            local_controller_writer_test_gate: None,
+            controller_session_test_config: None,
             controller_enrollment_source: Arc::new(EmptyControllerEnrollmentSource),
             controller_credential_proof_factory: None,
         }
@@ -1958,6 +2282,7 @@ mod tests {
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::SequencedServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
@@ -2021,6 +2346,7 @@ mod tests {
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::SequencedServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
@@ -2029,13 +2355,23 @@ mod tests {
         })
         .await
         .expect("controller ownership status should arrive before timeout");
+        assert!(status.thread_sequence > 0);
+        let expected_has_controller_session = matches!(
+            &expected_owner,
+            InProcessControllerOwnershipStatusOwner::Controller { .. }
+        ) || matches!(
+            &expected_reason,
+            ControllerControlOwnershipChangedReason::Released
+                | ControllerControlOwnershipChangedReason::ReclaimedByTui
+        );
         assert_eq!(
-            *status,
+            *status.status,
             InProcessControllerOwnershipStatus {
                 main_thread_id: codex_protocol::ThreadId::from_string(expected_main_thread_id)
                     .expect("expected main thread id should parse"),
                 owner: expected_owner,
                 owner_epoch: expected_owner_epoch,
+                has_controller_session: expected_has_controller_session,
                 reason: expected_reason,
             }
         );
@@ -2281,6 +2617,7 @@ mod tests {
                     | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
                     | InProcessServerEvent::ServerRequest(_)
                     | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
                     | InProcessServerEvent::ServerNotification(_)
                     | InProcessServerEvent::SequencedServerNotification(_)
                     | InProcessServerEvent::Lagged { .. } => {}
@@ -2329,6 +2666,7 @@ mod tests {
                 main_thread_id: thread_id,
                 owner: InProcessControllerOwnershipStatusOwner::Tui,
                 owner_epoch: 0,
+                has_controller_session: false,
                 reason: ControllerControlOwnershipChangedReason::Released,
             })
         );
@@ -2942,7 +3280,6 @@ mod tests {
             ControllerControlOwnershipChangedReason::InitialLeaseGranted,
         )
         .await;
-
         client
             .shutdown()
             .await
@@ -3273,10 +3610,229 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn local_controller_socket_uses_main_thread_interface_and_tui_reclaim() {
+    async fn local_controller_socket_transfers_prompt_variant(
+        prompt_response: String,
+        expected_method: &str,
+        response: serde_json::Value,
+    ) {
         let codex_home = TempDir::new_in("/tmp").expect("temp dir");
-        let responses = vec![
+        let server = create_mock_responses_server_sequence(vec![prompt_response]).await;
+        MockResponsesConfig::new(&server.uri())
+            .with_approval_policy("untrusted")
+            .enable_feature(Feature::RequestPermissionsTool)
+            .write(codex_home.path())
+            .expect("mock responses config should write");
+        let mut args = build_test_start_args(
+            codex_home.path(),
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            InProcessLocalControllerEndpointConfig::Enabled {
+                main_thread_id: None,
+            },
+        )
+        .await;
+        args.initialize.capabilities = Some(codex_app_server_protocol::InitializeCapabilities {
+            experimental_api: true,
+            ..Default::default()
+        });
+        let mut client = start(args)
+            .await
+            .expect("local-controller startup should succeed");
+        client._test_codex_home = Some(codex_home);
+        let started: ThreadStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(30_001),
+                    params: ThreadStartParams::default(),
+                })
+                .await
+                .expect("TUI thread/start transport should work")
+                .expect("TUI thread/start should succeed"),
+        )
+        .expect("thread/start response should parse");
+        let metadata = client
+            .local_controller_endpoint()
+            .cloned()
+            .expect("local-controller endpoint should be published");
+        let mut websocket = connect_local_controller_websocket(&metadata).await;
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 30_002,
+            "initialize",
+            Some(serde_json::json!({
+                "clientInfo": {
+                    "name": "codex-waveshare",
+                    "version": "0.0.0-test",
+                },
+                "capabilities": {
+                    "experimentalApi": true,
+                },
+            })),
+        )
+        .await;
+        let _: serde_json::Value =
+            read_websocket_response(&mut websocket, /*expected_id*/ 30_002).await;
+
+        let _: TurnStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::TurnStart {
+                    request_id: RequestId::Integer(30_003),
+                    params: TurnStartParams {
+                        thread_id: started.thread.id.clone(),
+                        input: vec![UserInput::Text {
+                            text: "exercise controller prompt routing".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        model: Some("mock-model".to_string()),
+                        collaboration_mode: Some(CollaborationMode {
+                            mode: ModeKind::Plan,
+                            settings: Settings {
+                                model: "mock-model".to_string(),
+                                reasoning_effort: None,
+                                developer_instructions: None,
+                            },
+                        }),
+                        ..TurnStartParams::default()
+                    },
+                })
+                .await
+                .expect("TUI turn/start transport should work")
+                .expect("TUI turn/start should succeed"),
+        )
+        .expect("TUI turn/start response should parse");
+        let tui_request_id = timeout(Duration::from_secs(10), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("in-process event stream should stay open")
+                {
+                    InProcessServerEvent::SequencedServerRequest(request)
+                        if crate::controller_admission::server_request_method(
+                            request.request.as_ref(),
+                        ) == expected_method =>
+                    {
+                        break request.request.id().clone();
+                    }
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("TUI should receive the produced prompt before transfer");
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 30_004,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        approve_next_native_controller_participation(
+            &mut client,
+            "codex-waveshare",
+            "external test controller",
+            started.thread.id.as_str(),
+        )
+        .await;
+        let controller_request_id = timeout(Duration::from_secs(10), async {
+            loop {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(30_004) =>
+                    {
+                        let participation: ControllerRequestParticipationResponse =
+                            serde_json::from_value(response.result)
+                                .expect("controller participation response should parse");
+                        assert_eq!(participation.status, ControllerParticipationStatus::Approved);
+                    }
+                    JSONRPCMessage::Request(request) if request.method == expected_method => {
+                        break request.id;
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    message => panic!(
+                        "unexpected websocket message while transferring {expected_method}: {message:?}"
+                    ),
+                }
+            }
+        })
+        .await
+        .expect("controller should receive the transferred prompt");
+        assert_eq!(controller_request_id, tui_request_id);
+
+        write_websocket_message(
+            &mut websocket,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: controller_request_id.clone(),
+                result: response,
+            }),
+        )
+        .await;
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Notification(notification)
+                        if notification.method == "serverRequest/resolved" =>
+                    {
+                        let resolved: ServerRequestResolvedNotification =
+                            serde_json::from_value(
+                                notification
+                                    .params
+                                    .expect("serverRequest/resolved should include params"),
+                            )
+                            .expect("serverRequest/resolved params should parse");
+                        assert_eq!(resolved.request_id, controller_request_id);
+                        break;
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(30_004) => {}
+                    message => panic!(
+                        "unexpected websocket message while resolving {expected_method}: {message:?}"
+                    ),
+                }
+            }
+        })
+        .await
+        .expect("controller response should resolve the transferred prompt");
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum TuiRecoveryFailure {
+        RejectNextServerRequestDelivery,
+        CloseServerRequestConsumer,
+        ControllerReplyRacesRelease,
+        ControllerReplyRacesTuiReclaim,
+        ControllerSignOffRecoversPrompt,
+        ControllerDisconnectRecoversPrompt,
+        TuiRevocationRecoversPrompt,
+        ControllerWriteFailureRecoversPrompt,
+        ControllerLeaseExpiryRecoversPrompt,
+        ControllerQueueOverflowRecoversPrompt,
+    }
+
+    #[cfg(unix)]
+    async fn local_controller_socket_tui_recovery_failure(
+        tui_recovery_failure: TuiRecoveryFailure,
+    ) {
+        let codex_home = TempDir::new_in("/tmp").expect("temp dir");
+        let mut responses = vec![
             create_shell_command_sse_response(
                 vec![
                     "/bin/sh".to_string(),
@@ -3291,12 +3847,51 @@ mod tests {
             create_final_assistant_message_sse_response("controller approval accepted")
                 .expect("final assistant response should build"),
         ];
+        if !matches!(
+            tui_recovery_failure,
+            TuiRecoveryFailure::ControllerQueueOverflowRecoversPrompt
+        ) {
+            responses.push(
+                create_shell_command_sse_response(
+                    vec![
+                        "/bin/sh".to_string(),
+                        "-lc".to_string(),
+                        "printf controller-fallback".to_string(),
+                    ],
+                    /*workdir*/ None,
+                    Some(5000),
+                    "controller-fallback-call",
+                )
+                .expect("fallback shell command response should build"),
+            );
+        }
         let server = create_mock_responses_server_sequence(responses).await;
         MockResponsesConfig::new(&server.uri())
             .with_approval_policy("untrusted")
             .write(codex_home.path())
             .expect("mock responses config should write");
-        let args = build_test_start_args(
+        let writer_test_gate = match tui_recovery_failure {
+            TuiRecoveryFailure::ControllerWriteFailureRecoversPrompt => Some(
+                codex_app_server_transport::local_controller::LocalControllerWriterTestGate::pause_after_write_started(),
+            ),
+            TuiRecoveryFailure::ControllerQueueOverflowRecoversPrompt => Some(
+                codex_app_server_transport::local_controller::LocalControllerWriterTestGate::pause_before_queue_receive(),
+            ),
+            TuiRecoveryFailure::RejectNextServerRequestDelivery
+            | TuiRecoveryFailure::CloseServerRequestConsumer
+            | TuiRecoveryFailure::ControllerReplyRacesRelease
+            | TuiRecoveryFailure::ControllerReplyRacesTuiReclaim
+            | TuiRecoveryFailure::ControllerSignOffRecoversPrompt
+            | TuiRecoveryFailure::ControllerDisconnectRecoversPrompt
+            | TuiRecoveryFailure::TuiRevocationRecoversPrompt
+            | TuiRecoveryFailure::ControllerLeaseExpiryRecoversPrompt => None,
+        };
+        let controller_clock_now = matches!(
+            tui_recovery_failure,
+            TuiRecoveryFailure::ControllerLeaseExpiryRecoversPrompt
+        )
+        .then(|| Arc::new(std::sync::Mutex::new(std::time::Instant::now())));
+        let mut args = build_test_start_args(
             codex_home.path(),
             SessionSource::Cli,
             DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
@@ -3305,6 +3900,20 @@ mod tests {
             },
         )
         .await;
+        args.local_controller_writer_test_gate = writer_test_gate.clone();
+        if let Some(controller_clock_now) = &controller_clock_now {
+            let controller_clock_now = Arc::clone(controller_clock_now);
+            args.controller_session_test_config = Some((
+                ControllerSessionClock::from_fn(move || {
+                    *controller_clock_now
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                }),
+                ControllerSessionConfig {
+                    lease_duration: Duration::from_millis(/*millis*/ 10),
+                },
+            ));
+        }
         let mut client = start(args)
             .await
             .expect("local-controller startup should succeed");
@@ -3346,6 +3955,60 @@ mod tests {
             read_websocket_response(&mut websocket, /*expected_id*/ 20_001).await;
         assert!(initialize_response.get("userAgent").is_some());
 
+        let tui_turn: TurnStartResponse = serde_json::from_value(
+            client
+                .request(ClientRequest::TurnStart {
+                    request_id: RequestId::Integer(10_012),
+                    params: TurnStartParams {
+                        thread_id: started.thread.id.clone(),
+                        input: vec![UserInput::Text {
+                            text: "run the controller approval probe".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        ..TurnStartParams::default()
+                    },
+                })
+                .await
+                .expect("TUI turn/start transport should work")
+                .expect("TUI turn/start should succeed"),
+        )
+        .expect("TUI turn/start response should parse");
+        let tui_command_approval_request_id = timeout(Duration::from_secs(10), async {
+            loop {
+                match client
+                    .next_event()
+                    .await
+                    .expect("in-process event stream should stay open")
+                {
+                    InProcessServerEvent::SequencedServerRequest(event)
+                        if matches!(
+                            event.request.as_ref(),
+                            ServerRequest::CommandExecutionRequestApproval { .. }
+                        ) =>
+                    {
+                        break event.request.id().clone();
+                    }
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::ControllerOwnershipStatus(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerRequestRejected(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+        })
+        .await
+        .expect("TUI command approval should arrive before timeout");
+
+        // Hold the existing transition barrier before either contender can
+        // linearize. The controller request reaches native TUI approval first,
+        // so after that approval it is the first waiter; the former TUI reply
+        // must therefore observe the committed controller binding and become
+        // a typed stale rejection rather than reclaiming the prompt.
+        let transition = client.lock_prompt_transition_for_test().await;
         send_websocket_typed_request(
             &mut websocket,
             /*request_id*/ 20_002,
@@ -3363,9 +4026,52 @@ mod tests {
             started.thread.id.as_str(),
         )
         .await;
+        tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
 
-        let participation: ControllerRequestParticipationResponse =
-            read_websocket_response(&mut websocket, /*expected_id*/ 20_002).await;
+        client
+            .respond_to_server_request(
+                tui_command_approval_request_id.clone(),
+                serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                    decision: CommandExecutionApprovalDecision::Accept,
+                })
+                .expect("TUI approval response should serialize"),
+            )
+            .expect("former TUI response should reach the in-process runtime");
+        tokio::task::yield_now().await;
+        drop(transition);
+
+        let (participation, command_approval) = timeout(Duration::from_secs(10), async {
+            let mut participation: Option<ControllerRequestParticipationResponse> = None;
+            let mut command_approval: Option<JSONRPCRequest> = None;
+            while participation.is_none() || command_approval.is_none() {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(20_002) =>
+                    {
+                        participation = Some(
+                            serde_json::from_value(response.result)
+                                .expect("controller participation response should parse"),
+                        );
+                    }
+                    JSONRPCMessage::Request(request)
+                        if request.method == "item/commandExecution/requestApproval" =>
+                    {
+                        assert_eq!(request.id, tui_command_approval_request_id);
+                        command_approval = Some(request);
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    message => panic!(
+                        "unexpected websocket message during pending-prompt transfer: {message:?}"
+                    ),
+                }
+            }
+            (
+                participation.expect("controller participation should be captured"),
+                command_approval.expect("transferred command approval should be captured"),
+            )
+        })
+        .await
+        .expect("controller participation and transferred approval should arrive before timeout");
         assert_eq!(
             participation.status,
             ControllerParticipationStatus::Approved
@@ -3375,16 +4081,168 @@ mod tests {
         assert!(session.active_lease.is_some());
         assert!(session.effective_capabilities.read_main_thread);
         assert!(session.effective_capabilities.mutate_main_thread);
-        expect_next_controller_ownership_status(
-            &mut client,
-            started.thread.id.as_str(),
-            InProcessControllerOwnershipStatusOwner::Controller {
-                session_id: session.session_id.clone(),
-            },
-            /*expected_owner_epoch*/ 1,
-            ControllerControlOwnershipChangedReason::InitialLeaseGranted,
-        )
-        .await;
+        let (ownership_status, stale_rejection) = timeout(Duration::from_secs(10), async {
+            let mut ownership_status = None;
+            let mut stale_rejection = None;
+            while ownership_status.is_none() || stale_rejection.is_none() {
+                match client
+                    .next_event()
+                    .await
+                    .expect("in-process event stream should stay open")
+                {
+                    InProcessServerEvent::ControllerOwnershipStatus(status) => {
+                        ownership_status = Some(*status);
+                    }
+                    InProcessServerEvent::ServerRequestRejected(rejection) => {
+                        stale_rejection = Some(*rejection);
+                    }
+                    InProcessServerEvent::ControllerParticipationRequest(_)
+                    | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                    | InProcessServerEvent::ServerRequest(_)
+                    | InProcessServerEvent::SequencedServerRequest(_)
+                    | InProcessServerEvent::ServerNotification(_)
+                    | InProcessServerEvent::SequencedServerNotification(_)
+                    | InProcessServerEvent::Lagged { .. } => {}
+                }
+            }
+            (
+                ownership_status.expect("controller ownership status should arrive"),
+                stale_rejection.expect("former TUI response should be rejected"),
+            )
+        })
+        .await
+        .expect("controller transfer and former TUI rejection should arrive before timeout");
+        assert!(ownership_status.thread_sequence > 0);
+        assert_eq!(
+            *ownership_status.status,
+            InProcessControllerOwnershipStatus {
+                main_thread_id: codex_protocol::ThreadId::from_string(started.thread.id.as_str())
+                    .expect("started main thread id should parse"),
+                owner: InProcessControllerOwnershipStatusOwner::Controller {
+                    session_id: session.session_id.clone(),
+                },
+                owner_epoch: 1,
+                has_controller_session: true,
+                reason: ControllerControlOwnershipChangedReason::InitialLeaseGranted,
+            }
+        );
+        assert_eq!(
+            stale_rejection,
+            InProcessServerRequestRejection {
+                request_id: tui_command_approval_request_id.clone(),
+                reason: InProcessServerRequestRejectionReason::StaleOwnership,
+            }
+        );
+
+        if matches!(
+            tui_recovery_failure,
+            TuiRecoveryFailure::ControllerQueueOverflowRecoversPrompt
+        ) {
+            let writer_test_gate = writer_test_gate
+                .as_ref()
+                .expect("queue-overflow test should configure a writer gate");
+            writer_test_gate.arm_queue_pause();
+            timeout(
+                Duration::from_secs(10),
+                writer_test_gate.wait_until_writer_paused(),
+            )
+            .await
+            .expect("controller writer should pause before the first queued response");
+            for request_id in 20_003..20_008 {
+                send_websocket_typed_request(
+                    &mut websocket,
+                    request_id,
+                    "thread/read",
+                    &ThreadReadParams {
+                        thread_id: started.thread.id.clone(),
+                        include_turns: false,
+                    },
+                )
+                .await;
+            }
+            let transferred_request_id = command_approval.id.clone();
+            let rebound_request_id = timeout(Duration::from_secs(10), async {
+                let mut saw_disconnected = false;
+                let mut rebound_request_id = None;
+                while !saw_disconnected || rebound_request_id.is_none() {
+                    match client
+                        .next_event()
+                        .await
+                        .expect("in-process event stream should stay open")
+                    {
+                        InProcessServerEvent::ControllerOwnershipStatus(status)
+                            if status.status.reason
+                                == ControllerControlOwnershipChangedReason::ControllerDisconnected =>
+                        {
+                            saw_disconnected = true;
+                        }
+                        InProcessServerEvent::SequencedServerRequest(request)
+                            if matches!(
+                                request.request.as_ref(),
+                                ServerRequest::CommandExecutionRequestApproval { .. }
+                            ) => {
+                            rebound_request_id = Some(request.request.id().clone());
+                        }
+                        InProcessServerEvent::ControllerParticipationRequest(_)
+                        | InProcessServerEvent::ControllerOwnershipStatus(_)
+                        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                        | InProcessServerEvent::ServerRequest(_)
+                        | InProcessServerEvent::SequencedServerRequest(_)
+                        | InProcessServerEvent::ServerRequestRejected(_)
+                        | InProcessServerEvent::ServerNotification(_)
+                        | InProcessServerEvent::SequencedServerNotification(_)
+                        | InProcessServerEvent::Lagged { .. } => {}
+                    }
+                }
+                rebound_request_id.expect("queue overflow should rebind the prompt")
+            })
+            .await
+            .expect("queue overflow should restore a locally actionable prompt");
+            assert_eq!(rebound_request_id, transferred_request_id);
+            client
+                .respond_to_server_request(
+                    rebound_request_id,
+                    serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                        decision: CommandExecutionApprovalDecision::Accept,
+                    })
+                    .expect("TUI recovery approval should serialize"),
+                )
+                .expect("TUI recovery approval should reach the in-process runtime");
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    match client
+                        .next_event()
+                        .await
+                        .expect("in-process event stream should stay open")
+                    {
+                        InProcessServerEvent::SequencedServerNotification(notification)
+                            if matches!(
+                                notification.notification.as_ref(),
+                                ServerNotification::TurnCompleted(_)
+                            ) =>
+                        {
+                            break;
+                        }
+                        InProcessServerEvent::ControllerParticipationRequest(_)
+                        | InProcessServerEvent::ControllerOwnershipStatus(_)
+                        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                        | InProcessServerEvent::ServerRequest(_)
+                        | InProcessServerEvent::SequencedServerRequest(_)
+                        | InProcessServerEvent::ServerRequestRejected(_)
+                        | InProcessServerEvent::ServerNotification(_)
+                        | InProcessServerEvent::SequencedServerNotification(_)
+                        | InProcessServerEvent::Lagged { .. } => {}
+                    }
+                }
+            })
+            .await
+            .expect("TUI recovery approval should complete the turn");
+            client
+                .shutdown()
+                .await
+                .expect("in-process runtime should shutdown cleanly");
+            return;
+        }
 
         send_websocket_typed_request(
             &mut websocket,
@@ -3453,50 +4311,6 @@ mod tests {
         let _: ThreadSetNameResponse =
             read_websocket_response(&mut websocket, /*expected_id*/ 20_004).await;
 
-        send_websocket_typed_request(
-            &mut websocket,
-            /*request_id*/ 20_012,
-            "turn/start",
-            &TurnStartParams {
-                thread_id: started.thread.id.clone(),
-                input: vec![UserInput::Text {
-                    text: "run the controller approval probe".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                ..TurnStartParams::default()
-            },
-        )
-        .await;
-
-        let mut controller_turn: Option<TurnStartResponse> = None;
-        let mut command_approval: Option<JSONRPCRequest> = None;
-        timeout(Duration::from_secs(10), async {
-            while controller_turn.is_none() || command_approval.is_none() {
-                match read_websocket_message(&mut websocket).await {
-                    JSONRPCMessage::Response(response)
-                        if response.id == RequestId::Integer(20_012) =>
-                    {
-                        controller_turn = Some(
-                            serde_json::from_value(response.result)
-                                .expect("turn/start response should parse"),
-                        );
-                    }
-                    JSONRPCMessage::Request(request)
-                        if request.method == "item/commandExecution/requestApproval" =>
-                    {
-                        command_approval = Some(request);
-                    }
-                    JSONRPCMessage::Notification(_) => {}
-                    message => {
-                        panic!("unexpected websocket message during controller turn: {message:?}");
-                    }
-                }
-            }
-        })
-        .await
-        .expect("controller turn and approval request should arrive before timeout");
-        let controller_turn = controller_turn.expect("turn/start response should be captured");
-        let command_approval = command_approval.expect("command approval should be captured");
         let JSONRPCRequest {
             id: command_approval_request_id,
             params: command_approval_params,
@@ -3508,7 +4322,7 @@ mod tests {
             )
             .expect("command approval params should parse");
         assert_eq!(command_approval_params.thread_id, started.thread.id);
-        assert_eq!(command_approval_params.turn_id, controller_turn.turn.id);
+        assert_eq!(command_approval_params.turn_id, tui_turn.turn.id);
         assert_eq!(command_approval_params.item_id, "controller-e2e-call");
 
         write_websocket_message(
@@ -3585,7 +4399,7 @@ mod tests {
                             completed.thread_id, completed.turn.id
                         ));
                         if completed.thread_id == started.thread.id
-                            && completed.turn.id == controller_turn.turn.id
+                            && completed.turn.id == tui_turn.turn.id
                         {
                             saw_controller_turn_completed = true;
                         }
@@ -3723,29 +4537,831 @@ mod tests {
             Some("controller-reacquired".to_string())
         );
 
-        send_websocket_request(
+        if let Some(writer_test_gate) = &writer_test_gate {
+            writer_test_gate.arm_next_write_failure();
+        }
+        send_websocket_typed_request(
             &mut websocket,
             /*request_id*/ 20_011,
-            "controller/signOff",
+            "turn/start",
+            &TurnStartParams {
+                thread_id: started.thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "run the controller fallback probe".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..TurnStartParams::default()
+            },
+        )
+        .await;
+        if let Some(writer_test_gate) = writer_test_gate {
+            timeout(
+                Duration::from_secs(10),
+                writer_test_gate.wait_until_write_started(),
+            )
+            .await
+            .expect("controller prompt write should reach the test failure gate");
+            writer_test_gate.fail_next_write_and_release();
+            expect_next_controller_ownership_status(
+                &mut client,
+                started.thread.id.as_str(),
+                InProcessControllerOwnershipStatusOwner::Tui,
+                /*expected_owner_epoch*/ 4,
+                ControllerControlOwnershipChangedReason::ReclaimedByTui,
+            )
+            .await;
+            let rebound_request_id = timeout(Duration::from_secs(10), async {
+                loop {
+                    match client
+                        .next_event()
+                        .await
+                        .expect("in-process event stream should stay open")
+                    {
+                        InProcessServerEvent::SequencedServerRequest(request)
+                            if matches!(
+                                request.request.as_ref(),
+                                ServerRequest::CommandExecutionRequestApproval { .. }
+                            ) =>
+                        {
+                            break request.request.id().clone();
+                        }
+                        InProcessServerEvent::ControllerParticipationRequest(_)
+                        | InProcessServerEvent::ControllerOwnershipStatus(_)
+                        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                        | InProcessServerEvent::ServerRequest(_)
+                        | InProcessServerEvent::SequencedServerRequest(_)
+                        | InProcessServerEvent::ServerRequestRejected(_)
+                        | InProcessServerEvent::ServerNotification(_)
+                        | InProcessServerEvent::SequencedServerNotification(_)
+                        | InProcessServerEvent::Lagged { .. } => {}
+                    }
+                }
+            })
+            .await
+            .expect("writer failure should rebind the pending prompt to the TUI");
+            assert!(matches!(rebound_request_id, RequestId::Integer(_)));
+            client
+                .shutdown()
+                .await
+                .expect("in-process runtime should shutdown cleanly");
+            return;
+        }
+        let fallback_approval_request_id = timeout(Duration::from_secs(10), async {
+            loop {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(20_011) =>
+                    {
+                        let _: TurnStartResponse = serde_json::from_value(response.result)
+                            .expect("controller turn/start response should parse");
+                    }
+                    JSONRPCMessage::Request(request)
+                        if request.method == "item/commandExecution/requestApproval" =>
+                    {
+                        break request.id;
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    message => panic!(
+                        "unexpected websocket message while waiting for fallback approval: {message:?}"
+                    ),
+                }
+            }
+        })
+        .await
+        .expect("controller fallback approval should arrive before timeout");
+
+        if let Some(controller_clock_now) = controller_clock_now {
+            *controller_clock_now
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) +=
+                Duration::from_millis(/*millis*/ 11);
+            send_websocket_typed_request(
+                &mut websocket,
+                /*request_id*/ 20_012,
+                "thread/name/set",
+                &ThreadSetNameParams {
+                    thread_id: started.thread.id.clone(),
+                    name: "expired-controller".to_string(),
+                },
+            )
+            .await;
+            let _ = read_websocket_error(&mut websocket, /*expected_id*/ 20_012).await;
+            let rebound_request_id = timeout(Duration::from_secs(10), async {
+                let mut saw_lease_expiry = false;
+                let mut rebound_request_id = None;
+                while !saw_lease_expiry || rebound_request_id.is_none() {
+                    match client
+                        .next_event()
+                        .await
+                        .expect("in-process event stream should stay open")
+                    {
+                        InProcessServerEvent::ControllerOwnershipStatus(status)
+                            if status.status.reason
+                                == ControllerControlOwnershipChangedReason::LeaseExpired =>
+                        {
+                            assert_eq!(
+                                *status.status,
+                                InProcessControllerOwnershipStatus {
+                                    main_thread_id: ThreadId::from_string(&started.thread.id)
+                                        .expect("started main thread ID should parse"),
+                                    owner: InProcessControllerOwnershipStatusOwner::Tui,
+                                    owner_epoch: 4,
+                                    has_controller_session: true,
+                                    reason: ControllerControlOwnershipChangedReason::LeaseExpired,
+                                }
+                            );
+                            saw_lease_expiry = true;
+                        }
+                        InProcessServerEvent::SequencedServerRequest(request)
+                            if matches!(
+                                request.request.as_ref(),
+                                ServerRequest::CommandExecutionRequestApproval { .. }
+                            ) =>
+                        {
+                            rebound_request_id = Some(request.request.id().clone());
+                        }
+                        InProcessServerEvent::ControllerParticipationRequest(_)
+                        | InProcessServerEvent::ControllerOwnershipStatus(_)
+                        | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                        | InProcessServerEvent::ServerRequest(_)
+                        | InProcessServerEvent::SequencedServerRequest(_)
+                        | InProcessServerEvent::ServerRequestRejected(_)
+                        | InProcessServerEvent::ServerNotification(_)
+                        | InProcessServerEvent::SequencedServerNotification(_)
+                        | InProcessServerEvent::Lagged { .. } => {}
+                    }
+                }
+                rebound_request_id.expect("lease expiry should rebind the pending prompt")
+            })
+            .await
+            .expect("lease expiry recovery should reach the live TUI");
+            assert_eq!(rebound_request_id, fallback_approval_request_id);
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: fallback_approval_request_id,
+                    result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                        decision: CommandExecutionApprovalDecision::Accept,
+                    })
+                    .expect("stale approval response should serialize"),
+                }),
+            )
+            .await;
+            let stale_error = timeout(Duration::from_secs(10), async {
+                loop {
+                    match read_websocket_message(&mut websocket).await {
+                        JSONRPCMessage::Error(error) if error.id == rebound_request_id => {
+                            break error;
+                        }
+                        JSONRPCMessage::Notification(_) => {}
+                        message => {
+                            panic!(
+                                "unexpected response to expired controller approval: {message:?}"
+                            )
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("expired controller approval should be stale");
+            let stale_error_data: ControllerErrorData = serde_json::from_value(
+                stale_error
+                    .error
+                    .data
+                    .expect("stale ownership error should include data"),
+            )
+            .expect("stale ownership error data should parse");
+            assert_eq!(stale_error_data.code, ControllerErrorCode::StaleOwnership);
+            client
+                .shutdown()
+                .await
+                .expect("in-process runtime should shutdown cleanly");
+            return;
+        }
+
+        match tui_recovery_failure {
+            TuiRecoveryFailure::ControllerWriteFailureRecoversPrompt => {
+                unreachable!("writer-failure recovery returns after its TUI rebind assertion")
+            }
+            TuiRecoveryFailure::ControllerLeaseExpiryRecoversPrompt => {
+                unreachable!("lease-expiry recovery returns after its TUI rebind assertion")
+            }
+            TuiRecoveryFailure::ControllerQueueOverflowRecoversPrompt => {
+                unreachable!("queue-overflow recovery returns after its TUI rebind assertion")
+            }
+            TuiRecoveryFailure::RejectNextServerRequestDelivery => {
+                client.fail_next_tui_server_request_delivery();
+            }
+            TuiRecoveryFailure::CloseServerRequestConsumer => {
+                client.close_tui_server_request_consumer();
+            }
+            TuiRecoveryFailure::ControllerReplyRacesRelease => {
+                let transition = client.lock_prompt_transition_for_test().await;
+                send_websocket_request(
+                    &mut websocket,
+                    /*request_id*/ 20_012,
+                    "controller/releaseControl",
+                    None,
+                )
+                .await;
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Response(JSONRPCResponse {
+                        id: fallback_approval_request_id.clone(),
+                        result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                            decision: CommandExecutionApprovalDecision::Accept,
+                        })
+                        .expect("fallback approval response should serialize"),
+                    }),
+                )
+                .await;
+                drop(transition);
+
+                let (release, stale_error) = timeout(Duration::from_secs(10), async {
+                    let mut release = None;
+                    let mut stale_error = None;
+                    while release.is_none() || stale_error.is_none() {
+                        match read_websocket_message(&mut websocket).await {
+                            JSONRPCMessage::Response(response)
+                                if response.id == RequestId::Integer(20_012) =>
+                            {
+                                release = Some(
+                                    serde_json::from_value::<ControllerReleaseControlResponse>(
+                                        response.result,
+                                    )
+                                    .expect("controller release response should parse"),
+                                );
+                            }
+                            JSONRPCMessage::Error(error)
+                                if error.id == fallback_approval_request_id =>
+                            {
+                                stale_error = Some(error);
+                            }
+                            JSONRPCMessage::Notification(_) => {}
+                            message => panic!(
+                                "unexpected websocket message while racing controller reply with release: {message:?}"
+                            ),
+                        }
+                    }
+                    (
+                        release.expect("controller release response should arrive"),
+                        stale_error.expect("racing controller reply should be stale"),
+                    )
+                })
+                .await
+                .expect("release and stale controller reply should arrive before timeout");
+                assert_eq!(release.session.active_lease, None);
+                let stale_error_data: ControllerErrorData = serde_json::from_value(
+                    stale_error
+                        .error
+                        .data
+                        .expect("stale ownership error should include data"),
+                )
+                .expect("stale ownership error data should parse");
+                assert_eq!(stale_error_data.code, ControllerErrorCode::StaleOwnership);
+                expect_next_controller_ownership_status(
+                    &mut client,
+                    started.thread.id.as_str(),
+                    InProcessControllerOwnershipStatusOwner::Tui,
+                    /*expected_owner_epoch*/ 4,
+                    ControllerControlOwnershipChangedReason::Released,
+                )
+                .await;
+                let rebound_request_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        match client
+                            .next_event()
+                            .await
+                            .expect("in-process event stream should stay open")
+                        {
+                            InProcessServerEvent::SequencedServerRequest(request)
+                                if matches!(
+                                    request.request.as_ref(),
+                                    ServerRequest::CommandExecutionRequestApproval { .. }
+                                ) =>
+                            {
+                                break request.request.id().clone();
+                            }
+                            InProcessServerEvent::ControllerParticipationRequest(_)
+                            | InProcessServerEvent::ControllerOwnershipStatus(_)
+                            | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                            | InProcessServerEvent::ServerRequest(_)
+                            | InProcessServerEvent::SequencedServerRequest(_)
+                            | InProcessServerEvent::ServerRequestRejected(_)
+                            | InProcessServerEvent::ServerNotification(_)
+                            | InProcessServerEvent::SequencedServerNotification(_)
+                            | InProcessServerEvent::Lagged { .. } => {}
+                        }
+                    }
+                })
+                .await
+                .expect("release winner should rebind the prompt to the TUI");
+                assert_eq!(rebound_request_id, fallback_approval_request_id);
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
+                return;
+            }
+            TuiRecoveryFailure::ControllerReplyRacesTuiReclaim => {
+                let transition = client.lock_prompt_transition_for_test().await;
+                let tui_client = client.client.clone();
+                let thread_id = started.thread.id.clone();
+                let tui_reclaim = tokio::spawn(async move {
+                    tui_client
+                        .request(ClientRequest::ThreadSetName {
+                            request_id: RequestId::Integer(10_004),
+                            params: ThreadSetNameParams {
+                                thread_id,
+                                name: "tui-race-reclaimed".to_string(),
+                            },
+                        })
+                        .await
+                });
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Response(JSONRPCResponse {
+                        id: fallback_approval_request_id.clone(),
+                        result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                            decision: CommandExecutionApprovalDecision::Accept,
+                        })
+                        .expect("fallback approval response should serialize"),
+                    }),
+                )
+                .await;
+                drop(transition);
+
+                let reclaim_response = tui_reclaim
+                    .await
+                    .expect("TUI reclaim task should not panic")
+                    .expect("TUI reclaim transport should work")
+                    .expect("TUI reclaim should succeed");
+                let _: ThreadSetNameResponse = serde_json::from_value(reclaim_response)
+                    .expect("TUI reclaim response should parse");
+                let stale_error = timeout(
+                    Duration::from_secs(10),
+                    read_websocket_error(
+                        &mut websocket,
+                        match &fallback_approval_request_id {
+                            RequestId::Integer(request_id) => *request_id,
+                            request_id => {
+                                panic!("expected integer fallback request id, got {request_id:?}")
+                            }
+                        },
+                    ),
+                )
+                .await
+                .expect("racing controller reply should be stale");
+                let stale_error_data: ControllerErrorData = serde_json::from_value(
+                    stale_error
+                        .error
+                        .data
+                        .expect("stale ownership error should include data"),
+                )
+                .expect("stale ownership error data should parse");
+                assert_eq!(stale_error_data.code, ControllerErrorCode::StaleOwnership);
+                expect_next_controller_ownership_status(
+                    &mut client,
+                    started.thread.id.as_str(),
+                    InProcessControllerOwnershipStatusOwner::Tui,
+                    /*expected_owner_epoch*/ 4,
+                    ControllerControlOwnershipChangedReason::ReclaimedByTui,
+                )
+                .await;
+                let rebound_request_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        match client
+                            .next_event()
+                            .await
+                            .expect("in-process event stream should stay open")
+                        {
+                            InProcessServerEvent::SequencedServerRequest(request)
+                                if matches!(
+                                    request.request.as_ref(),
+                                    ServerRequest::CommandExecutionRequestApproval { .. }
+                                ) =>
+                            {
+                                break request.request.id().clone();
+                            }
+                            InProcessServerEvent::ControllerParticipationRequest(_)
+                            | InProcessServerEvent::ControllerOwnershipStatus(_)
+                            | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                            | InProcessServerEvent::ServerRequest(_)
+                            | InProcessServerEvent::SequencedServerRequest(_)
+                            | InProcessServerEvent::ServerRequestRejected(_)
+                            | InProcessServerEvent::ServerNotification(_)
+                            | InProcessServerEvent::SequencedServerNotification(_)
+                            | InProcessServerEvent::Lagged { .. } => {}
+                        }
+                    }
+                })
+                .await
+                .expect("TUI reclaim winner should rebind the prompt locally");
+                assert_eq!(rebound_request_id, fallback_approval_request_id);
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
+                return;
+            }
+            TuiRecoveryFailure::ControllerSignOffRecoversPrompt => {
+                send_websocket_request(
+                    &mut websocket,
+                    /*request_id*/ 20_012,
+                    "controller/signOff",
+                    None,
+                )
+                .await;
+                let _: ControllerSignOffResponse =
+                    read_websocket_response(&mut websocket, /*expected_id*/ 20_012).await;
+                expect_next_controller_ownership_status(
+                    &mut client,
+                    started.thread.id.as_str(),
+                    InProcessControllerOwnershipStatusOwner::Tui,
+                    /*expected_owner_epoch*/ 4,
+                    ControllerControlOwnershipChangedReason::SignOff,
+                )
+                .await;
+                let rebound_request_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        match client
+                            .next_event()
+                            .await
+                            .expect("in-process event stream should stay open")
+                        {
+                            InProcessServerEvent::SequencedServerRequest(request)
+                                if matches!(
+                                    request.request.as_ref(),
+                                    ServerRequest::CommandExecutionRequestApproval { .. }
+                                ) =>
+                            {
+                                break request.request.id().clone();
+                            }
+                            InProcessServerEvent::ControllerParticipationRequest(_)
+                            | InProcessServerEvent::ControllerOwnershipStatus(_)
+                            | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                            | InProcessServerEvent::ServerRequest(_)
+                            | InProcessServerEvent::SequencedServerRequest(_)
+                            | InProcessServerEvent::ServerRequestRejected(_)
+                            | InProcessServerEvent::ServerNotification(_)
+                            | InProcessServerEvent::SequencedServerNotification(_)
+                            | InProcessServerEvent::Lagged { .. } => {}
+                        }
+                    }
+                })
+                .await
+                .expect("sign-off should rebind the pending prompt to the TUI");
+                assert_eq!(rebound_request_id, fallback_approval_request_id);
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
+                return;
+            }
+            TuiRecoveryFailure::ControllerDisconnectRecoversPrompt => {
+                drop(websocket);
+                expect_next_controller_ownership_status(
+                    &mut client,
+                    started.thread.id.as_str(),
+                    InProcessControllerOwnershipStatusOwner::Tui,
+                    /*expected_owner_epoch*/ 4,
+                    ControllerControlOwnershipChangedReason::ControllerDisconnected,
+                )
+                .await;
+                let rebound_request_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        match client
+                            .next_event()
+                            .await
+                            .expect("in-process event stream should stay open")
+                        {
+                            InProcessServerEvent::SequencedServerRequest(request)
+                                if matches!(
+                                    request.request.as_ref(),
+                                    ServerRequest::CommandExecutionRequestApproval { .. }
+                                ) =>
+                            {
+                                break request.request.id().clone();
+                            }
+                            InProcessServerEvent::ControllerParticipationRequest(_)
+                            | InProcessServerEvent::ControllerOwnershipStatus(_)
+                            | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                            | InProcessServerEvent::ServerRequest(_)
+                            | InProcessServerEvent::SequencedServerRequest(_)
+                            | InProcessServerEvent::ServerRequestRejected(_)
+                            | InProcessServerEvent::ServerNotification(_)
+                            | InProcessServerEvent::SequencedServerNotification(_)
+                            | InProcessServerEvent::Lagged { .. } => {}
+                        }
+                    }
+                })
+                .await
+                .expect("disconnect should rebind the pending prompt to the TUI");
+                assert_eq!(rebound_request_id, fallback_approval_request_id);
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
+                return;
+            }
+            TuiRecoveryFailure::TuiRevocationRecoversPrompt => {
+                client
+                    .revoke_controller_access(
+                        ThreadId::from_string(&started.thread.id)
+                            .expect("started thread ID should parse"),
+                    )
+                    .await
+                    .expect("native controller revocation transport should work")
+                    .expect("native controller revocation should succeed");
+                expect_next_controller_ownership_status(
+                    &mut client,
+                    started.thread.id.as_str(),
+                    InProcessControllerOwnershipStatusOwner::Tui,
+                    /*expected_owner_epoch*/ 4,
+                    ControllerControlOwnershipChangedReason::AuthorizationRevoked,
+                )
+                .await;
+                let rebound_request_id = timeout(Duration::from_secs(10), async {
+                    loop {
+                        match client
+                            .next_event()
+                            .await
+                            .expect("in-process event stream should stay open")
+                        {
+                            InProcessServerEvent::SequencedServerRequest(request)
+                                if matches!(
+                                    request.request.as_ref(),
+                                    ServerRequest::CommandExecutionRequestApproval { .. }
+                                ) =>
+                            {
+                                break request.request.id().clone();
+                            }
+                            InProcessServerEvent::ControllerParticipationRequest(_)
+                            | InProcessServerEvent::ControllerOwnershipStatus(_)
+                            | InProcessServerEvent::LocalControllerEndpointUnavailable { .. }
+                            | InProcessServerEvent::ServerRequest(_)
+                            | InProcessServerEvent::SequencedServerRequest(_)
+                            | InProcessServerEvent::ServerRequestRejected(_)
+                            | InProcessServerEvent::ServerNotification(_)
+                            | InProcessServerEvent::SequencedServerNotification(_)
+                            | InProcessServerEvent::Lagged { .. } => {}
+                        }
+                    }
+                })
+                .await
+                .expect("native revocation should rebind the pending prompt to the TUI");
+                assert_eq!(rebound_request_id, fallback_approval_request_id);
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
+                return;
+            }
+        }
+        send_websocket_request(
+            &mut websocket,
+            /*request_id*/ 20_012,
+            "controller/releaseControl",
             None,
         )
         .await;
-        let _: ControllerSignOffResponse =
-            read_websocket_response(&mut websocket, /*expected_id*/ 20_011).await;
-        expect_next_controller_ownership_status(
-            &mut client,
-            started.thread.id.as_str(),
-            InProcessControllerOwnershipStatusOwner::Tui,
-            /*expected_owner_epoch*/ 4,
-            ControllerControlOwnershipChangedReason::SignOff,
+        let _: ControllerReleaseControlResponse =
+            read_websocket_response(&mut websocket, /*expected_id*/ 20_012).await;
+        if matches!(
+            tui_recovery_failure,
+            TuiRecoveryFailure::RejectNextServerRequestDelivery
+        ) {
+            expect_next_controller_ownership_status(
+                &mut client,
+                started.thread.id.as_str(),
+                InProcessControllerOwnershipStatusOwner::Tui,
+                /*expected_owner_epoch*/ 4,
+                ControllerControlOwnershipChangedReason::Released,
+            )
+            .await;
+            expect_next_controller_ownership_status(
+                &mut client,
+                started.thread.id.as_str(),
+                InProcessControllerOwnershipStatusOwner::TuiUnavailable,
+                /*expected_owner_epoch*/ 5,
+                ControllerControlOwnershipChangedReason::TuiUnavailable,
+            )
+            .await;
+        }
+
+        write_websocket_message(
+            &mut websocket,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: fallback_approval_request_id.clone(),
+                result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
+                    decision: CommandExecutionApprovalDecision::Accept,
+                })
+                .expect("fallback approval response should serialize"),
+            }),
         )
         .await;
-        expect_websocket_closed(&mut websocket).await;
+        let stale_error = timeout(Duration::from_secs(10), async {
+            loop {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Error(error) if error.id == fallback_approval_request_id => {
+                        break error;
+                    }
+                    JSONRPCMessage::Notification(_) => {}
+                    message => {
+                        panic!("unexpected response to stale fallback approval: {message:?}")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("stale fallback approval should be rejected before timeout");
+        let stale_error_data: ControllerErrorData = serde_json::from_value(
+            stale_error
+                .error
+                .data
+                .expect("stale ownership error should include data"),
+        )
+        .expect("stale ownership error data should parse");
+        assert_eq!(stale_error_data.code, ControllerErrorCode::StaleOwnership);
+
+        send_websocket_typed_request(
+            &mut websocket,
+            /*request_id*/ 20_013,
+            "controller/requestParticipation",
+            &ControllerRequestParticipationParams {
+                controller_name: "codex-waveshare".to_string(),
+                description: "external test controller".to_string(),
+            },
+        )
+        .await;
+        let terminal_error = timeout(
+            Duration::from_secs(10),
+            read_websocket_error(&mut websocket, /*expected_id*/ 20_013),
+        )
+        .await
+        .expect("TUI-unavailable participation rejection should arrive before timeout");
+        let terminal_error_data: ControllerErrorData = serde_json::from_value(
+            terminal_error
+                .error
+                .data
+                .expect("TUI-unavailable error should include data"),
+        )
+        .expect("TUI-unavailable error data should parse");
+        assert_eq!(
+            terminal_error_data.code,
+            ControllerErrorCode::TuiUnavailable
+        );
 
         client
             .shutdown()
             .await
             .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_tui_recovery_rejects_prompt_delivery() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::RejectNextServerRequestDelivery,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_tui_recovery_handles_closed_consumer() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::CloseServerRequestConsumer,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_controller_reply_is_stale_when_release_wins() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerReplyRacesRelease,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_controller_reply_is_stale_when_tui_reclaim_wins() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerReplyRacesTuiReclaim,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_sign_off_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerSignOffRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_disconnect_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerDisconnectRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_native_revocation_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::TuiRevocationRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_writer_failure_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerWriteFailureRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_lease_expiry_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerLeaseExpiryRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_queue_overflow_recovers_pending_prompt_to_tui() {
+        local_controller_socket_tui_recovery_failure(
+            TuiRecoveryFailure::ControllerQueueOverflowRecoversPrompt,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_transfers_tool_user_input_prompt() {
+        local_controller_socket_transfers_prompt_variant(
+            create_request_user_input_sse_response("controller-tool-input")
+                .expect("tool user-input response should build"),
+            "item/tool/requestUserInput",
+            serde_json::json!({
+                "answers": {
+                    "confirm_path": { "answers": ["yes"] }
+                }
+            }),
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_transfers_permissions_prompt() {
+        local_controller_socket_transfers_prompt_variant(
+            create_request_permissions_sse_response("controller-permissions")
+                .expect("permissions response should build"),
+            "item/permissions/requestApproval",
+            serde_json::to_value(PermissionsRequestApprovalResponse {
+                permissions: GrantedPermissionProfile {
+                    network: None,
+                    file_system: None,
+                },
+                scope: PermissionGrantScope::Turn,
+                strict_auto_review: None,
+            })
+            .expect("permissions response should serialize"),
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_controller_socket_transfers_file_change_prompt() {
+        local_controller_socket_transfers_prompt_variant(
+            create_apply_patch_sse_response(
+                "*** Begin Patch\n*** Add File: controller-variant.txt\n+controller variant\n*** End Patch\n",
+                "controller-file-change",
+            )
+            .expect("file-change response should build"),
+            "item/fileChange/requestApproval",
+            serde_json::to_value(FileChangeRequestApprovalResponse {
+                decision: FileChangeApprovalDecision::Decline,
+            })
+            .expect("file-change response should serialize"),
+        )
+        .await;
     }
 
     #[cfg(unix)]
@@ -4603,6 +6219,7 @@ mod tests {
     async fn in_process_shutdown_waits_for_analytics_flush_budget() {
         let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
         let (_event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(/*buffer*/ 1);
         let completed = Arc::new(AtomicBool::new(false));
         let runtime_completed = Arc::clone(&completed);
         let runtime_handle = tokio::spawn(async move {
@@ -4619,6 +6236,11 @@ mod tests {
             event_rx,
             runtime_handle,
             local_controller_endpoint_status: InProcessLocalControllerEndpointStatus::Disabled,
+            test_fail_next_tui_server_request_delivery: Arc::new(AtomicBool::new(false)),
+            test_outgoing_message_sender: Arc::new(OutgoingMessageSender::new(
+                outgoing_tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
             _test_codex_home: None,
         };
 
@@ -4627,6 +6249,32 @@ mod tests {
             .await
             .expect("in-process runtime should shutdown cleanly");
         assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn test_tui_egress_failure_controls_reject_and_close_delivery() {
+        let (client_tx, _client_rx) = mpsc::channel(/*buffer*/ 1);
+        let (event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(/*buffer*/ 1);
+        let failure_flag = Arc::new(AtomicBool::new(false));
+        let runtime_handle = tokio::spawn(async {});
+        let mut client = InProcessClientHandle {
+            client: InProcessClientSender { client_tx },
+            event_rx,
+            runtime_handle,
+            local_controller_endpoint_status: InProcessLocalControllerEndpointStatus::Disabled,
+            test_fail_next_tui_server_request_delivery: Arc::clone(&failure_flag),
+            test_outgoing_message_sender: Arc::new(OutgoingMessageSender::new(
+                outgoing_tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
+            _test_codex_home: None,
+        };
+
+        client.fail_next_tui_server_request_delivery();
+        assert!(failure_flag.swap(false, Ordering::AcqRel));
+        client.close_tui_server_request_consumer();
+        assert!(event_tx.is_closed());
     }
 
     #[test]

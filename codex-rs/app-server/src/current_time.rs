@@ -185,7 +185,7 @@ pub(crate) fn current_time_request_recipients(
     subscribed_connection_ids: Vec<ConnectionId>,
 ) -> Result<ServerRequestRecipients> {
     let request_recipients =
-        controller_processor.prompt_request_recipients(thread_id, subscribed_connection_ids);
+        controller_processor.tui_request_recipients(thread_id, subscribed_connection_ids);
     require_single_current_time_connection(request_recipients.connection_ids())?;
     Ok(request_recipients)
 }

@@ -3,6 +3,7 @@ use super::bedrock_auth::set_user_model_provider_to_bedrock;
 use super::*;
 use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
+use crate::request_processors::ControllerRequestProcessor;
 use chrono::DateTime;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_login::LoginOnboardingEntrypoint;
@@ -76,6 +77,7 @@ pub(crate) struct AccountRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     config_manager: ConfigManager,
+    controller_processor: ControllerRequestProcessor,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
 }
 
@@ -86,6 +88,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        controller_processor: ControllerRequestProcessor,
     ) -> Self {
         Self {
             auth_manager,
@@ -93,6 +96,7 @@ impl AccountRequestProcessor {
             outgoing,
             config,
             config_manager,
+            controller_processor,
             active_login: Arc::new(Mutex::new(None)),
         }
     }
@@ -790,6 +794,7 @@ impl AccountRequestProcessor {
             .set_external_auth(Arc::new(ExternalAuthBridge::new(
                 Arc::clone(&self.outgoing),
                 auth,
+                self.controller_processor.clone(),
             )))
             .await
             .map_err(|err| internal_error(format!("failed to set external auth: {err}")))?;

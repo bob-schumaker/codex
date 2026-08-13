@@ -50,6 +50,7 @@ use crate::controller_session::ControllerSessionEvents;
 use crate::controller_session::ControllerSessionNotification;
 use crate::controller_session::InteractiveOwner;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::in_process::InProcessSequencedControllerOwnershipStatus;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ServerRequestRecipients;
 use crate::transport::ConnectionId;
@@ -64,7 +65,8 @@ pub(crate) struct ControllerRequestProcessor {
     state: Arc<Mutex<ControllerProcessorState>>,
     enrollment_source: Arc<dyn ControllerEnrollmentSource>,
     native_participation_approver: Option<NativeControllerParticipationApprover>,
-    ownership_status_tx: Option<tokio::sync::mpsc::Sender<ControllerOwnershipStatus>>,
+    ownership_status_tx:
+        Option<tokio::sync::mpsc::Sender<InProcessSequencedControllerOwnershipStatus>>,
     enrollment_policy: ControllerEnrollmentPolicy,
     clock: ControllerSessionClock,
     session_config: ControllerSessionConfig,
@@ -115,7 +117,9 @@ impl ControllerRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         enrollment_source: Arc<dyn ControllerEnrollmentSource>,
         native_participation_approver: Option<NativeControllerParticipationApprover>,
-        ownership_status_tx: Option<tokio::sync::mpsc::Sender<ControllerOwnershipStatus>>,
+        ownership_status_tx: Option<
+            tokio::sync::mpsc::Sender<InProcessSequencedControllerOwnershipStatus>,
+        >,
         enrollment_policy: ControllerEnrollmentPolicy,
         clock: ControllerSessionClock,
         session_config: ControllerSessionConfig,
@@ -154,6 +158,13 @@ impl ControllerRequestProcessor {
                 self.session_config,
             ));
         }
+    }
+
+    pub(crate) fn tui_connection_id(&self) -> Option<ConnectionId> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tui_connection_id
     }
 
     pub(crate) async fn request_participation(
@@ -202,6 +213,7 @@ impl ControllerRequestProcessor {
             self.clock.clone(),
         );
 
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (response, rebind, events) = self.with_open_controller_main_thread_rebind(
             connection_id,
             |coordinator, main_thread_id| {
@@ -240,8 +252,8 @@ impl ControllerRequestProcessor {
             },
         )?;
 
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         response
     }
 
@@ -270,6 +282,7 @@ impl ControllerRequestProcessor {
         connection_id: ConnectionId,
         requested_main_thread_id: ThreadId,
     ) -> Result<ControllerRequestParticipationResponse, JSONRPCErrorError> {
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (response, rebind, events) = self.with_open_controller_main_thread_rebind(
             connection_id,
             |coordinator, main_thread_id| {
@@ -294,8 +307,8 @@ impl ControllerRequestProcessor {
             },
         )?;
 
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         response
     }
 
@@ -305,6 +318,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerAcquireControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
@@ -312,8 +326,8 @@ impl ControllerRequestProcessor {
                     .map(|session| ControllerAcquireControlResponse { session })
                     .map_err(controller_session_error)
             })?;
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         response
     }
 
@@ -323,6 +337,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerReleaseControlResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
@@ -330,8 +345,8 @@ impl ControllerRequestProcessor {
                     .map(|session| ControllerReleaseControlResponse { session })
                     .map_err(controller_session_error)
             })?;
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         response
     }
 
@@ -341,6 +356,7 @@ impl ControllerRequestProcessor {
         origin: ConnectionOrigin,
     ) -> Result<ControllerSignOffResponse, JSONRPCErrorError> {
         require_external_controller_origin(origin)?;
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (response, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 coordinator
@@ -349,8 +365,8 @@ impl ControllerRequestProcessor {
                 coordinator.sign_off_session(connection_id);
                 Ok(ControllerSignOffResponse {})
             })?;
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         response
     }
 
@@ -382,6 +398,7 @@ impl ControllerRequestProcessor {
             RequiredAuthority::StandingSession | RequiredAuthority::ActiveOwner => {}
         }
 
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (result, rebind, events) =
             self.with_main_thread_rebind(|coordinator, _main_thread_id| {
                 let authorized_main_thread_id = match rule.required_authority {
@@ -399,8 +416,8 @@ impl ControllerRequestProcessor {
                     authorize_target(rule.target, target, main_thread_id)
                 })
             })?;
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         result
     }
 
@@ -409,6 +426,7 @@ impl ControllerRequestProcessor {
         connection_id: ConnectionId,
         thread_id: ThreadId,
     ) -> bool {
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let transition = self.with_main_thread_rebind(|coordinator, _main_thread_id| {
             coordinator
                 .require_standing_session(connection_id)
@@ -427,8 +445,8 @@ impl ControllerRequestProcessor {
                 return false;
             }
         };
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         match result {
             Ok(can_attach) => can_attach,
             Err(error) => {
@@ -535,6 +553,30 @@ impl ControllerRequestProcessor {
         }
     }
 
+    pub(crate) fn tui_request_recipients(
+        &self,
+        thread_id: ThreadId,
+        subscribed_connection_ids: Vec<ConnectionId>,
+    ) -> ServerRequestRecipients {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(coordinator) = state.coordinator.as_ref() else {
+            return ServerRequestRecipients::normal(subscribed_connection_ids);
+        };
+        let Some(main_thread_id) = coordinator.main_thread_id() else {
+            return ServerRequestRecipients::normal(Vec::new());
+        };
+        if main_thread_id != thread_id {
+            return ServerRequestRecipients::normal(subscribed_connection_ids);
+        }
+        state.tui_connection_id.map_or_else(
+            || ServerRequestRecipients::normal(Vec::new()),
+            |connection_id| ServerRequestRecipients::normal(vec![connection_id]),
+        )
+    }
+
     pub(crate) fn thread_notification_recipients(
         &self,
         thread_id: ThreadId,
@@ -601,6 +643,16 @@ impl ControllerRequestProcessor {
         &self,
         thread_id: &str,
     ) -> Result<(), JSONRPCErrorError> {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        self.reclaim_for_primary_thread_input_with_transition_held(thread_id)
+            .await
+    }
+
+    /// Reclaims TUI ownership while the caller holds the prompt-transition barrier.
+    pub(crate) async fn reclaim_for_primary_thread_input_with_transition_held(
+        &self,
+        thread_id: &str,
+    ) -> Result<(), JSONRPCErrorError> {
         let (result, rebind, events) = {
             let mut state = self
                 .state
@@ -630,8 +682,58 @@ impl ControllerRequestProcessor {
             let events = coordinator.drain_events();
             (result, rebind, events)
         };
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
+        result
+    }
+
+    /// Applies elapsed controller lease and authorization deadlines to prompt ownership.
+    pub(crate) async fn expire_deadlines(&self) {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        let (rebind, events) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tui_connection_id = state.tui_connection_id;
+            let Some(coordinator) = state.coordinator.as_mut() else {
+                return;
+            };
+            let Some(main_thread_id) = coordinator.main_thread_id() else {
+                return;
+            };
+            let owner_before = coordinator.interactive_owner().clone();
+            coordinator.expire_deadlines();
+            let rebind = prompt_rebind_after_transition(
+                main_thread_id,
+                tui_connection_id,
+                &owner_before,
+                coordinator.interactive_owner(),
+            );
+            let events = coordinator.drain_events();
+            (rebind, events)
+        };
+        self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
+    }
+
+    /// Applies an owning-TUI policy decision that removes all controller authority for its main
+    /// thread. This is intentionally native-only rather than an app-server RPC.
+    pub(crate) async fn revoke_controller_access_from_tui(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), JSONRPCErrorError> {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        let (result, rebind, events) =
+            self.with_main_thread_rebind(|coordinator, main_thread_id| {
+                if main_thread_id != thread_id {
+                    return Err(thread_target_error(main_thread_id.to_string()));
+                }
+                coordinator.revoke_all_sessions_for_tui_policy();
+                Ok(())
+            })?;
+        self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         result
     }
 
@@ -671,13 +773,83 @@ impl ControllerRequestProcessor {
     }
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) -> Option<ThreadId> {
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (result, rebind, events) = self.controller_connection_closed(connection_id).ok()?;
         if result.is_err() {
             return None;
         }
-        self.rebind_pending_prompts(rebind).await;
         self.send_controller_events(events).await;
+        self.rebind_pending_prompts(rebind).await;
         result.ok().flatten()
+    }
+
+    pub(crate) async fn recover_external_prompt_delivery_failure(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: &codex_app_server_protocol::RequestId,
+    ) {
+        let _transition = self.outgoing.lock_prompt_transition().await;
+        if self
+            .outgoing
+            .pending_server_request(request_id)
+            .await
+            .is_none()
+        {
+            return;
+        }
+        let (tui_connection_id, events) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tui_connection_id = state.tui_connection_id;
+            let Some(coordinator) = state.coordinator.as_mut() else {
+                return;
+            };
+            if coordinator.main_thread_id() != Some(thread_id)
+                || !matches!(
+                    coordinator.interactive_owner(),
+                    InteractiveOwner::ControllerOwned {
+                        connection_id: owner_connection_id,
+                        ..
+                    } if *owner_connection_id == connection_id
+                )
+            {
+                return;
+            }
+            if let Err(err) = coordinator.reclaim_for_tui() {
+                tracing::debug!(
+                    error = ?err,
+                    ?thread_id,
+                    ?connection_id,
+                    "external prompt delivery recovery did not reclaim controller ownership"
+                );
+                return;
+            }
+            (tui_connection_id, coordinator.drain_events())
+        };
+        self.send_controller_events(events).await;
+        let Some(tui_connection_id) = tui_connection_id else {
+            drop(_transition);
+            self.mark_tui_unavailable(
+                "TUI recovery for an external-controller prompt has no viable recipient"
+                    .to_string(),
+            )
+            .await;
+            return;
+        };
+        let recovered = self
+            .outgoing
+            .rebind_transferred_requests_for_thread_to_connection(thread_id, tui_connection_id)
+            .await;
+        drop(_transition);
+        if !recovered {
+            self.mark_tui_unavailable(
+                "TUI recovery for an external-controller prompt could not be queued".to_string(),
+            )
+            .await;
+        }
     }
 
     fn ensure_controller_connection_open(
@@ -729,7 +901,8 @@ impl ControllerRequestProcessor {
         Ok((Ok(removed_main_thread_id), rebind, events))
     }
 
-    async fn mark_tui_unavailable(&self, reason: String) {
+    pub(crate) async fn mark_tui_unavailable(&self, reason: String) {
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let (main_thread_id, events) = {
             let mut state = self
                 .state
@@ -759,6 +932,7 @@ impl ControllerRequestProcessor {
     }
 
     pub(crate) async fn mark_main_thread_closed(&self, thread_id: ThreadId) {
+        let _transition = self.outgoing.lock_prompt_transition().await;
         let events = {
             let mut state = self
                 .state
@@ -835,8 +1009,8 @@ impl ControllerRequestProcessor {
                                 .map(|_| ())
                             })
                     })?;
-                self.rebind_pending_prompts(rebind).await;
                 self.send_controller_events(events).await;
+                self.rebind_pending_prompts(rebind).await;
                 result
             }
             RequiredAuthority::TuiOnly => Err(controller_error(
@@ -939,7 +1113,10 @@ impl ControllerRequestProcessor {
             match delivery {
                 PromptRebindDelivery::Normal => {
                     self.outgoing
-                        .rebind_requests_for_thread_to_connection(thread_id, connection_id)
+                        .rebind_transferred_requests_for_thread_to_connection(
+                            thread_id,
+                            connection_id,
+                        )
                         .await;
                 }
                 PromptRebindDelivery::ExternalController => {
@@ -965,7 +1142,15 @@ impl ControllerRequestProcessor {
     async fn send_controller_events(&self, events: ControllerSessionEvents) {
         if let Some(ownership_status_tx) = self.ownership_status_tx.as_ref() {
             for status in events.ownership_statuses {
-                if ownership_status_tx.send(status).await.is_err() {
+                let thread_sequence = self.outgoing.advance_thread_sequence(status.main_thread_id);
+                if ownership_status_tx
+                    .send(InProcessSequencedControllerOwnershipStatus {
+                        status: Box::new(status),
+                        thread_sequence,
+                    })
+                    .await
+                    .is_err()
+                {
                     tracing::warn!(
                         "dropping controller ownership status; TUI event sink is closed"
                     );
@@ -1277,7 +1462,7 @@ fn tui_unavailable(message: String) -> JSONRPCErrorError {
     )
 }
 
-fn controller_session_error(err: ControllerSessionError) -> JSONRPCErrorError {
+pub(crate) fn controller_session_error(err: ControllerSessionError) -> JSONRPCErrorError {
     match err {
         ControllerSessionError::ParticipationRequired => controller_error(
             "controller participation is required",

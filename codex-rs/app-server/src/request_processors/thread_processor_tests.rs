@@ -1496,8 +1496,8 @@ mod thread_processor_behavior_tests {
     }
 
     #[tokio::test]
-    async fn first_attestation_capable_connection_for_thread_only_uses_thread_subscribers()
-    -> Result<()> {
+    async fn attestation_capable_connection_for_thread_requires_supported_subscriber() -> Result<()>
+    {
         let manager = ThreadStateManager::new();
         let thread_id = ThreadId::from_string("dfbd9a95-2f44-470a-8bd8-1cfc04efc243")?;
         let other_thread_id = ThreadId::from_string("6c9a74e4-5e59-479e-90bf-5c5798bb50aa")?;
@@ -1557,15 +1557,30 @@ mod thread_processor_behavior_tests {
 
         assert_eq!(
             manager
-                .first_attestation_capable_connection_for_thread(thread_id)
+                .attestation_capable_connection_for_thread(thread_id, earlier_supported_connection)
                 .await,
             Some(earlier_supported_connection)
         );
         assert_eq!(
             manager
-                .first_attestation_capable_connection_for_thread(other_thread_id)
+                .attestation_capable_connection_for_thread(thread_id, later_supported_connection)
                 .await,
-            Some(unrelated_supported_connection)
+            Some(later_supported_connection)
+        );
+        assert_eq!(
+            manager
+                .attestation_capable_connection_for_thread(thread_id, unsupported_connection)
+                .await,
+            None
+        );
+        assert_eq!(
+            manager
+                .attestation_capable_connection_for_thread(
+                    thread_id,
+                    unrelated_supported_connection
+                )
+                .await,
+            None
         );
         Ok(())
     }
