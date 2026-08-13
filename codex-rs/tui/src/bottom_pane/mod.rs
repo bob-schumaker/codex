@@ -368,6 +368,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_controller_access_available(&mut self, available: bool) {
+        self.composer.set_controller_access_available(available);
+        self.request_redraw();
+    }
+
     pub fn set_mentions_v2_enabled(&mut self, enabled: bool) {
         self.composer.set_mentions_v2_enabled(enabled);
         self.request_redraw();

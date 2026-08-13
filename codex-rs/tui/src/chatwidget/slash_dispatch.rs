@@ -319,6 +319,12 @@ impl ChatWidget {
                 self.open_permissions_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Controller => {
+                if let Some(thread_id) = self.thread_id() {
+                    self.app_event_tx
+                        .send(AppEvent::RevokeControllerAccess { thread_id });
+                }
+            }
             SlashCommand::Vim => {
                 self.toggle_vim_mode_and_notify();
             }
@@ -1065,6 +1071,7 @@ impl ChatWidget {
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
+            controller_access_available: self.controller_access_available,
             allow_elevate_sandbox,
             side_conversation_active: self.active_side_conversation,
         }
@@ -1123,6 +1130,7 @@ impl ChatWidget {
             | SlashCommand::Agent
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
+            | SlashCommand::Controller
             | SlashCommand::ElevateSandbox
             | SlashCommand::SandboxReadRoot
             | SlashCommand::Experimental

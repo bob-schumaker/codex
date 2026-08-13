@@ -104,6 +104,7 @@ fn app_server_event_notification(event: &AppServerEvent) -> Option<&ServerNotifi
         | AppServerEvent::LocalControllerEndpointUnavailable { .. }
         | AppServerEvent::ServerRequest(_)
         | AppServerEvent::SequencedServerRequest(_)
+        | AppServerEvent::ServerRequestRejected(_)
         | AppServerEvent::Disconnected { .. } => None,
     }
 }

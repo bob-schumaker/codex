@@ -12,6 +12,7 @@ use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 
 impl App {
@@ -74,6 +75,7 @@ pub(super) struct PendingAppServerRequests {
     permissions_approvals: HashMap<String, AppServerRequestId>,
     user_inputs: HashMap<String, VecDeque<PendingUserInputRequest>>,
     mcp_requests: HashMap<McpRequestKey, AppServerRequestId>,
+    transferable_request_threads: HashMap<AppServerRequestId, ThreadId>,
 }
 
 impl PendingAppServerRequests {
@@ -83,13 +85,14 @@ impl PendingAppServerRequests {
         self.permissions_approvals.clear();
         self.user_inputs.clear();
         self.mcp_requests.clear();
+        self.transferable_request_threads.clear();
     }
 
     pub(super) fn note_server_request(
         &mut self,
         request: &ServerRequest,
     ) -> Option<UnsupportedAppServerRequest> {
-        match request {
+        let unsupported = match request {
             ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
                 let approval_id = params
                     .approval_id
@@ -173,7 +176,22 @@ impl PendingAppServerRequests {
                         .to_string(),
                 })
             }
+        };
+        if unsupported.is_none()
+            && let Some(thread_id) =
+                crate::app::app_server_event_targets::server_request_thread_id(request)
+            && matches!(
+                request,
+                ServerRequest::CommandExecutionRequestApproval { .. }
+                    | ServerRequest::FileChangeRequestApproval { .. }
+                    | ServerRequest::PermissionsRequestApproval { .. }
+                    | ServerRequest::ToolRequestUserInput { .. }
+            )
+        {
+            self.transferable_request_threads
+                .insert(request.id().clone(), thread_id);
         }
+        unsupported
     }
 
     pub(super) fn take_resolution<T>(
@@ -282,6 +300,7 @@ impl PendingAppServerRequests {
         &mut self,
         request_id: &AppServerRequestId,
     ) -> Option<ResolvedAppServerRequest> {
+        self.transferable_request_threads.remove(request_id);
         if let Some(id) = self
             .exec_approvals
             .iter()
@@ -328,6 +347,26 @@ impl PendingAppServerRequests {
         }
 
         None
+    }
+
+    pub(super) fn take_transferred_prompt_resolutions(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Vec<ResolvedAppServerRequest> {
+        let mut request_ids = Vec::new();
+        self.transferable_request_threads
+            .retain(|request_id, pending_thread_id| {
+                if *pending_thread_id == thread_id {
+                    request_ids.push(request_id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        request_ids
+            .into_iter()
+            .filter_map(|request_id| self.resolve_notification(&request_id))
+            .collect()
     }
 
     pub(super) fn contains_server_request(&self, request: &ServerRequest) -> bool {
@@ -438,6 +477,7 @@ mod tests {
     use codex_app_server_protocol::ToolRequestUserInputAnswer;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ToolRequestUserInputResponse;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
     use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -485,6 +525,84 @@ mod tests {
 
         assert_eq!(resolution.request_id, AppServerRequestId::Integer(41));
         assert_eq!(resolution.result, json!({ "decision": "accept" }));
+    }
+
+    #[test]
+    fn takes_only_transferable_prompts_for_controller_owned_thread() {
+        let mut pending = PendingAppServerRequests::default();
+        let main_thread_id = ThreadId::new();
+        let other_thread_id = ThreadId::new();
+        let command_request = ServerRequest::CommandExecutionRequestApproval {
+            request_id: AppServerRequestId::Integer(41),
+            params: CommandExecutionRequestApprovalParams {
+                thread_id: main_thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "command-1".to_string(),
+                started_at_ms: 0,
+                approval_id: None,
+                environment_id: None,
+                reason: None,
+                network_approval_context: None,
+                command: Some("ls".to_string()),
+                cwd: None,
+                command_actions: None,
+                additional_permissions: None,
+                proposed_execpolicy_amendment: None,
+                proposed_network_policy_amendments: None,
+                available_decisions: None,
+            },
+        };
+        let file_change_request = ServerRequest::FileChangeRequestApproval {
+            request_id: AppServerRequestId::Integer(42),
+            params: FileChangeRequestApprovalParams {
+                thread_id: main_thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "file-1".to_string(),
+                started_at_ms: 0,
+                reason: None,
+                grant_root: None,
+            },
+        };
+        let other_thread_request = ServerRequest::ToolRequestUserInput {
+            request_id: AppServerRequestId::Integer(43),
+            params: ToolRequestUserInputParams {
+                thread_id: other_thread_id.to_string(),
+                turn_id: "turn-2".to_string(),
+                item_id: "input-1".to_string(),
+                questions: Vec::new(),
+                is_blocking: true,
+                auto_resolution_ms: None,
+            },
+        };
+        assert_eq!(pending.note_server_request(&command_request), None);
+        assert_eq!(pending.note_server_request(&file_change_request), None);
+        assert_eq!(pending.note_server_request(&other_thread_request), None);
+
+        let mut removed = pending.take_transferred_prompt_resolutions(main_thread_id);
+        removed.sort_by_key(|request| match request {
+            ResolvedAppServerRequest::ExecApproval { id }
+            | ResolvedAppServerRequest::FileChangeApproval { id }
+            | ResolvedAppServerRequest::PermissionsApproval { id } => id.clone(),
+            ResolvedAppServerRequest::UserInput { call_id } => call_id.clone(),
+            ResolvedAppServerRequest::McpElicitation { server_name, .. } => server_name.clone(),
+        });
+        assert_eq!(
+            removed,
+            vec![
+                ResolvedAppServerRequest::ExecApproval {
+                    id: "command-1".to_string(),
+                },
+                ResolvedAppServerRequest::FileChangeApproval {
+                    id: "file-1".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            pending.take_transferred_prompt_resolutions(other_thread_id),
+            vec![ResolvedAppServerRequest::UserInput {
+                call_id: "input-1".to_string(),
+            }]
+        );
     }
 
     #[test]

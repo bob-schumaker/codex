@@ -2193,6 +2193,12 @@ impl App {
                     ));
                 }
             }
+            AppEvent::RevokeControllerAccess { thread_id } => {
+                if let Err(err) = app_server.revoke_controller_access(thread_id).await {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to revoke controller access: {err}"));
+                }
+            }
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }

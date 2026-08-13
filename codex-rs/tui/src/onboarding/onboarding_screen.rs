@@ -573,7 +573,8 @@ pub(crate) async fn run_onboarding_app(
                         | AppServerEvent::ControllerOwnershipStatus(_)
                         | AppServerEvent::LocalControllerEndpointUnavailable { .. }
                         | AppServerEvent::ServerRequest(_)
-                        | AppServerEvent::SequencedServerRequest(_) => {}
+                        | AppServerEvent::SequencedServerRequest(_)
+                        | AppServerEvent::ServerRequestRejected(_) => {}
                     }
                 }
             }

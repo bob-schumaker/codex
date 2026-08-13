@@ -1,0 +1,18 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: "format!(\"active owner:\\n{active_owner}\\n\\nstanding session:\\n{standing_session}\\n\\nno session:\\n{no_session}\")"
+---
+active owner:
+› /controller
+
+  /controller  revoke controller access for this thread
+
+standing session:
+› /controller
+
+  /controller  revoke controller access for this thread
+
+no session:
+› /controller
+
+  gpt-5.6-sol default · /tmp/project

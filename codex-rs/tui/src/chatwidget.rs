@@ -671,6 +671,7 @@ pub(crate) struct ChatWidget {
     dismissed_plan_mode_nudge_scopes: HashSet<PlanModeNudgeScope>,
     thread_name: Option<String>,
     thread_rename_block_message: Option<String>,
+    controller_access_available: bool,
     active_side_conversation: bool,
     blocks_direct_input: bool,
     normal_placeholder_text: String,

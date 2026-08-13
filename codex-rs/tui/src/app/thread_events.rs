@@ -275,12 +275,16 @@ impl ThreadEventStore {
         }
     }
 
-    pub(super) fn set_controller_ownership_status(
+    pub(super) fn set_controller_ownership_status_at_sequence(
         &mut self,
         status: codex_app_server_client::InProcessControllerOwnershipStatus,
-    ) {
-        self.advance_sequence();
+        thread_sequence: Option<u64>,
+    ) -> bool {
+        if !self.apply_event_sequence(thread_sequence) {
+            return false;
+        }
         self.controller_ownership_status = Some(status);
+        true
     }
 
     pub(super) fn pending_replay_requests(&self) -> Vec<ServerRequest> {
@@ -712,14 +716,50 @@ mod tests {
                 session_id: "controller-session".to_string(),
             },
             owner_epoch: 2,
+            has_controller_session: true,
             reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
         };
 
-        store.set_controller_ownership_status(status.clone());
+        assert!(store.set_controller_ownership_status_at_sequence(
+            status.clone(),
+            /*thread_sequence*/ None,
+        ));
 
         let snapshot = store.snapshot();
         assert_eq!(snapshot.last_sequence, 1);
         assert_eq!(snapshot.controller_ownership_status, Some(status));
+    }
+
+    #[test]
+    fn controller_ownership_status_ignores_stale_sequence() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        let thread_id = ThreadId::new();
+        let controller_status = codex_app_server_client::InProcessControllerOwnershipStatus {
+            main_thread_id: thread_id,
+            owner: codex_app_server_client::InProcessControllerOwnershipStatusOwner::Controller {
+                session_id: "controller-session".to_string(),
+            },
+            owner_epoch: 2,
+            has_controller_session: true,
+            reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
+        };
+        let stale_tui_status = codex_app_server_client::InProcessControllerOwnershipStatus {
+            main_thread_id: thread_id,
+            owner: codex_app_server_client::InProcessControllerOwnershipStatusOwner::Tui,
+            owner_epoch: 1,
+            has_controller_session: true,
+            reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Released,
+        };
+
+        assert!(
+            store.set_controller_ownership_status_at_sequence(controller_status.clone(), Some(2))
+        );
+        assert!(!store.set_controller_ownership_status_at_sequence(stale_tui_status, Some(1)));
+
+        assert_eq!(
+            store.snapshot().controller_ownership_status,
+            Some(controller_status)
+        );
     }
 
     #[test]
@@ -816,6 +856,7 @@ mod tests {
                 session_id: "controller-session".to_string(),
             },
             owner_epoch: 3,
+            has_controller_session: true,
             reason: codex_app_server_protocol::ControllerControlOwnershipChangedReason::Acquired,
         };
         let pending_request = exec_approval_request(

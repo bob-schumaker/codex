@@ -201,6 +201,7 @@ impl ChatWidget {
             dismissed_plan_mode_nudge_scopes: HashSet::new(),
             thread_name: None,
             thread_rename_block_message: None,
+            controller_access_available: false,
             active_side_conversation: false,
             blocks_direct_input: false,
             normal_placeholder_text: placeholder,

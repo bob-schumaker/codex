@@ -56,6 +56,7 @@ use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::InProcessControllerOwnershipStatus;
 use codex_app_server_client::InProcessControllerOwnershipStatusOwner;
+use codex_app_server_client::InProcessSequencedControllerOwnershipStatus;
 use codex_app_server_protocol::AdditionalFileSystemPermissions;
 use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
@@ -236,6 +237,7 @@ fn app_server_event_notification(
         | codex_app_server_client::AppServerEvent::LocalControllerEndpointUnavailable { .. }
         | codex_app_server_client::AppServerEvent::ServerRequest(_)
         | codex_app_server_client::AppServerEvent::SequencedServerRequest(_)
+        | codex_app_server_client::AppServerEvent::ServerRequestRejected(_)
         | codex_app_server_client::AppServerEvent::Disconnected { .. } => None,
     }
 }
@@ -7196,14 +7198,20 @@ async fn controller_ownership_status_event_does_not_write_transcript_history() -
     let thread_id = ThreadId::new();
     app.handle_app_server_event(
         &mut app_server,
-        AppServerEvent::ControllerOwnershipStatus(Box::new(InProcessControllerOwnershipStatus {
-            main_thread_id: thread_id,
-            owner: InProcessControllerOwnershipStatusOwner::Controller {
-                session_id: "controller-session".to_string(),
+        AppServerEvent::ControllerOwnershipStatus(Box::new(
+            InProcessSequencedControllerOwnershipStatus {
+                status: Box::new(InProcessControllerOwnershipStatus {
+                    main_thread_id: thread_id,
+                    owner: InProcessControllerOwnershipStatusOwner::Controller {
+                        session_id: "controller-session".to_string(),
+                    },
+                    owner_epoch: 2,
+                    has_controller_session: true,
+                    reason: ControllerControlOwnershipChangedReason::Acquired,
+                }),
+                thread_sequence: 1,
             },
-            owner_epoch: 2,
-            reason: ControllerControlOwnershipChangedReason::Acquired,
-        })),
+        )),
     )
     .await;
 
@@ -7226,6 +7234,7 @@ async fn controller_ownership_status_event_does_not_write_transcript_history() -
                 session_id: "controller-session".to_string(),
             },
             owner_epoch: 2,
+            has_controller_session: true,
             reason: ControllerControlOwnershipChangedReason::Acquired,
         })
     );
@@ -7234,6 +7243,55 @@ async fn controller_ownership_status_event_does_not_write_transcript_history() -
         .any(|event| matches!(event, AppEvent::InsertHistoryCell(_)));
     assert!(!emitted_history);
     assert!(app.chat_widget.active_cell_transcript_key().is_none());
+    app_server.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn controller_ownership_status_marks_transferred_prompt_as_remote() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.chat_widget.config_ref().clone();
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    let thread_id = ThreadId::new();
+    let approval_request =
+        exec_approval_request(thread_id, "turn-1", "call-1", /*approval_id*/ None);
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_server_request(&approval_request),
+        None
+    );
+
+    app.handle_app_server_event(
+        &mut app_server,
+        AppServerEvent::ControllerOwnershipStatus(Box::new(
+            InProcessSequencedControllerOwnershipStatus {
+                status: Box::new(InProcessControllerOwnershipStatus {
+                    main_thread_id: thread_id,
+                    owner: InProcessControllerOwnershipStatusOwner::Controller {
+                        session_id: "controller-session".to_string(),
+                    },
+                    owner_epoch: 2,
+                    has_controller_session: true,
+                    reason: ControllerControlOwnershipChangedReason::Acquired,
+                }),
+                thread_sequence: 1,
+            },
+        )),
+    )
+    .await;
+
+    let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+            }
+            _ => None,
+        })
+        .expect("transferred prompt should show a remote-control status");
+    assert_app_snapshot!("controller_transferred_prompt_status", rendered);
     app_server.shutdown().await?;
 
     Ok(())

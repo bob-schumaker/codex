@@ -1015,6 +1015,11 @@ pub(crate) enum AppEvent {
         decision: NativeControllerParticipationDecision,
     },
 
+    /// Revoke every external-controller session for the selected main thread.
+    RevokeControllerAccess {
+        thread_id: ThreadId,
+    },
+
     /// Open the skills list popup.
     OpenSkillsList,
 

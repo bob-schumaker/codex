@@ -59,6 +59,50 @@ fn submit_current_composer(chat: &mut ChatWidget) {
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 }
 
+#[tokio::test]
+async fn controller_command_requests_native_access_revocation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.set_controller_access_available(/*available*/ true);
+
+    chat.dispatch_command(SlashCommand::Controller);
+
+    match rx.try_recv() {
+        Ok(AppEvent::RevokeControllerAccess {
+            thread_id: emitted_thread_id,
+        }) => assert_eq!(emitted_thread_id, thread_id),
+        other => panic!("expected controller access revocation event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn controller_command_popup_reflects_controller_session_availability() {
+    let (mut active_owner_chat, _rx, _op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    active_owner_chat.set_controller_access_available(/*available*/ true);
+    queue_composer_text_with_tab(&mut active_owner_chat, "/controller");
+    let active_owner = render_bottom_popup(&active_owner_chat, /*width*/ 80);
+
+    let (mut standing_session_chat, _rx, _op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    standing_session_chat.set_controller_access_available(/*available*/ true);
+    queue_composer_text_with_tab(&mut standing_session_chat, "/controller");
+    let standing_session = render_bottom_popup(&standing_session_chat, /*width*/ 80);
+
+    let (mut no_session_chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    no_session_chat.set_controller_access_available(/*available*/ false);
+    queue_composer_text_with_tab(&mut no_session_chat, "/controller");
+    let no_session = render_bottom_popup(&no_session_chat, /*width*/ 80);
+
+    assert_chatwidget_snapshot!(
+        "controller_command_availability",
+        format!(
+            "active owner:\n{active_owner}\n\nstanding session:\n{standing_session}\n\nno session:\n{no_session}"
+        )
+    );
+}
+
 fn queue_composer_text_with_tab(chat: &mut ChatWidget, text: &str) {
     chat.bottom_pane
         .set_composer_text(text.to_string(), Vec::new(), Vec::new());

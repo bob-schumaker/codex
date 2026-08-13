@@ -1500,6 +1500,15 @@ impl AppServerSession {
             .await
     }
 
+    /// Revokes every external-controller session for this embedded TUI main thread.
+    pub(crate) async fn revoke_controller_access(&self, thread_id: ThreadId) -> Result<()> {
+        self.client
+            .revoke_controller_access(thread_id)
+            .await
+            .wrap_err("failed to request controller access revocation")?
+            .map_err(|err| color_eyre::eyre::eyre!("controller access revocation failed: {err:?}"))
+    }
+
     pub(crate) async fn publish_local_controller_main_thread_id(&self, thread_id: ThreadId) {
         if let Err(err) = self
             .client

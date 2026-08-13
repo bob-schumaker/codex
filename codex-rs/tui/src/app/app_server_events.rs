@@ -11,6 +11,7 @@ use crate::app_info::app_info_from_api;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use codex_app_server_client::AppServerEvent;
+use codex_app_server_client::InProcessControllerOwnershipStatusOwner;
 use codex_app_server_client::InProcessThreadSnapshot;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
@@ -67,18 +68,49 @@ impl App {
                     .open_controller_participation_prompt(*request);
             }
             AppServerEvent::ControllerOwnershipStatus(status) => {
-                {
-                    let channel = self.ensure_thread_channel(status.main_thread_id);
+                let applied = {
+                    let channel = self.ensure_thread_channel(status.status.main_thread_id);
                     let mut store = channel.store.lock().await;
-                    store.set_controller_ownership_status((*status).clone());
-                }
+                    store.set_controller_ownership_status_at_sequence(
+                        (*status.status).clone(),
+                        Some(status.thread_sequence),
+                    )
+                };
                 tracing::debug!(
-                    main_thread_id = %status.main_thread_id,
-                    owner = ?status.owner,
-                    owner_epoch = status.owner_epoch,
-                    reason = ?status.reason,
+                    main_thread_id = %status.status.main_thread_id,
+                    owner = ?status.status.owner,
+                    owner_epoch = status.status.owner_epoch,
+                    reason = ?status.status.reason,
+                    thread_sequence = status.thread_sequence,
                     "controller ownership status changed"
                 );
+                if self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| thread_id == status.status.main_thread_id)
+                {
+                    self.chat_widget
+                        .set_controller_access_available(status.status.has_controller_session);
+                }
+                if applied
+                    && matches!(
+                        status.status.owner,
+                        InProcessControllerOwnershipStatusOwner::Controller { .. }
+                    )
+                {
+                    let transferred_requests = self
+                        .pending_app_server_requests
+                        .take_transferred_prompt_resolutions(status.status.main_thread_id);
+                    for request in &transferred_requests {
+                        self.chat_widget.dismiss_app_server_request(request);
+                    }
+                    if !transferred_requests.is_empty() {
+                        self.chat_widget.add_info_message(
+                            "Awaiting external controller approval.".to_string(),
+                            /*hint*/ None,
+                        );
+                    }
+                }
             }
             AppServerEvent::LocalControllerEndpointUnavailable { reason } => {
                 crate::report_external_controller_availability(
@@ -118,6 +150,19 @@ impl App {
                     Some(event.thread_sequence),
                 )
                 .await;
+            }
+            AppServerEvent::ServerRequestRejected(rejection) => {
+                if let Some(request) = self
+                    .pending_app_server_requests
+                    .resolve_notification(&rejection.request_id)
+                {
+                    self.chat_widget.dismiss_app_server_request(&request);
+                }
+                tracing::debug!(
+                    request_id = ?rejection.request_id,
+                    reason = ?rejection.reason,
+                    "in-process server request response was rejected"
+                );
             }
             AppServerEvent::Disconnected { message } => {
                 tracing::warn!("app-server event stream disconnected: {message}");
@@ -183,6 +228,10 @@ impl App {
             .session_state_for_thread_read(thread_id, &snapshot.thread)
             .await;
         let turns = snapshot.thread.turns;
+        let controller_access_available = snapshot
+            .controller_ownership_status
+            .as_ref()
+            .is_some_and(|status| status.has_controller_session);
         let replay_snapshot = {
             let channel = self.ensure_thread_channel(thread_id);
             let mut store = channel.store.lock().await;
@@ -196,6 +245,10 @@ impl App {
             store.input_state = input_state;
             store.snapshot()
         };
+        if self.chat_widget.thread_id() == Some(thread_id) {
+            self.chat_widget
+                .set_controller_access_available(controller_access_available);
+        }
         self.replay_thread_snapshot(replay_snapshot, /*resume_restored_queue*/ false);
     }
 

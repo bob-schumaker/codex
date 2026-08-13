@@ -5,6 +5,12 @@ use crate::app_event::AppEvent;
 use crate::chatwidget::rate_limits::RATE_LIMIT_SWITCH_PROMPT_VIEW_ID;
 
 impl ChatWidget {
+    /// Updates whether the active main thread has controller access that the TUI can revoke.
+    pub(crate) fn set_controller_access_available(&mut self, available: bool) {
+        self.controller_access_available = available;
+        self.bottom_pane.set_controller_access_available(available);
+    }
+
     /// Set the approval policy in the widget's config copy.
     pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
         if let Err(err) = self

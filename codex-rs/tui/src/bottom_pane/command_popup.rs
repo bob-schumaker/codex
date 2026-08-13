@@ -48,6 +48,7 @@ pub(crate) struct CommandPopupFlags {
     pub(crate) service_tier_commands_enabled: bool,
     pub(crate) goal_command_enabled: bool,
     pub(crate) personality_command_enabled: bool,
+    pub(crate) controller_access_available: bool,
     pub(crate) windows_degraded_sandbox_active: bool,
     pub(crate) side_conversation_active: bool,
 }
@@ -62,6 +63,7 @@ impl From<CommandPopupFlags> for BuiltinCommandFlags {
             service_tier_commands_enabled: value.service_tier_commands_enabled,
             goal_command_enabled: value.goal_command_enabled,
             personality_command_enabled: value.personality_command_enabled,
+            controller_access_available: value.controller_access_available,
             allow_elevate_sandbox: value.windows_degraded_sandbox_active,
             side_conversation_active: value.side_conversation_active,
         }
@@ -535,6 +537,7 @@ mod tests {
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
                 personality_command_enabled: true,
+                controller_access_available: false,
                 windows_degraded_sandbox_active: false,
                 side_conversation_active: false,
             },
@@ -562,6 +565,7 @@ mod tests {
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
                 personality_command_enabled: false,
+                controller_access_available: false,
                 windows_degraded_sandbox_active: false,
                 side_conversation_active: false,
             },
@@ -594,6 +598,7 @@ mod tests {
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
                 personality_command_enabled: true,
+                controller_access_available: true,
                 windows_degraded_sandbox_active: false,
                 side_conversation_active: false,
             },
@@ -608,6 +613,26 @@ mod tests {
             }
             other => panic!("expected personality to be selected for exact match, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn controller_command_is_visible_only_with_controller_access() {
+        let mut unavailable = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        unavailable.on_composer_text_change("/controller".to_string());
+        assert!(unavailable.filtered_items().is_empty());
+
+        let mut available = CommandPopup::new(
+            CommandPopupFlags {
+                controller_access_available: true,
+                ..CommandPopupFlags::default()
+            },
+            Vec::new(),
+        );
+        available.on_composer_text_change("/controller".to_string());
+        assert!(matches!(
+            available.selected_item(),
+            Some(CommandItem::Builtin(cmd)) if cmd == SlashCommand::Controller
+        ));
     }
 
     #[test]

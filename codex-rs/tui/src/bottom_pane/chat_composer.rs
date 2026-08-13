@@ -496,6 +496,7 @@ pub(crate) struct ChatComposer {
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     personality_command_enabled: bool,
+    controller_access_available: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
     history_search: Option<HistorySearchSession>,
@@ -570,6 +571,7 @@ impl ChatComposer {
             service_tier_commands_enabled: self.service_tier_commands_enabled,
             goal_command_enabled: self.goal_command_enabled,
             personality_command_enabled: self.personality_command_enabled,
+            controller_access_available: self.controller_access_available,
             allow_elevate_sandbox: self.windows_degraded_sandbox_active,
             side_conversation_active: self.side_conversation_active,
         }
@@ -679,6 +681,7 @@ impl ChatComposer {
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             personality_command_enabled: false,
+            controller_access_available: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
             history_search: None,
@@ -780,6 +783,10 @@ impl ChatComposer {
 
     pub fn set_token_activity_command_enabled(&mut self, enabled: bool) {
         self.token_activity_command_enabled = enabled;
+    }
+
+    pub fn set_controller_access_available(&mut self, available: bool) {
+        self.controller_access_available = available;
     }
 
     pub fn set_mentions_v2_enabled(&mut self, enabled: bool) {
